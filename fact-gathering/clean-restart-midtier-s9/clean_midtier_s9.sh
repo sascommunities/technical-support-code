@@ -1,6 +1,6 @@
 #!/bin/bash
 # This script cleans midtier node including cache locator.
-# One has the option of cleaning cache locatr only.
+# One has the option of cleaning cache locator only.
 # This script backs up logs under each SAS server &
 # cleans temp, work & data directories under gemfire as well as  activeMQ data.
 # It is up to the user to clean hung processes after this script is run and restart midtier services.

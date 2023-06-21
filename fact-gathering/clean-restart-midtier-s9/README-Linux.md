@@ -20,8 +20,8 @@ There are two scripts as part of clean restart midtier procedure.
 - Start midtier services and run collect_latest_midtier_logs_configs_s9.sh.
 - Bash Shell
 
-**Note**: clean_midtier_s9.sh should be run by experianced SAS Administratots or under their supervision.
-There is a risk that customers may kill unrelated pids on there midtier servers.
+**Note**: clean_midtier_s9.sh should be run by experianced SAS Administrators or under their supervision.
+There is a risk that customers may kill unrelated pids on their midtier servers.
 
 ## Usage
 
