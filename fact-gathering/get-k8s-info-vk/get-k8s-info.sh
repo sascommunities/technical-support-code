@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='get-k8s-info v1.1.8'
+version='get-k8s-info v1.1.10'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -216,10 +216,9 @@ if [ -z $DEPLOYPATH ]; then
     DEPLOYPATH="${DEPLOYPATH/#\~/$HOME}"
     if [ -z $DEPLOYPATH ]; then DEPLOYPATH=$(pwd); fi
 fi
-DEPLOYPATH=$(realpath $DEPLOYPATH 2> /dev/null)
-echo DEPLOYPATH: $DEPLOYPATH >> $logfile
-# Exit if deployment assets are not found
 if [ $DEPLOYPATH != 'unavailable' ];then 
+    DEPLOYPATH=$(realpath $DEPLOYPATH 2> /dev/null)
+    # Exit if deployment assets are not found
     if [[ ! -d $DEPLOYPATH/site-config || ! -f $DEPLOYPATH/kustomization.yaml ]]; then 
         echo ERROR: Deployment assets were not found inside the provided \$deploy path: $(echo -e "site-config/\nkustomization.yaml" | grep -E -v $(ls $DEPLOYPATH 2>> $logfile | grep "^site-config$\|^kustomization.yaml$" | tr '\n' '\|')^dummy$)  | tee -a $logfile
         echo -e "\nTo debug some issues, SAS Tech Support requires information collected from files within the \$deploy directory.\nIf you are unable to access the \$deploy directory at the moment, run the script again with '--deploypath unavailable'" | tee -a $logfile
@@ -228,6 +227,7 @@ if [ $DEPLOYPATH != 'unavailable' ];then
 else
     echo "WARNING: --deploypath set as 'unavailable'. Please note that SAS Tech Support may still require and request information from the \$deploy directory" | tee -a $logfile
 fi
+echo DEPLOYPATH: $DEPLOYPATH >> $logfile
 
 # Check OUTPATH
 if [ -z $OUTPATH ]; then 
@@ -612,7 +612,7 @@ function getNamespaceData {
     done
 }
 
-TEMPDIR=$(mktemp -d)
+TEMPDIR=$(mktemp -d -p $OUTPATH)
 mkdir $TEMPDIR/versions
 
 echo -e "\nINFO: Capturing environment information...\n" | tee -a $logfile
