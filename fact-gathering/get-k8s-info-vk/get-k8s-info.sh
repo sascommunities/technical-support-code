@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='get-k8s-info v1.1.10'
+version='get-k8s-info v1.1.11'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -36,9 +36,9 @@ else
     echo -e "$version\n$(date -u)\n$(bash --version | head -1)\n$(uname -a)\nCommand: ${0} ${@}\n" > $logfile
 fi
 
+script=$(echo $0 | rev | cut -d '/' -f1 | rev)
 function usage {
     echo Version: "$version"
-    script=$(echo $0 | rev | cut -d '/' -f1 | rev)
     echo; echo "Usage: $script [OPTIONS]..."
     echo;
     echo "Capture information from a Viya 4 deployment."
@@ -81,9 +81,25 @@ function cleanUp() {
             echo -e "\nScript log saved at: /tmp/get-k8s-info.log"
         else rm -f $logfile; fi
     fi
-    if [ -d $TEMPDIR ]; then rm -rf $TEMPDIR; fi
+    rm -rf $TEMPDIR $updatedScript
     exit $1
 }
+
+# Check for updates
+latestVersion=$(curl -s https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/get-k8s-info-vk/get-k8s-info.sh 2>> $logfile | grep '^version=' | cut -d "'" -f2)
+if [[ ! -z $latestVersion ]]; then
+    if [[ $(cut -d 'v' -f2 <<< $latestVersion | tr -d '.') -gt $(version | cut -d 'v' -f2 | tr -d '.') ]]; then
+        echo "WARNING: A new version is available! ($latestVersion)" | tee -a $logfile
+        read -p "WARNING: It is highly recommended to use the latest version. Do you want to update this script ($(version))? (y/n) " k
+        echo "DEBUG: Wants to update? $k" >> $logfile
+        if [ "$k" == 'y' ] || [ "$k" == 'Y' ] ; then
+            updatedScript=$(mktemp)
+            curl -s -o $updatedScript https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/get-k8s-info-vk/get-k8s-info.sh >> $logfile 2>&1
+            scriptPath=$(dirname $(realpath -s $0))
+            if cp $updatedScript $scriptPath/$script > /dev/null 2>> $logfile; then echo -e "INFO: Script updated successfully. Restarting...\n" | tee -a $logfile;$scriptPath/$script ${@};cleanUp $?;else echo -e "ERROR: Script update failed!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile;cleanUp 1;fi
+        fi
+    fi
+fi
 
 # Check kubectl
 if type kubectl > /dev/null 2>> $logfile; then
