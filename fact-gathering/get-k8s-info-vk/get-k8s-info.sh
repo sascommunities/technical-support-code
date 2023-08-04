@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='get-k8s-info v1.1.11'
+version='get-k8s-info v1.1.12'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -206,7 +206,7 @@ if [ -z $TRACKNUMBER ]; then
     fi
 fi
 echo TRACKNUMBER: $TRACKNUMBER >> $logfile
-if [ $(echo $TRACKNUMBER | egrep -c '^[0-9]{10}$') -ne 1 ]; then
+if ! grep -E '^[0-9]{10}$' > /dev/null 2>> $logfile <<< $TRACKNUMBER; then
     echo "ERROR: Invalid 10-digit track number" | tee -a $logfile
     cleanUp 1
 fi
@@ -432,15 +432,270 @@ function removeSensitiveData {
         mv $file.parsed $file 2>> $logfile
     done
 }
-function getNamespaceData {
-    for namespace in ${namespaces[@]}; do
+# begin kviya functions
+function nodeMon {
+    ## Node Monitoring
+
+    if [ "$ARGPLAYBACK" == 'false' ]; then 
+        $KUBECTLCMD get node > $TEMPDIR/.kviya/work/getnodes.out 2> /dev/null
+        $KUBECTLCMD describe node > $TEMPDIR/.kviya/work/nodes-describe.out 2> /dev/null
+        $KUBECTLCMD top node > $TEMPDIR/.kviya/work/nodesTop.out 2> /dev/null
+    fi
+
+    csplit --prefix $TEMPDIR/.kviya/work/k8snode --quiet --suppress-matched -z $TEMPDIR/.kviya/work/nodes-describe.out "/^$/" '{*}'
+
+    nodeCount=0
+    for file in $(ls $TEMPDIR/.kviya/work/k8snode*); do
+        nodeFiles[$nodeCount]=$file
+        nodeNames[$nodeCount]=$(grep ^Name: $file | grep ^Name: | awk '{print $2}')
+        nodeStatuses[$nodeCount]=$(grep "${nodeNames[$nodeCount]} " $TEMPDIR/.kviya/work/getnodes.out | awk '{print $2}')
+        nodeTaints[$nodeCount]=$(grep '  workload.sas.com/class' $file | grep NoSchedule | cut -d '=' -f2 | cut -d ':' -f1)
+        nodeLabels[$nodeCount]=$(grep '  workload.sas.com/class' $file | grep -v NoSchedule | cut -d '=' -f2)
+        nodeZone[$nodeCount]=$(grep '  topology.kubernetes.io/zone' $file | cut -d '=' -f2)
+        nodeVm[$nodeCount]=$(grep '  node.kubernetes.io/instance-type' $file | cut -d '=' -f2)
+        for condition in $(grep 'NetworkUnavailable\|MemoryPressure\|DiskPressure\|PIDPressure\|Unschedulable' $file | grep -i true | awk -F'[:]' '{print $1}' | awk '{print $1}'); do
+            if [ ${#nodeConditions[$nodeCount]} = 0 ]; then 
+                nodeConditions[$nodeCount]=$condition
+            else 
+                nodeConditions[$nodeCount]=${nodeConditions[$nodeCount]},$condition
+            fi
+        done
+        nodePods[$nodeCount]=$(grep 'Non-terminated Pods' $file | awk -F' *[( ]' '{print $3}')/$(awk '/Allocatable:/, /pods/' $file | grep pods | awk -F' *' '{print $3}')
+        nodeResources[$nodeCount]=$(grep -A5 'Allocated resources' $file | tail -2 | awk '{print $2, $3}' | tr '\n' '\t' | tr '()' ' ' | awk '{if ($3 ~ /Mi/) print $1, $2, "/", $4, $3; else if ($3 ~ /Ki/) print $1, $2, "/", $4, int( int($3) / 1024 )"Mi"; else if ($3 ~ /Gi/) print $1, $2, "/", $4, int( int($3) * 1024 )"Mi";else print $1, $2, "/", $4, int( $3 / 1048576 )"Mi";}')
+        nodeTop[$nodeCount]=$(grep ${nodeNames[$nodeCount]} $TEMPDIR/.kviya/work/nodesTop.out | awk '{print $3,"/", $5}')
+        if [[ ${#nodeTop[$nodeCount]} -eq 0 || ${nodeTop[$nodeCount]} == '<unknown> / <unknown>' ]];then nodeTop[$nodeCount]='- / -';fi
+
+        if [[ -z ${nodeConditions[$nodeCount]} ]]; then nodeConditions[$nodeCount]='OK';fi
+        if [[ -z ${nodeLabels[$nodeCount]} ]]; then nodeLabels[$nodeCount]='-';fi
+        if [[ -z ${nodeTaints[$nodeCount]} ]]; then nodeTaints[$nodeCount]='-';fi
+        if [[ -z ${nodeZone[$nodeCount]} ]]; then nodeZone[$nodeCount]='-';fi
+        if [[ -z ${nodeVm[$nodeCount]} ]]; then nodeVm[$nodeCount]='-';fi
+
+        nodeCount=$[ $nodeCount + 1 ]
+    done
+
+    # Find length of each column
+    nodeVarLen=(6 8 11 7 7 6 6 4)
+
+    for VALUE in ${nodeNames[@]}; do
+        if [ $[ ${#VALUE} + 2 ] -gt ${nodeVarLen[0]} ]; then
+            nodeVarLen[0]=$[ ${#VALUE} + 2 ]
+        fi
+    done
+
+    readynodes=0
+    for VALUE in ${nodeStatuses[@]}; do
+        if [ $[ ${#VALUE} + 2 ] -gt ${nodeVarLen[1]} ]; then
+            nodeVarLen[1]=$[ ${#VALUE} + 2 ]
+        fi
+        if [ $VALUE == 'Ready' ]; then readynodes=$[ $readynodes + 1 ]; fi
+    done
+    for VALUE in ${nodeConditions[@]}; do
+        if [ $[ ${#VALUE} + 2 ] -gt ${nodeVarLen[2]} ]; then
+            nodeVarLen[2]=$[ ${#VALUE} + 2 ]
+        fi
+    done
+    for VALUE in ${nodeLabels[@]}; do
+        if [ $[ ${#VALUE} + 2 ] -gt ${nodeVarLen[3]} ]; then
+            nodeVarLen[3]=$[ ${#VALUE} + 2 ]
+        fi
+    done
+    for VALUE in ${nodeTaints[@]}; do
+        if [ $[ ${#VALUE} + 2 ] -gt ${nodeVarLen[4]} ]; then
+            nodeVarLen[4]=$[ ${#VALUE} + 2 ]
+        fi
+    done
+    for VALUE in ${nodePods[@]}; do
+        if [ $[ ${#VALUE} + 0 ] -gt ${nodeVarLen[5]} ]; then
+            nodeVarLen[5]=$[ ${#VALUE} + 0 ]
+        fi
+    done
+    for VALUE in ${nodeZone[@]}; do
+        if [ $[ ${#VALUE} + 2 ] -gt ${nodeVarLen[6]} ]; then
+            nodeVarLen[6]=$[ ${#VALUE} + 2 ]
+        fi
+    done
+    for VALUE in ${nodeVm[@]}; do
+        if [ $[ ${#VALUE} + 2 ] -gt ${nodeVarLen[7]} ]; then
+            nodeVarLen[7]=$[ ${#VALUE} + 2 ]
+        fi
+    done
+
+    echo -e "\nKubernetes Nodes ($readynodes/$nodeCount)\n" > $TEMPDIR/.kviya/work/nodeMon.out
+    printf "%-${nodeVarLen[0]}s %-${nodeVarLen[1]}s %-${nodeVarLen[2]}s %-${nodeVarLen[3]}s %-${nodeVarLen[4]}s %-${nodeVarLen[7]}s %-${nodeVarLen[6]}s %${nodeVarLen[5]}s %12s %-s\n" 'NAME' 'STATUS' 'CONDITION' 'LABEL' 'TAINT' 'VM' 'ZONE' 'PODS' '  TOP (CPU / MEMORY)' '  REQUESTS (CPU / MEMORY)' >> $TEMPDIR/.kviya/work/nodeMon.out
+
+    for (( nodeCount=0; nodeCount<${#nodeFiles[@]}; nodeCount++ )); do
+        printf "%-${nodeVarLen[0]}s %-${nodeVarLen[1]}s %-${nodeVarLen[2]}s %-${nodeVarLen[3]}s %-${nodeVarLen[4]}s %-${nodeVarLen[7]}s %-${nodeVarLen[6]}s %${nodeVarLen[5]}s %10s %1s %4s %13s %4s %s %4s %8s\n" ${nodeNames[$nodeCount]} ${nodeStatuses[$nodeCount]} ${nodeConditions[$nodeCount]} ${nodeLabels[$nodeCount]} ${nodeTaints[$nodeCount]} ${nodeVm[$nodeCount]} ${nodeZone[$nodeCount]} ${nodePods[$nodeCount]} ${nodeTop[$nodeCount]} ${nodeResources[$nodeCount]} >> $TEMPDIR/.kviya/work/nodeMon.out
+        
+        if [ "$ARGNODEEVENTS" == 'true' ]; then
+            awk '/^Events:/,0' ${nodeFiles[$nodeCount]} | awk '/-------/,0' | grep -v '\-\-\-\-\-\-\-' > $TEMPDIR/.kviya/work/${nodeNames[$nodeCount]}-events.out
+            if [ -s $TEMPDIR/.kviya/work/${nodeNames[$nodeCount]}-events.out ]; then
+                cat $TEMPDIR/.kviya/work/${nodeNames[$nodeCount]}-events.out >> $TEMPDIR/.kviya/work/nodeMon.out
+                echo '' >> $TEMPDIR/.kviya/work/nodeMon.out
+            fi
+        fi
+    done
+    unset nodeNames nodeStatuses nodeTaints nodeLabels nodeConditions nodePods nodeTop nodeResources nodeZone nodeVm
+    rm $TEMPDIR/.kviya/work/k8snode*
+}
+function podMon {
+    ## Pod Monitoring
+
+    # Collect initial pod list
+    if [ "$ARGPLAYBACK" == 'false' ]; then 
+        $KUBECTLCMD get pod -o wide > $TEMPDIR/.kviya/work/getpod.out 2> /dev/null
+    fi
+    
+    # Totals
+    TOTAL=$(grep -v 'Completed\|NAME' -c $TEMPDIR/.kviya/work/getpod.out)
+
+    grep -v '1/1\|2/2\|3/3\|4/4\|5/5\|6/6\|7/7\|8/8\|9/9\|Completed\|Terminating\|NAME' $TEMPDIR/.kviya/work/getpod.out | sed 's/<none> *$//' | sed 's/<none> *$//' > $TEMPDIR/.kviya/work/notready.out
+    grep 'Terminating' $TEMPDIR/.kviya/work/getpod.out | sed 's/<none> *$//' | sed 's/<none> *$//' >> $TEMPDIR/.kviya/work/notready.out
+    NOTREADY=$(wc -l $TEMPDIR/.kviya/work/notready.out | awk '{print $1}')
+
+    echo -e "" > $TEMPDIR/.kviya/work/podMon.out
+    echo $(echo -e "Pods ($[ $TOTAL-$NOTREADY ]/$TOTAL):";grep -v NAME $TEMPDIR/.kviya/work/getpod.out | awk '{print $3}' | sort | uniq -c | sort -nr | tr '\n' ',' | sed 's/.$//') >> $TEMPDIR/.kviya/work/podMon.out
+
+    # Check Pods
+    if [ $NOTREADY -gt 0 ] || [ $ARGREADYPODS == 'true' ] || [ ! -z "${ARGPODGREP}" ]; then
+        echo '' >> $TEMPDIR/.kviya/work/podMon.out
+
+        if [ $ARGREADYPODS == 'true' ] || [ ! -z "${ARGPODGREP}" ]; then
+            grep -v 'NAME' $TEMPDIR/.kviya/work/getpod.out | grep -E "${ARGPODGREP}" | sed 's/<none> *$//' | sed 's/<none> *$//' > $TEMPDIR/.kviya/work/notready.out
+        fi
+
+        # Count pods
+        PENDING=$(grep -c "Pending" $TEMPDIR/.kviya/work/notready.out)
+        CONSUL=$(grep -c "sas-consul" $TEMPDIR/.kviya/work/notready.out)
+        POSTGRES=$(grep -c "sas-crunchy\|sas-data-server-operator" $TEMPDIR/.kviya/work/notready.out)
+        RABBIT=$(grep -c "sas-rabbitmq" $TEMPDIR/.kviya/work/notready.out)
+        CACHE=$(grep -c "sas-cache\|sas-redis" $TEMPDIR/.kviya/work/notready.out)
+        CAS=$(grep -c "sas-cas-" $TEMPDIR/.kviya/work/notready.out)
+        LOGON=$(grep -c "sas-logon-app" $TEMPDIR/.kviya/work/notready.out)
+        CONFIG=$(grep -c "sas-configuration" $TEMPDIR/.kviya/work/notready.out)
+        OTHER=$[ $NOTREADY-$PENDING-$CONSUL-$POSTGRES-$RABBIT-$CACHE-$CAS-$LOGON-$CONFIG ]
+
+        head -1 $TEMPDIR/.kviya/work/getpod.out | sed 's/NOMINATED NODE//' | sed 's/READINESS GATES//' >> $TEMPDIR/.kviya/work/podMon.out
+        if [ "$ARGPODEVENTS" == 'true' ]; then 
+            function printPods {
+                grep "$pod" $TEMPDIR/.kviya/work/notready.out >> $TEMPDIR/.kviya/work/podMon.out
+                if [ $(grep -c "pod/$pod" $TEMPDIR/.kviya/work/podevents.out) -gt 0 ]; then
+                    if [ "$ARGLASTPODEVENT" == 'false' ]; then
+                        grep "pod/$pod" $TEMPDIR/.kviya/work/podevents.out | awk '{if ($6 ~ /kubelet/) print $1,$2,$3,$7; else print $1,$2,$3,$5'} OFS="\t" FS="[[:space:]][[:space:]]+" | sed -e 's/^/  /' >> $TEMPDIR/.kviya/work/podMon.out
+                    else
+                        grep "pod/$pod" $TEMPDIR/.kviya/work/podevents.out | tail -1 | awk '{if ($6 ~ /kubelet/) print $1,$2,$3,$7; else print $1,$2,$3,$5'} OFS="\t" FS="[[:space:]][[:space:]]+" | sed -e 's/^/  /' >> $TEMPDIR/.kviya/work/podMon.out
+                    fi
+                    echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                fi
+            }
+            if [ "$ARGPLAYBACK" == 'false' ]; then 
+                $KUBECTLCMD get events > $TEMPDIR/.kviya/work/podevents.out 2> /dev/null
+            fi
+            
+            if [ $PENDING -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                for pod in $(grep "Pending" $TEMPDIR/.kviya/work/notready.out | awk '{print $1}'); do printPods; done
+            fi
+            if [ $CONSUL -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                for pod in $(grep "sas-consul" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" | awk '{print $1}'); do printPods; done
+            fi
+            if [ $POSTGRES -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                for pod in $(grep "sas-crunchy\|sas-data-server-operator" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" | awk '{print $1}'); do printPods; done
+            fi
+            if [ $RABBIT -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                for pod in $(grep "sas-rabbitmq" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" | awk '{print $1}'); do printPods; done
+            fi
+            if [ $CACHE -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                for pod in $(grep "sas-cache\|sas-redis" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" | awk '{print $1}'); do printPods; done
+            fi
+            if [ $CAS -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                for pod in $(grep "sas-cas-" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" | awk '{print $1}'); do printPods; done
+            fi
+            if [ $LOGON -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                for pod in $(grep "sas-logon-app" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" | awk '{print $1}'); do printPods; done
+            fi
+            if [ $CONFIG -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                for pod in $(grep "sas-configuration" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" | awk '{print $1}'); do printPods; done
+            fi
+            if [ $OTHER -gt 0 ] || [ $ARGREADYPODS == 'true' ] || [ ! -z "${ARGPODGREP}" ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                for pod in $(grep -v "Pending\|sas-consul\|sas-crunchy\|sas-data-server-operator\|sas-rabbitmq\|sas-cache\|sas-redis\|sas-cas-\|sas-logon-app\|sas-configuration" $TEMPDIR/.kviya/work/notready.out | awk '{print $1}'); do printPods; done
+            fi
+        else
+            if [ $PENDING -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                grep "Pending" $TEMPDIR/.kviya/work/notready.out >> $TEMPDIR/.kviya/work/podMon.out
+            fi
+            if [ $CONSUL -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                grep "sas-consul" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
+            fi
+            if [ $POSTGRES -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                grep "sas-crunchy\|sas-data-server-operator" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
+            fi
+            if [ $RABBIT -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                grep "sas-rabbitmq" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
+            fi
+            if [ $CACHE -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                grep "sas-cache\|sas-redis" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
+            fi
+            if [ $CAS -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                grep "sas-cas-" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
+            fi
+            if [ $LOGON -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                grep "sas-logon-app" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
+            fi
+            if [ $CONFIG -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                grep "sas-configuration" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
+            fi
+            if [ $OTHER -gt 0 ] || [ $ARGREADYPODS == 'true' ] || [ ! -z "${ARGPODGREP}" ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                grep -v "Pending\|sas-consul\|sas-crunchy\|sas-data-server-operator\|sas-rabbitmq\|sas-cache\|sas-redis\|sas-cas-\|sas-logon-app\|sas-configuration" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
+            fi
+        fi
+    fi
+}
+# end kviya functions
+function kviyaReport {
+    # kviya variables
+    ARGPLAYBACK='true'
+    ARGNODEEVENTS='false'
+    ARGPODEVENTS='false'
+    ARGLASTPODEVENT='false'
+    ARGREADYPODS='true'
+    ARGPODGREP=''
+
+    namespace=$1
+    mkdir -p $TEMPDIR/.kviya/work $TEMPDIR/reports
+    cp -r $TEMPDIR/kubernetes/$namespace/.kviya/$(ls $TEMPDIR/kubernetes/$namespace/.kviya | grep -Ei '[0-9]{4}D[0-9]{2}D[0-9]{2}_[0-9]{2}T[0-9]{2}T[0-9]{2}$')/* $TEMPDIR/.kviya/work
+    nodeMon; podMon
+    cat $TEMPDIR/.kviya/work/nodeMon.out $TEMPDIR/.kviya/work/podMon.out > $TEMPDIR/reports/kviya-report_$namespace.txt
+    rm -rf $TEMPDIR/.kviya/work
+}
+function getNamespaceData() {
+    for namespace in $@; do
+        isViyaNs='false'
         if [ ! -d $TEMPDIR/kubernetes/$namespace ]; then
             echo "  - Collecting information from the '$namespace' namespace" | tee -a $logfile
             mkdir -p $TEMPDIR/kubernetes/$namespace
             mkdir $TEMPDIR/kubernetes/$namespace/get $TEMPDIR/kubernetes/$namespace/describe $TEMPDIR/kubernetes/$namespace/top
 
             # If this namespace contains a Viya deployment
-            if [ $($KUBECTLCMD get cm -n $namespace 2>> $logfile | grep -c sas-deployment-metadata) -gt 0 ]; then
+            if [ $($KUBECTLCMD get cm -n $namespace 2>> $logfile | grep -c sas-deployment-metadata) -gt 0 ]; then isViyaNs='true'; fi
+            if [[ $isViyaNs == 'true' ]]; then
                 # If using Cert-Manager
                 if [[ "$($KUBECTLCMD -n $namespace get $($KUBECTLCMD -n $namespace get cm -o name 2>> $logfile| grep sas-certframe-user-config | tail -1) -o=jsonpath='{.data.SAS_CERTIFICATE_GENERATOR}' 2>> $logfile)" == 'cert-manager' && "${#certmgrns[@]}" -eq 0 ]]; then 
                     echo "WARNING: cert-manager configured to be used by Viya in namespace $namespace, but a cert-manager instance wasn't found in the kubernetes cluster." | tee -a $logfile
@@ -620,6 +875,10 @@ function getNamespaceData {
             cp $TEMPDIR/kubernetes/$namespace/get/events.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podevents.out 2>> $logfile
             cp $TEMPDIR/kubernetes/clusterwide/top/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodesTop.out 2>> $logfile
             cp $TEMPDIR/kubernetes/$namespace/top/pods.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podsTop.out 2>> $logfile
+            if [[ $isViyaNs == 'true' ]]; then
+                # Generate kviya report
+                kviyaReport $namespace
+            fi
             tar -czf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime.tgz --directory=$TEMPDIR/kubernetes/$namespace/.kviya $saveTime 2>> $logfile
             rm -rf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime 2>> $logfile
 
@@ -726,7 +985,7 @@ if [ ${#sasoperatorns[@]} -gt 0 ]; then
         cat $TEMPDIR/versions/$SASOPERATOR_NS\_sas-deployment-operator-version.txt >> $logfile
         echo '' >> $logfile
     done
-    docker image ls 2>> $logfile | grep $(docker image ls 2>> $logfile | grep '^sas-orchestration' | awk '{print $3}') > $TEMPDIR/versions/sas-orchestration-docker-image-version.txt
+    docker image ls 2>> $logfile | grep $(docker image ls 2>> $logfile | grep '^sas-orchestration' | awk '{print $3}') > $TEMPDIR/versions/sas-orchestration-docker-image-version.txt 2>> $logfile
     cat $TEMPDIR/versions/sas-orchestration-docker-image-version.txt >> $logfile
 fi
 
@@ -788,7 +1047,7 @@ else
 fi
 
 # Collect information from selected namespaces
-getNamespaceData
+getNamespaceData ${namespaces[@]}
 
 # Collect deployment assets
 if [ $DEPLOYPATH != 'unavailable' ]; then
