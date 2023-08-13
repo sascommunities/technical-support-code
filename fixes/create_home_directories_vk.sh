@@ -237,13 +237,24 @@ for user in "${users[@]}"
             # If the directory DOES exist and --setown option is set, then set the ownership with chown command.
             elif [ -d "${directory}/${user}" ] && [ "$setown" = "1" ]
                 then
-                # Check if the ownership change needs to happen.
-                if [ "$(stat --format="%u" "${directory}/${user}")" != "${uid}" ] || [ "$(stat --format="%g" "${directory}/${user}")" != "${gid}" ]
+                # Determine the current UID and GID of the user directory.
+                olduid="$(stat --format="%u" "${directory}/${user}")"
+                oldgid="$(stat --format="%g" "${directory}/${user}")"
+
+                # Check if the ownership change needs to happen by comparing these to the values from the identities service.
+                if [ "$olduid" != "${uid}" ] || [ "$oldgid" != "${gid}" ]
                     then
                     echo "NOTE: Setting ownership of ${directory}/${user} to ${uid}:${gid}"
+
+                    # Attempt to change the ownership of the user directory.
                     if chown "${uid}:${gid}" "${directory}/${user}"
                         then
-                        echo "NOTE: Ownership set successfully."
+                            # If successful, attempt the change the ownership of any objects within that folder as well.
+                            echo "NOTE: Ownership set successfully for directory ${directory}/${user}. Recursing through the directory for child objects owned by the previous uid/gid of the directory."
+                            # If any objects have a user owner that was the old uid owner of the directory. Change it's owner to the new uid.
+                            chown -hR --from="${olduid}" "${uid}" "${directory}/${user}"
+                            # If any objects have a group owner that was the old gid owner of the directory. Change it's group owner to the new gid.
+                            chown -hR --from=":${oldgid}" ":${gid}" "${directory}/${user}"
                         else
                         echo "ERROR: Failed to set permission on directory using chown. Are we running as root? Exiting."
                         exit 1
