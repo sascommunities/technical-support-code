@@ -252,9 +252,9 @@ for user in "${users[@]}"
                             # If successful, attempt the change the ownership of any objects within that folder as well.
                             echo "NOTE: Ownership set successfully for directory ${directory}/${user}. Recursing through the directory for child objects owned by the previous uid/gid of the directory."
                             # If any objects have a user owner that was the old uid owner of the directory. Change it's owner to the new uid.
-                            chown -hR --from="${olduid}" "${uid}" "${directory}/${user}"
+                            chown -hR --from="${olduid}" "${uid}" "${directory}/${user}" || echo "WARN: Recursive chown for uid exited with a non-zero code, you may need to run this command again manually: chown -hR --from=\"${olduid}\" \"${uid}\" \"${directory}/${user}\""
                             # If any objects have a group owner that was the old gid owner of the directory. Change it's group owner to the new gid.
-                            chown -hR --from=":${oldgid}" ":${gid}" "${directory}/${user}"
+                            chown -hR --from=":${oldgid}" ":${gid}" "${directory}/${user}" || echo "WARN: Recursive chown for gid exited with a non-zero code, you may need to run this command again manually: chown -hR --from=\":${oldgid}\" \":${gid}\" \"${directory}/${user}\""
                         else
                         echo "ERROR: Failed to set permission on directory using chown. Are we running as root? Exiting."
                         exit 1
