@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='get-k8s-info v1.1.12'
+version='get-k8s-info v1.1.14'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -27,14 +27,19 @@ version='get-k8s-info v1.1.12'
 # If you do not have an existing agreement with SAS governing the Software, you may not use the Code.
 
 # Initialize log file
-touch /tmp/get-k8s-info.log
-if [[ $? -ne 0 ]]; then 
-    echo "ERROR: Unable to write log file '/tmp/get-k8s-info.log'"
-    cleanUp 0
+touch $(pwd)/get-k8s-info.log
+if [[ $? -ne 0 ]]; then
+    touch /tmp/get-k8s-info.log
+    if [[ $? -ne 0 ]]; then
+        echo "ERROR: Unable to create log file in '$(pwd)' or '/tmp'."
+        cleanUp 0
+    else
+        logfile=/tmp/get-k8s-info.log
+    fi
 else
-    logfile='/tmp/get-k8s-info.log'
-    echo -e "$version\n$(date -u)\n$(bash --version | head -1)\n$(uname -a)\nCommand: ${0} ${@}\n" > $logfile
+    logfile="$(pwd)/get-k8s-info.log"
 fi
+echo -e "$version\n$(date)\n$(bash --version | head -1)\n$(uname -a)\nCommand: ${0} ${@}\n" > $logfile
 
 script=$(echo $0 | rev | cut -d '/' -f1 | rev)
 function usage {
@@ -48,7 +53,7 @@ function usage {
     echo "  -p|--deploypath  (Optional) Path of the viya \$deploy directory"
     echo "  -o|--out         (Optional) Path where the .tgz file will be created"
     echo "  -l|--logs        (Optional) Capture logs from pods using a comma separated list of label selectors"
-    echo "  -d|--debugtags   (Optional) Enable specific debug tags. Available values are: 'cas', 'config' and 'postgres'"
+    echo "  -d|--debugtags   (Optional) Enable specific debug tags. Available values are: 'cas', 'config', 'postgres' and 'rabbitmq'"
     echo "  -i|--tfvars      (Optional) Path of the terraform.tfvars file"
     echo "  -a|--ansiblevars (Optional) Path of the ansible-vars.yaml file"
     echo "  -s|--sastsdrive  (Optional) Send the .tgz file to SASTSDrive through sftp."
@@ -78,7 +83,7 @@ function cleanUp() {
     if [ -f $logfile ]; then 
         if [[ $1 -eq 1 || -z $1 ]]; then 
             if [[ -z $1 ]]; then echo -e "\nFATAL: The script was terminated unexpectedly." | tee -a $logfile; fi
-            echo -e "\nScript log saved at: /tmp/get-k8s-info.log"
+            echo -e "\nScript log saved at: $logfile"
         else rm -f $logfile; fi
     fi
     rm -rf $TEMPDIR $updatedScript
@@ -96,7 +101,7 @@ if [[ ! -z $latestVersion ]]; then
             updatedScript=$(mktemp)
             curl -s -o $updatedScript https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/get-k8s-info-vk/get-k8s-info.sh >> $logfile 2>&1
             scriptPath=$(dirname $(realpath -s $0))
-            if cp $updatedScript $scriptPath/$script > /dev/null 2>> $logfile; then echo -e "INFO: Script updated successfully. Restarting...\n" | tee -a $logfile;$scriptPath/$script ${@};cleanUp $?;else echo -e "ERROR: Script update failed!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile;cleanUp 1;fi
+            if cp $updatedScript $scriptPath/$script > /dev/null 2>> $logfile; then echo -e "INFO: Script updated successfully. Restarting...\n";rm $updatedScript;$scriptPath/$script ${@};exit $?;else echo -e "ERROR: Script update failed!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile;cleanUp 1;fi
         fi
     fi
 fi
@@ -117,6 +122,7 @@ else isOpenShift='false';fi
 
 # Initialize Variables
 POSTGRES=false
+RABBITMQ=false
 CAS=false
 CONFIG=false
 SASTSDRIVE=false
@@ -145,8 +151,9 @@ while [[ $# -gt 0 ]]; do
     -d|--debugtag|--debugtags)
       TAGS=$(echo "$2" | tr '[:upper:]' '[:lower:]')
       if [[ $TAGS =~ 'postgres' ]]; then POSTGRES=true;fi
+      if [[ $TAGS =~ 'rabbitmq' ]]; then RABBITMQ=true;fi
       if [[ $TAGS =~ 'cas' ]]; then CAS=true;fi
-      if [[ $TAGS =~ 'config' ]]; then CONFIG=true;fi
+      if [[ $TAGS =~ 'config' || $TAGS =~ 'consul' ]]; then CONFIG=true;fi
       shift # past argument
       shift # past value
       ;;
@@ -372,7 +379,7 @@ function removeSensitiveData {
         else
             while IFS="" read -r p || [ -n "$p" ]
             do
-                if [ ${file##*/} == 'consul-kvs.txt' ]; then
+                if [ ${file##*/} == 'sas-consul-server_sas-bootstrap-config_kv_read.txt' ]; then
                     # New key
                     if [[ "${p}" =~ 'config/' ]]; then
                         isSensitive='false'
@@ -690,12 +697,11 @@ function getNamespaceData() {
         isViyaNs='false'
         if [ ! -d $TEMPDIR/kubernetes/$namespace ]; then
             echo "  - Collecting information from the '$namespace' namespace" | tee -a $logfile
-            mkdir -p $TEMPDIR/kubernetes/$namespace
-            mkdir $TEMPDIR/kubernetes/$namespace/get $TEMPDIR/kubernetes/$namespace/describe $TEMPDIR/kubernetes/$namespace/top
+            mkdir -p $TEMPDIR/kubernetes/$namespace/get $TEMPDIR/kubernetes/$namespace/describe
 
             # If this namespace contains a Viya deployment
-            if [ $($KUBECTLCMD get cm -n $namespace 2>> $logfile | grep -c sas-deployment-metadata) -gt 0 ]; then isViyaNs='true'; fi
-            if [[ $isViyaNs == 'true' ]]; then
+            if [ $($KUBECTLCMD get cm -n $namespace 2>> $logfile | grep -c sas-deployment-metadata) -gt 0 ]; then
+                isViyaNs='true'
                 # If using Cert-Manager
                 if [[ "$($KUBECTLCMD -n $namespace get $($KUBECTLCMD -n $namespace get cm -o name 2>> $logfile| grep sas-certframe-user-config | tail -1) -o=jsonpath='{.data.SAS_CERTIFICATE_GENERATOR}' 2>> $logfile)" == 'cert-manager' && "${#certmgrns[@]}" -eq 0 ]]; then 
                     echo "WARNING: cert-manager configured to be used by Viya in namespace $namespace, but a cert-manager instance wasn't found in the kubernetes cluster." | tee -a $logfile
@@ -724,9 +730,10 @@ function getNamespaceData() {
                 fi
                 # Level 2: Pods that should wait for Consul, Arke, and Postgres
                 if [[ $notreadylist =~ 'sas-logon-app' || $notreadylist =~ 'sas-identities' || $notreadylist =~ 'sas-configuration' || $notreadylist =~ 'sas-authorization' ]]; then 
-                    echo "INFO: Including logs from sas-consul-server and sas-arke pods and enabling 'postgres' debugtag, because there are dependent pods not ready..." | tee -a $logfile
-                    addLabelSelector 'sas-consul-server sas-arke'
+                    echo "INFO: Including logs from sas-consul-server and sas-arke pods and also enabling 'postgres' and 'rabbitmq' debugtags, because there are dependent pods not ready..." | tee -a $logfile
+                    addLabelSelector 'sas-consul-server'
                     POSTGRES=true
+                    RABBITMQ=true
                 fi
                 # Level 3: Pods that should wait for SAS Logon
                 if [[ $notreadylist =~ 'sas-app-registry' || $notreadylist =~ 'sas-types' || $notreadylist =~ 'sas-transformations' || $notreadylist =~ 'sas-relationships' || \
@@ -741,32 +748,39 @@ function getNamespaceData() {
                     echo "INFO: Including logs from sas-logon-app pod, because there are dependent pods not ready..." | tee -a $logfile
                     addLabelSelector 'sas-logon-app'
                 fi
-
+                # cas debugtag
                 if [[ "$CAS" = true || $notreadylist =~ 'sas-cas-' ]]; then
                     echo "    - Getting cas information" | tee -a $logfile
                     addLabelSelector "sas-cas-control" "sas-cas-operator" "app.kubernetes.io/name=sas-cas-server"
                 fi
+                # config debugtag
                 if [[ "$CONFIG" = true ]]; then
-                    echo "    - Dumping consul config" | tee -a $logfile
-                    $KUBECTLCMD -n $namespace exec -it sas-rabbitmq-server-0 -c sas-rabbitmq-server -- /opt/sas/viya/home/bin/sas-bootstrap-config kv read --prefix 'config/' --recurse > $TEMPDIR/kubernetes/$namespace/consul-kvs.txt 2>> $logfile
-                    if [ $? -ne 0 ]; then $KUBECTLCMD -n $namespace exec -it sas-rabbitmq-server-1 -c sas-rabbitmq-server -- /opt/sas/viya/home/bin/sas-bootstrap-config kv read --prefix 'config/' --recurse > $TEMPDIR/kubernetes/$namespace/consul-kvs.txt 2>> $logfile
-                        if [ $? -ne 0 ]; then $KUBECTLCMD -n $namespace exec -it sas-rabbitmq-server-2 -c sas-rabbitmq-server -- /opt/sas/viya/home/bin/sas-bootstrap-config kv read --prefix 'config/' --recurse > $TEMPDIR/kubernetes/$namespace/consul-kvs.txt 2>> $logfile; fi
-                    fi
-                    removeSensitiveData $TEMPDIR/kubernetes/$namespace/consul-kvs.txt
+                    echo "    - Running sas-bootstrap-config kv read" | tee -a $logfile
+                    for consulPod in $($KUBECTLCMD -n $namespace get pod -l 'app=sas-consul-server' --no-headers 2>> $logfile | awk '{print $1}'); do
+                        mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$consulPod
+                        $KUBECTLCMD -n $namespace exec -it $consulPod -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=https://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read --prefix 'config/' --recurse" > $TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_sas-bootstrap-config_kv_read.txt 2>> $logfile
+                        if [ $? -eq 0 ]; then 
+                            removeSensitiveData $TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_sas-bootstrap-config_kv_read.txt
+                            break
+                        fi
+                    done
                 fi
+                # postgres debugtag
                 crunchynotreadylist=$($KUBECTLCMD -n $namespace get pod 2>> $logfile | grep 'sas-crunchy' | grep -v '1/1\|2/2\|3/3\|4/4\|5/5\|6/6\|7/7\|8/8\|9/9' | awk '{print $1"\\|"}' | grep -v "$($KUBECTLCMD -n $namespace get pod -l 'job-name' --no-headers 2>> $logfile | awk '{print $1}')" | cut -d '\' -f1 | tr '\n' ' ')
                 if [[ "$POSTGRES" = true || $notreadylist =~ 'sas-data-server-operator' || ! -z $crunchynotreadylist ]]; then
-                    mkdir -p $TEMPDIR/kubernetes/$namespace/postgres
                     echo "    - Getting postgres information" | tee -a $logfile
-                    addLabelSelector "sas-data-server-operator"
-                    if [ $($KUBECTLCMD get crd pgclusters.webinfdsvr.sas.com > /dev/null 2>&1;echo $?) -eq 0 ]; then
+                    if [ $($KUBECTLCMD get crd pgclusters > /dev/null 2>&1;echo $?) -eq 0 ]; then
                         #Crunchy4 commands
-                        for pgcluster in $($KUBECTLCMD -n $namespace get pgclusters.webinfdsvr.sas.com --no-headers 2>> $logfile | awk '{print $1}'); do
-                            $KUBECTLCMD -n $namespace get pgclusters.webinfdsvr.sas.com $pgcluster -o yaml > $TEMPDIR/kubernetes/$namespace/postgres/$pgcluster-crunchy4-pgcluster.yaml 2>> $logfile
+                        for pgcluster in $($KUBECTLCMD -n $namespace get pgclusters --no-headers 2>> $logfile | awk '{print $1}'); do
+                            mkdir -p $TEMPDIR/kubernetes/$namespace/yaml/pgclusters
+                            $KUBECTLCMD -n $namespace get pgclusters $pgcluster -o yaml > $TEMPDIR/kubernetes/$namespace/yaml/pgclusters/$pgcluster.yaml 2>> $logfile
                             if [[ $pgcluster =~ 'crunchy' ]]; then 
-                                $KUBECTLCMD -n $namespace get configmap $pgcluster-pgha-config -o yaml > $TEMPDIR/kubernetes/$namespace/postgres/$pgcluster-crunchy4-pgha-config.yaml 2>> $logfile
-                                MASTER=$($KUBECTLCMD -n $namespace get pod -l "crunchy-pgha-scope=$pgcluster,role=master" 2>> $logfile | grep crunchy | awk '{print $1}' | tr '\n' ' ')
-                                $KUBECTLCMD -n $namespace exec -it $MASTER -c database -- patronictl list > $TEMPDIR/kubernetes/$namespace/postgres/$pgcluster-crunchy4-patronictl.log 2>> $logfile
+                                mkdir -p $TEMPDIR/kubernetes/$namespace/yaml/configmaps
+                                $KUBECTLCMD -n $namespace get configmap $pgcluster-pgha-config -o yaml > $TEMPDIR/kubernetes/$namespace/yaml/configmaps/$pgcluster-pgha-config.yaml 2>> $logfile
+                                for crunchyPod in $($KUBECTLCMD -n $namespace get pod -l "crunchy-pgha-scope=$pgcluster,role" --no-headers 2>> $logfile | awk '{print $1}'); do
+                                    mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$crunchyPod
+                                    $KUBECTLCMD -n $namespace exec -it $crunchyPod -c database -- patronictl list > $TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_list.txt 2>> $logfile
+                                done
                                 addLabelSelector "vendor=crunchydata"
                             fi
                         done
@@ -774,17 +788,29 @@ function getNamespaceData() {
                     if [ $($KUBECTLCMD get crd postgresclusters.postgres-operator.crunchydata.com > /dev/null 2>&1;echo $?) -eq 0 ]; then
                         #Crunchy5 commands
                         for pgcluster in $($KUBECTLCMD -n $namespace get postgresclusters.postgres-operator.crunchydata.com --no-headers 2>> $logfile | awk '{print $1}'); do
-                            $KUBECTLCMD -n $namespace get postgresclusters.postgres-operator.crunchydata.com $pgcluster -o yaml > $TEMPDIR/kubernetes/$namespace/postgres/$pgcluster-crunchy5-pgcluster.yaml 2>> $logfile
-                            if [[ $pgcluster =~ 'crunchy' ]]; then 
-                                $KUBECTLCMD -n $namespace describe cm -l 'postgres-operator.crunchydata.com/cluster=sas-crunchy-platform-postgres' > $TEMPDIR/kubernetes/$namespace/postgres/$pgcluster-crunchy5-configmaps.txt 2>> $logfile
-                                MASTER=$($KUBECTLCMD -n $namespace get pod -l "postgres-operator.crunchydata.com/role=master,postgres-operator.crunchydata.com/cluster=$pgcluster" 2>> $logfile | grep crunchy | awk '{print $1}' | tr '\n' ' ')
-                                $KUBECTLCMD -n $namespace exec -it $MASTER -c database -- patronictl list > $TEMPDIR/kubernetes/$namespace/postgres/$pgcluster-crunchy5-patronictl.log 2>> $logfile
+                            mkdir -p $TEMPDIR/kubernetes/$namespace/yaml/postgresclusters
+                            $KUBECTLCMD -n $namespace get postgresclusters.postgres-operator.crunchydata.com $pgcluster -o yaml > $TEMPDIR/kubernetes/$namespace/yaml/postgresclusters/$pgcluster.yaml 2>> $logfile
+                            if [[ $pgcluster =~ 'crunchy' ]]; then
+                                for crunchyPod in $($KUBECTLCMD -n $namespace get pod -l "postgres-operator.crunchydata.com/role,postgres-operator.crunchydata.com/cluster=$pgcluster" --no-headers 2>> $logfile | awk '{print $1}'); do
+                                    mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$crunchyPod
+                                    $KUBECTLCMD -n $namespace exec -it $crunchyPod -c database -- patronictl list > $TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_list.txt 2>> $logfile
+                                done
                                 addLabelSelector "postgres-operator.crunchydata.com/cluster=$pgcluster"
                                 crunchypods=$($KUBECTLCMD -n $namespace get pod 2>> $logfile | grep crunchy | awk '{print $1}' | tr '\n' ' ')
                                 addPod $crunchypods
                             fi
                         done
                     fi
+                    addLabelSelector "sas-data-server-operator"
+                fi
+                # rabbitmq debugtag
+                if [[ "$RABBITMQ" = true || $notreadylist =~ 'sas-rabbitmq-server' || $notreadylist =~ 'sas-arke' ]]; then
+                    echo "    - Getting rabbitmq information" | tee -a $logfile
+                    addLabelSelector 'sas-rabbitmq-server sas-arke'
+                    for rabbitmqPod in $($KUBECTLCMD -n $namespace get pod -l 'app=sas-rabbitmq-server' --no-headers 2>> $logfile | awk '{print $1}'); do
+                        mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod
+                        $KUBECTLCMD -n $namespace exec -it $rabbitmqPod -c sas-rabbitmq-server 2>> $logfile -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl report' > $TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_report.txt 2>> $logfile
+                    done
                 fi
             else
                 # Not Viya Namespace
@@ -793,7 +819,7 @@ function getNamespaceData() {
             # Collect logs
             if [ ! -z "$podList" ]; then
                 echo "    - kubectl logs" | tee -a $logfile
-                mkdir $TEMPDIR/kubernetes/$namespace/logs
+                mkdir -p $TEMPDIR/kubernetes/$namespace/logs
                 for pod in ${podList[@]}; do 
                     if [ $(find $TEMPDIR/kubernetes/$namespace/logs -maxdepth 1 -name $pod* | wc -l) -eq 0 ]; then
                         echo "      - $pod" | tee -a $logfile
@@ -861,22 +887,26 @@ function getNamespaceData() {
             # kubectl top pods
             echo "    - kubectl top pod" | tee -a $logfile
             if [[ $isOpenShift == 'false' ]]; then
+                mkdir -p $TEMPDIR/kubernetes/$namespace/top
                 $KUBECTLCMD -n $namespace top pod > $TEMPDIR/kubernetes/$namespace/top/pods.txt 2>> $logfile
-            else
-                touch $TEMPDIR/kubernetes/$namespace/top/pods.txt
             fi
             # Collect 'kviya' compatible playback file (https://gitlab.sas.com/sbralg/tools-and-scripts/-/blob/main/kviya)
             echo "    - Building kviya playback file" | tee -a $logfile
-            saveTime=$(date -u +"%YD%mD%d_%HT%MT%S")
+            saveTime=$(date +"%YD%mD%d_%HT%MT%S")
             mkdir -p $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime
             cp $TEMPDIR/kubernetes/clusterwide/get/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/getnodes.out 2>> $logfile
             cp $TEMPDIR/kubernetes/clusterwide/describe/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodes-describe.out 2>> $logfile
             cp $TEMPDIR/kubernetes/$namespace/get/pods.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/getpod.out 2>> $logfile
             cp $TEMPDIR/kubernetes/$namespace/get/events.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podevents.out 2>> $logfile
-            cp $TEMPDIR/kubernetes/clusterwide/top/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodesTop.out 2>> $logfile
-            cp $TEMPDIR/kubernetes/$namespace/top/pods.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podsTop.out 2>> $logfile
+            if [[ $isOpenShift == 'false' ]]; then
+                cp $TEMPDIR/kubernetes/clusterwide/top/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodesTop.out 2>> $logfile
+                cp $TEMPDIR/kubernetes/$namespace/top/pods.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podsTop.out 2>> $logfile
+            else
+                touch $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodesTop.out $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podsTop.out
+            fi
             if [[ $isViyaNs == 'true' ]]; then
                 # Generate kviya report
+                echo "      - Generating kviya report" | tee -a $logfile
                 kviyaReport $namespace
             fi
             tar -czf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime.tgz --directory=$TEMPDIR/kubernetes/$namespace/.kviya $saveTime 2>> $logfile
@@ -1039,11 +1069,9 @@ done
 
 # kubectl top nodes
 echo "    - kubectl top nodes" | tee -a $logfile
-mkdir -p $TEMPDIR/kubernetes/clusterwide/top
 if [[ $isOpenShift == 'false' ]]; then
+    mkdir -p $TEMPDIR/kubernetes/clusterwide/top
     $KUBECTLCMD top node > $TEMPDIR/kubernetes/clusterwide/top/nodes.txt 2>> $logfile
-else
-    touch $TEMPDIR/kubernetes/clusterwide/top/nodes.txt
 fi
 
 # Collect information from selected namespaces
