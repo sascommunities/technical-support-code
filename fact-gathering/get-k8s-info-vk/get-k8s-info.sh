@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='get-k8s-info v1.1.14'
+version='get-k8s-info v1.2.00'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -27,9 +27,9 @@ version='get-k8s-info v1.1.14'
 # If you do not have an existing agreement with SAS governing the Software, you may not use the Code.
 
 # Initialize log file
-touch $(pwd)/get-k8s-info.log
+touch $(pwd)/get-k8s-info.log > /dev/null 2>&1
 if [[ $? -ne 0 ]]; then
-    touch /tmp/get-k8s-info.log
+    touch /tmp/get-k8s-info.log > /dev/null 2>&1
     if [[ $? -ne 0 ]]; then
         echo "ERROR: Unable to create log file in '$(pwd)' or '/tmp'."
         cleanUp 0
@@ -48,7 +48,7 @@ function usage {
     echo;
     echo "Capture information from a Viya 4 deployment."
     echo;
-    echo "  -t|--track       (Optional) SAS Tech Support track number"
+    echo "  -c|--case        (Optional) SAS Tech Support case number"
     echo "  -n|--namespaces  (Optional) Comma separated list of namespaces"
     echo "  -p|--deploypath  (Optional) Path of the viya \$deploy directory"
     echo "  -o|--out         (Optional) Path where the .tgz file will be created"
@@ -57,7 +57,7 @@ function usage {
     echo "  -i|--tfvars      (Optional) Path of the terraform.tfvars file"
     echo "  -a|--ansiblevars (Optional) Path of the ansible-vars.yaml file"
     echo "  -s|--sastsdrive  (Optional) Send the .tgz file to SASTSDrive through sftp."
-    echo "                             Only use this option after you were authorized by Tech Support to send files to SASTSDrive for the track."
+    echo "                              Only use this option after you were authorized by Tech Support to send files to SASTSDrive for the case."
     echo;
     echo "Examples:"
     echo;
@@ -65,12 +65,12 @@ function usage {
     echo "  $ $script"
     echo;
     echo "You can also specify all options in the command line"
-    echo "  $ $script --track 7613123123 --namespace viya-prod --deploypath /home/user/viyadeployment --out /tmp"
+    echo "  $ $script --case CS0001234 --namespace viya-prod --deploypath /home/user/viyadeployment --out /tmp"
     echo;
     echo "Use the '--logs' and '--debugtags' options to collect logs and information from specific components"
     echo "  $ $script --logs 'sas-microanalytic-score,type=esp,workload.sas.com/class=stateful,job-name=' --debugtags 'postgres,cas'"
     echo;
-    echo "                                 By: Alexandre Gomes - February 28th 2023"
+    echo "                                 By: Alexandre Gomes - August 31st 2023"
     echo "https://gitlab.sas.com/sbralg/tools-and-scripts/-/blob/main/get-k8s-info"
 }
 function version {
@@ -138,8 +138,8 @@ while [[ $# -gt 0 ]]; do
       version
       cleanUp 0
       ;;
-    -t|--track)
-      TRACKNUMBER="$2"
+    -c|--case|-t|--track)
+      CASENUMBER="$2"
       shift # past argument
       shift # past value
       ;;
@@ -203,18 +203,18 @@ done
 
 set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
 
-# Check TRACKNUMBER
-if [ -z $TRACKNUMBER ]; then 
+# Check CASENUMBER
+if [ -z $CASENUMBER ]; then 
     if [ $SASTSDRIVE == 'true' ]; then
-        read -p " -> SAS Tech Support track number (required): " TRACKNUMBER
+        read -p " -> SAS Tech Support case number (required): " CASENUMBER
     else
-        read -p " -> SAS Tech Support track number (leave blank if not known): " TRACKNUMBER
-        if [ -z $TRACKNUMBER ]; then TRACKNUMBER=7600000000; fi
+        read -p " -> SAS Tech Support case number (leave blank if not known): " CASENUMBER
+        if [ -z $CASENUMBER ]; then CASENUMBER=CS0000000; fi
     fi
 fi
-echo TRACKNUMBER: $TRACKNUMBER >> $logfile
-if ! grep -E '^[0-9]{10}$' > /dev/null 2>> $logfile <<< $TRACKNUMBER; then
-    echo "ERROR: Invalid 10-digit track number" | tee -a $logfile
+echo CASENUMBER: $CASENUMBER >> $logfile
+if ! grep -E '^CS[0-9]{7}$' > /dev/null 2>> $logfile <<< $CASENUMBER; then
+    echo "ERROR: Invalid case number. Expected format: CS1234567" | tee -a $logfile
     cleanUp 1
 fi
 # Check if an IaC Github Project was used
@@ -264,9 +264,9 @@ if [ ! -d $OUTPATH ]; then
     echo "ERROR: Output path '$OUTPATH' doesn't exist" | tee -a $logfile
     cleanUp 1
 else
-    touch $OUTPATH/T${TRACKNUMBER}.tgz 2>> $logfile
+    touch $OUTPATH/${CASENUMBER}.tgz 2>> $logfile
     if [ $? -ne 0 ]; then
-        echo "ERROR: Unable to write output file '$OUTPATH/T${TRACKNUMBER}.tgz'." | tee -a $logfile
+        echo "ERROR: Unable to write output file '$OUTPATH/${CASENUMBER}.tgz'." | tee -a $logfile
         cleanUp 1
     fi
 fi
@@ -274,7 +274,11 @@ fi
 namespaces=('kube-system')
 # Look for Viya namespaces
 echo 'DEBUG: Looking for Viya namespaces' >> $logfile
-viyans=($($KUBECTLCMD get cm --all-namespaces 2>> $logfile | grep sas-deployment-metadata | awk '{print $1}' | sort | uniq))
+viyans=($(echo $($KUBECTLCMD get cm --all-namespaces 2>> $logfile | grep sas-deployment-metadata | awk '{print $1}') $($KUBECTLCMD get sasdeployment --all-namespaces --no-headers 2>> $logfile | awk '{print $1}') | tr ' ' '\n' | sort | uniq ))
+if [[ ! -z $ANSIBLEVARSFILE ]]; then
+    # include dac namespace
+    viyans+=($(grep 'NAMESPACE: ' $ANSIBLEVARSFILE 2>> $logfile | awk '{gsub(/\047|\"/,"");print $2}'))
+fi
 if [ ${#viyans[@]} -gt 0 ]; then echo -e "VIYA_NS: ${viyans[@]}" >> $logfile; fi
 if [ -z $USER_NS ]; then 
     if [ ${#viyans[@]} -gt 0 ]; then
@@ -311,27 +315,33 @@ else
 fi
 
 # Check if the viya4-deployment project was used
-if [ -z $ANSIBLEVARSFILE ]; then 
-    if $KUBECTLCMD get cm -n $USER_NS sas-deployment-buildinfo > /dev/null 2>&1; then 
-        read -p " -> The viya4-deployment project was used to deploy this environment. Specify the path of the "ansible-vars.yaml" file that was used (leave blank if not known): " ANSIBLEVARSFILE
-        ANSIBLEVARSFILE="${ANSIBLEVARSFILE/#\~/$HOME}"
-    fi
+if [ -z $ANSIBLEVARSFILE ]; then
+    for ns in $(echo $USER_NS | tr ',' ' '); do
+        if $KUBECTLCMD get cm -n $ns sas-deployment-buildinfo > /dev/null 2>&1; then 
+            read -p " -> The viya4-deployment project was used to deploy the environment in the $ns namespace. Specify the path of the "ansible-vars.yaml" file that was used (leave blank if not known): " ANSIBLEVARSFILE
+            ANSIBLEVARSFILE="${ANSIBLEVARSFILE/#\~/$HOME}"
+        fi
+        if [ ! -z $ANSIBLEVARSFILE ]; then 
+            ANSIBLEVARSFILE=$(realpath $ANSIBLEVARSFILE 2> /dev/null)
+            if [ -d $ANSIBLEVARSFILE ]; then ANSIBLEVARSFILE="$ANSIBLEVARSFILE/ansible-vars.yaml";fi
+            if [ ! -f $ANSIBLEVARSFILE ]; then 
+                echo "ERROR: File '$ANSIBLEVARSFILE' doesn't exist" | tee -a $logfile
+                cleanUp 1
+            else
+                ANSIBLEVARSFILES+=("$ANSIBLEVARSFILE#$ns")
+            fi
+        fi
+    done
 fi
-if [ ! -z $ANSIBLEVARSFILE ]; then 
-    ANSIBLEVARSFILE=$(realpath $ANSIBLEVARSFILE 2> /dev/null)
-    if [ -d $ANSIBLEVARSFILE ]; then ANSIBLEVARSFILE="$ANSIBLEVARSFILE/ansible-vars.yaml";fi
-    if [ ! -f $ANSIBLEVARSFILE ]; then 
-        echo "ERROR: File '$ANSIBLEVARSFILE' doesn't exist" | tee -a $logfile
-        cleanUp 1
-    fi
-fi
-echo ANSIBLEVARSFILE: $ANSIBLEVARSFILE >> $logfile
+echo ANSIBLEVARSFILES: $ANSIBLEVARSFILES >> $logfile
 
 function addPod {
     for pod in $@; do
-        if [ -z podCount ];then podCount=0;fi
-        podList[$podCount]="$pod"
-        podCount=$[ $podCount + 1 ]
+        if [ -z $podCount ];then podCount=0;fi
+        if [[ ! ${podList[@]} =~ "$pod" ]]; then
+            podList[$podCount]="$pod"
+            podCount=$[ $podCount + 1 ]
+        fi
     done
 }
 function addLabelSelector {
@@ -400,7 +410,7 @@ function removeSensitiveData {
                     else
                         printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
                     fi
-                elif [ ${file##*/} == 'ansible-vars.yaml' ]; then
+                elif [[ ${file##*/} =~ 'ansible-vars.yaml' ]]; then
                     if [[ "${p}" =~ 'SECRET' || "${p}" =~ 'PASSWORD' || "${p}" =~ 'password:' ]]; then
                         printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
                     else
@@ -458,7 +468,13 @@ function nodeMon {
         nodeStatuses[$nodeCount]=$(grep "${nodeNames[$nodeCount]} " $TEMPDIR/.kviya/work/getnodes.out | awk '{print $2}')
         nodeTaints[$nodeCount]=$(grep '  workload.sas.com/class' $file | grep NoSchedule | cut -d '=' -f2 | cut -d ':' -f1)
         nodeLabels[$nodeCount]=$(grep '  workload.sas.com/class' $file | grep -v NoSchedule | cut -d '=' -f2)
-        nodeZone[$nodeCount]=$(grep '  topology.kubernetes.io/zone' $file | cut -d '=' -f2)
+        zone=$(grep '  topology.kubernetes.io/zone' $file | cut -d '=' -f2)
+        region=$(grep '  topology.kubernetes.io/region' $file | cut -d '=' -f2)
+        if [[ $zone =~ $region ]]; then 
+            nodeZone[$nodeCount]=$zone
+        elif [[ ! -z $zone && ! -z $region ]]; then
+            nodeZone[$nodeCount]=$region-$zone
+        fi
         nodeVm[$nodeCount]=$(grep '  node.kubernetes.io/instance-type' $file | cut -d '=' -f2)
         for condition in $(grep 'NetworkUnavailable\|MemoryPressure\|DiskPressure\|PIDPressure\|Unschedulable' $file | grep -i true | awk -F'[:]' '{print $1}' | awk '{print $1}'); do
             if [ ${#nodeConditions[$nodeCount]} = 0 ]; then 
@@ -692,15 +708,77 @@ function kviyaReport {
     cat $TEMPDIR/.kviya/work/nodeMon.out $TEMPDIR/.kviya/work/podMon.out > $TEMPDIR/reports/kviya-report_$namespace.txt
     rm -rf $TEMPDIR/.kviya/work
 }
+function captureCasLogs {
+    namespace=$1
+    casDefaultControllerPod=$2
+    echo "INFO: The sas-cas-server-default-controller from the $namespace namespace has recently started. Capturing logs on the background for up to 2 minutes..." | tee -a $logfile
+    # Wait a few seconds before checking containers and status
+    sleep 10
+    while [[ $logFinished != 'true' ]]; do
+        containerList=($($KUBECTLCMD -n $namespace get pod $casDefaultControllerPod -o=jsonpath='{.spec.initContainers[*].name}' 2>> $logfile) $($KUBECTLCMD -n $namespace get pod $casDefaultControllerPod -o=jsonpath='{.spec.containers[*].name}' 2>> $logfile))
+        if [[ -z $containerList ]]; then
+            echo "WARNING: The $casDefaultControllerPod pod crashed" | tee -a $logfile
+            logFinished='true'
+        else
+            containerStatusList=($($KUBECTLCMD -n $namespace describe pod $casDefaultControllerPod 2>> $logfile | grep State | awk '{print $2}'))
+            for containerIndex in ${!containerList[@]}; do
+                if [[ ${containerStarted[$containerIndex]} -ne 1 && ${containerStatusList[$containerIndex]} != 'Waiting' ]]; then
+                    echo "INFO: Capturing logs from the $casDefaultControllerPod:${containerList[$containerIndex]} container on the background" | tee -a $logfile
+                    stdbuf -i0 -o0 -e0 $KUBECTLCMD logs $casDefaultControllerPod ${containerList[$containerIndex]} -f --tail=-1 > $TEMPDIR/kubernetes/$namespace/logs/$casDefaultControllerPod\_${containerList[$containerIndex]}.log 2>&1 &
+                    logPid[$containerIndex]=$!
+                    containerStarted[$containerIndex]=1
+                fi
+            done
+            if [[ ! ${containerStatusList[@]} =~ 'Waiting' ]]; then
+                logFinished='true'
+                for pid in ${logPid[@]}; do
+                    if [[ -d "/proc/$pid" ]]; then logFinished='false'; fi
+                done
+            fi
+            currentTime=$(date +%s)
+        fi
+    done
+}
+function waitForCas {
+    echo "WARNING: The sas-cas-server-default-controller pod isn't running. Waiting on the background for it to come up..." | tee -a $logfile
+    currentTime=$(date +%s)
+    targetTime=$[ $currentTime + 30 ]
+    namespace=$1
+    casDefaultControllerPod=$2
+    while [[ -z $casDefaultControllerPod && $currentTime -lt $targetTime ]]; do
+        casDefaultControllerPod=$($KUBECTLCMD -n $namespace get pod -l casoperator.sas.com/node-type=controller,casoperator.sas.com/server=default --no-headers 2>> $logfile | awk '{print $1}')
+        currentTime=$(date +%s)
+    done
+    if [[ ! -z $casDefaultControllerPod ]]; then
+        currentTime=$(date +%s)
+        targetTime=$[ $currentTime + 120 ]
+        captureCasLogs $namespace $casDefaultControllerPod &
+        captureCasLogsPid=$!
+        # Wait a few seconds before checking the subprocess directory
+        sleep 5
+        while [[ $currentTime -lt $targetTime && -d "/proc/$captureCasLogsPid" ]]; do
+            sleep 1
+            currentTime=$(date +%s)
+        done
+        echo "INFO: Killing log collector processes that were running on the background" | tee -a $logfile
+        jobs=$(ps -o pid= --ppid $captureCasLogsPid 2> /dev/null)
+        kill $captureCasLogsPid > /dev/null 2>&1
+        wait $captureCasLogsPid 2> /dev/null
+        kill $jobs > /dev/null 2>&1
+    else
+        echo "WARNING: The sas-cas-server-default-controller did not start" | tee -a $logfile
+    fi
+}
 function getNamespaceData() {
     for namespace in $@; do
         isViyaNs='false'
+        casDefaultControllerPod=''
         if [ ! -d $TEMPDIR/kubernetes/$namespace ]; then
             echo "  - Collecting information from the '$namespace' namespace" | tee -a $logfile
             mkdir -p $TEMPDIR/kubernetes/$namespace/get $TEMPDIR/kubernetes/$namespace/describe
 
             # If this namespace contains a Viya deployment
-            if [ $($KUBECTLCMD get cm -n $namespace 2>> $logfile | grep -c sas-deployment-metadata) -gt 0 ]; then
+            if [[ " ${viyans[*]} " =~ " ${namespace} " ]]; then
                 isViyaNs='true'
                 # If using Cert-Manager
                 if [[ "$($KUBECTLCMD -n $namespace get $($KUBECTLCMD -n $namespace get cm -o name 2>> $logfile| grep sas-certframe-user-config | tail -1) -o=jsonpath='{.data.SAS_CERTIFICATE_GENERATOR}' 2>> $logfile)" == 'cert-manager' && "${#certmgrns[@]}" -eq 0 ]]; then 
@@ -749,7 +827,8 @@ function getNamespaceData() {
                     addLabelSelector 'sas-logon-app'
                 fi
                 # cas debugtag
-                if [[ "$CAS" = true || $notreadylist =~ 'sas-cas-' ]]; then
+                casDefaultControllerPod=$($KUBECTLCMD -n $namespace get pod -l casoperator.sas.com/node-type=controller,casoperator.sas.com/server=default --no-headers 2>> $logfile | awk '{print $1}')
+                if [[ "$CAS" = true || $notreadylist =~ 'sas-cas-' || -z $casDefaultControllerPod ]]; then
                     echo "    - Getting cas information" | tee -a $logfile
                     addLabelSelector "sas-cas-control" "sas-cas-operator" "app.kubernetes.io/name=sas-cas-server"
                 fi
@@ -829,6 +908,12 @@ function getNamespaceData() {
                         done
                     fi
                 done
+            fi
+            # Check if we should wait for cas logs
+            if [[ (-z $casDefaultControllerPod || $($KUBECTLCMD -n $namespace get pod $casDefaultControllerPod --no-headers 2>> $logfile | awk '{print $5}' | grep -cE '^[0-9]+s$') -gt 0) && $isViyaNs == 'true' ]]; then
+                waitForCasTimeout=$[ $(date +%s) + 120 ]
+                waitForCas $namespace $casDefaultControllerPod &
+                waitForCasPid=$!
             fi
             
             # If a pod has ever been restarted by kubernetes, try to capture its previous logs
@@ -912,6 +997,22 @@ function getNamespaceData() {
             tar -czf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime.tgz --directory=$TEMPDIR/kubernetes/$namespace/.kviya $saveTime 2>> $logfile
             rm -rf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime 2>> $logfile
 
+            if [[ ! -z $waitForCasPid && -d /proc/$waitForCasPid ]]; then
+                currentTime=$[ $(date +%s) - 30 ]
+                if [[ $currentTime -lt $waitForCasTimeout ]]; then
+                    echo "INFO: Waiting $[ $waitForCasTimeout - $currentTime ] seconds for background processes to finish"
+                    sleep $[ $waitForCasTimeout - $currentTime ]
+                fi
+                captureCasLogsPid=$(ps -o pid= --ppid "$waitForCasPid")
+                if [[ ! -z $captureCasLogsPid && -d /proc/$captureCasLogsPid ]]; then
+                    jobs=$(ps -o pid= --ppid "$captureCasLogsPid")
+                    kill $captureCasLogsPid > /dev/null 2>&1
+                    wait $captureCasLogsPid 2> /dev/null
+                    kill $jobs > /dev/null 2>&1
+                fi
+                kill $waitForCasPid > /dev/null 2>&1
+                wait $waitForCasPid 2> /dev/null
+            fi
             unset podCount podList
         fi
     done
@@ -929,22 +1030,25 @@ kustomize version --short > $TEMPDIR/versions/kustomize.txt 2>> $logfile
 cat $TEMPDIR/versions/kustomize.txt >> $logfile
 
 # Look for ingress-nginx namespaces
-echo 'DEBUG: Looking for Nginx Ingress Controller namespaces' >> $logfile
-ingressns=($($KUBECTLCMD get deploy -l 'app.kubernetes.io/name=ingress-nginx' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' 2>> $logfile | sort 2>> $logfile | uniq 2>> $logfile))
+echo 'DEBUG: Looking for Ingress Controller namespaces' >> $logfile
+ingressns=($($KUBECTLCMD get deploy -l 'app.kubernetes.io/name=ingress-nginx' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq ))
+if [[ $isOpenShift == 'true' ]]; then
+    ingressns+=($($KUBECTLCMD get deploy -l 'ingresscontroller.operator.openshift.io/owning-ingresscontroller' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq ))
+fi
 if [ ${#ingressns[@]} -gt 0 ]; then
     if [ ${#ingressns[@]} -gt 1 ]; then
-        echo "WARNING: Multiple Nginx Ingress Controller instances were found in the current kubernetes cluster." | tee -a $logfile
+        echo "WARNING: Multiple Ingress Controller instances were found in the current kubernetes cluster." | tee -a $logfile
     fi
-    for NGINX_NS in ${ingressns[@]}; do
-        echo NGINX_NS: $NGINX_NS >> $logfile
-        echo "  - nginx-ingress version" | tee -a $logfile
-        $KUBECTLCMD -n $NGINX_NS get deploy -l 'app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller' -o jsonpath='{.items[0].spec.template.spec.containers[].image}' > $TEMPDIR/versions/$NGINX_NS\_nginx-ingress-version.txt 2>> $logfile
-        cat $TEMPDIR/versions/$NGINX_NS\_nginx-ingress-version.txt >> $logfile
+    for INGRESS_NS in ${ingressns[@]}; do
+        echo INGRESS_NS: $INGRESS_NS >> $logfile
+        echo "  - Ingress controller version" | tee -a $logfile
+        $KUBECTLCMD -n $INGRESS_NS get deploy -l 'app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller' -o jsonpath='{.items[0].spec.template.spec.containers[].image}' > $TEMPDIR/versions/$INGRESS_NS\_ingress-controller-version.txt 2>> $logfile
+        cat $TEMPDIR/versions/$INGRESS_NS\_ingress-controller-version.txt >> $logfile
         echo '' >> $logfile
     done
     namespaces+=(${ingressns[@]})
 else
-    echo "WARNING: An Nginx Ingress Controller instance wasn't found in the current kubernetes cluster." | tee -a $logfile
+    echo "WARNING: An Ingress Controller instance wasn't found in the current kubernetes cluster." | tee -a $logfile
     echo "WARNING: The script will continue without collecting nginx information." | tee -a $logfile
 fi
 # Look for cert-manager namespaces
@@ -1034,13 +1138,19 @@ if [[ ${#monitoringns[@]} -gt 0 ]]; then
 fi
 
 # get iac-dac-files
-if [[ ! -z $TFVARSFILE || ! -z $ANSIBLEVARSFILE ]]; then
-    echo "  - Collecting iac-dac information" | tee -a $logfile
-    mkdir $TEMPDIR/iac-dac-files
-    if [[ ! -z $TFVARSFILE ]]; then cp $TFVARSFILE $TEMPDIR/iac-dac-files/terraform.tfvars; fi
-    if [[ ! -z $ANSIBLEVARSFILE ]]; then cp $ANSIBLEVARSFILE $TEMPDIR/iac-dac-files/ansible-vars.yaml; fi
+if [[ ! -z $TFVARSFILE ]]; then
+    mkdir -p $TEMPDIR/iac-dac-files
+    echo "  - Collecting iac information" | tee -a $logfile
+    cp $TFVARSFILE $TEMPDIR/iac-dac-files/terraform.tfvars
     removeSensitiveData $TEMPDIR/iac-dac-files/terraform.tfvars
-    removeSensitiveData $TEMPDIR/iac-dac-files/ansible-vars.yaml
+fi
+if [[ ! -z $ANSIBLEVARSFILES ]]; then
+    mkdir -p $TEMPDIR/iac-dac-files
+    echo "  - Collecting dac information" | tee -a $logfile
+    for file in ${ANSIBLEVARSFILES[@]}; do
+        cp ${file%%#*} $TEMPDIR/iac-dac-files/${file#*#}-ansible-vars.yaml
+        removeSensitiveData $TEMPDIR/iac-dac-files/${file#*#}-ansible-vars.yaml
+    done
 fi
 
 echo "  - Collecting cluster wide information" | tee -a $logfile
@@ -1089,29 +1199,29 @@ if [ $DEPLOYPATH != 'unavailable' ]; then
 fi
 
 cp $logfile $TEMPDIR
-tar -czf $OUTPATH/T${TRACKNUMBER}.tgz --directory=$TEMPDIR .
+tar -czf $OUTPATH/${CASENUMBER}.tgz --directory=$TEMPDIR .
 if [ $? -eq 0 ]; then
     if [ $SASTSDRIVE == 'true' ]; then
-        echo -e "\nDone! File '$OUTPATH/T${TRACKNUMBER}.tgz' was successfully created." | tee -a $logfile
+        echo -e "\nDone! File '$OUTPATH/${CASENUMBER}.tgz' was successfully created." | tee -a $logfile
         # use an sftp batch file since the user password is expected from stdin
-        cat > $TEMPDIR/SASTSDrive.batch <<< "put $OUTPATH/T${TRACKNUMBER}.tgz $TRACKNUMBER"
-        echo -e "\nINFO: Performing SASTSDrive login. Use only an email that was authorized by SAS Tech Support for the track\n" | tee -a $logfile
+        cat > $TEMPDIR/SASTSDrive.batch <<< "put $OUTPATH/${CASENUMBER}.tgz $CASENUMBER"
+        echo -e "\nINFO: Performing SASTSDrive login. Use only an email that was authorized by SAS Tech Support for the case\n" | tee -a $logfile
         read -p " -> SAS Profile Email: " EMAIL
         echo '' | tee -a $logfile
         sftp -oPubkeyAuthentication=no -oPasswordAuthentication=no -oNumberOfPasswordPrompts=2 -oConnectTimeout=1 -oBatchMode=no -b $TEMPDIR/SASTSDrive.batch "${EMAIL}"@sft.sas.com > /dev/null 2>> $logfile
         if [ $? -ne 0 ]; then 
-            echo -e "\nERROR: Failed to send the '$OUTPATH/T${TRACKNUMBER}.tgz' file to SASTSDrive through sftp. Will not retry." | tee -a $logfile
-            echo -e "\nSend the '$OUTPATH/T${TRACKNUMBER}.tgz' file to SAS Tech Support using a browser (https://support.sas.com/kb/65/014.html#upload) or through the track.\n" | tee -a $logfile
+            echo -e "\nERROR: Failed to send the '$OUTPATH/${CASENUMBER}.tgz' file to SASTSDrive through sftp. Will not retry." | tee -a $logfile
+            echo -e "\nSend the '$OUTPATH/${CASENUMBER}.tgz' file to SAS Tech Support using a browser (https://support.sas.com/kb/65/014.html#upload) or through the case.\n" | tee -a $logfile
             cleanUp 1
         else 
             echo -e "\nDone! File successfully sent to SASTSDrive.\n" | tee -a $logfile
             cleanUp 0
         fi
     else
-        echo -e "\nDone! File '$OUTPATH/T${TRACKNUMBER}.tgz' was successfully created. Send it to SAS Tech Support.\n" | tee -a $logfile
+        echo -e "\nDone! File '$OUTPATH/${CASENUMBER}.tgz' was successfully created. Send it to SAS Tech Support.\n" | tee -a $logfile
         cleanUp 0
     fi
 else
-    echo "ERROR: Failed to save output file '$OUTPATH/T${TRACKNUMBER}.tgz'." | tee -a $logfile
+    echo "ERROR: Failed to save output file '$OUTPATH/${CASENUMBER}.tgz'." | tee -a $logfile
     cleanUp 1
 fi
