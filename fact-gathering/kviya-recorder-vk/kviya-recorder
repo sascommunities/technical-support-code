@@ -1,0 +1,354 @@
+#!/bin/bash
+# This script record events from Kubernetes Nodes and Pods from a Viya deployment.
+# Date: 06OCT2023
+#
+# Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+version='kviya-recorder v1.1.9'
+
+# SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
+# ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
+# AGREE TO THESE TERMS. YOUR USE OF THE CODE IS AT YOUR OWN RISK. SAS INSTITUTE INC. MAKES NO REPRESENTATION 
+# OR WARRANTY, EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY, FITNESS FOR 
+# A PARTICULAR PURPOSE, NONINFRINGEMENT AND TITLE, WITH RESPECT TO THE CODE.
+# 
+# The Code is intended to be used solely as part of a product ("Software") you currently have licensed from 
+# SAS Institute Inc. or one of its subsidiaries or authorized agents ("SAS"). The Code is designed to either 
+# correct an error in the Software or to add functionality to the Software, but has not necessarily been tested. 
+# Accordingly, SAS makes no representation or warranty that the Code will operate error-free. SAS is under no 
+# obligation to maintain or support the Code.
+# 
+# Neither SAS nor its licensors shall be liable to you or any third party for any general, special, direct, 
+# indirect, consequential, incidental or other damages whatsoever arising out of or related to your use or 
+# inability to use the Code, even if SAS has been advised of the possibility of such damages.
+#
+# Except as otherwise provided above, the Code is governed by the same agreement that governs the Software. 
+# If you do not have an existing agreement with SAS governing the Software, you may not use the Code.
+
+echo -e "$version\n$(date)\n$(bash --version | head -1)\n$(uname -a)\nCommand: ${0} ${@}\n"
+function usage {
+    echo Version: "$version"
+    echo;echo "Usage: kviya-recorder [OPTIONS]..."
+    echo;
+    echo "Record events from Kubernetes Nodes and Pods from a Viya deployment."
+    echo;
+    echo "  -n    (Optional) The namespace of the viya deployment. (Default: Current KUBECONFIG context namespace)"
+    echo "  -s    (Optional) Take only one snapshot of the environment."
+    echo "  -l    (Optional) Capture logs from pods using a comma separated list of label selectors."
+    echo "  -i    (Optional) Interval that the script captures snapshots while running. (Default: 2 Seconds)"
+    echo "  -t    (Optional) Time in seconds that the script will remain running. (Default: Forever)"
+    echo "  -o    (Optional) Playback file path. (Default: Save a 'kviya-playback.tgz' on the current directory)"
+    echo;
+    echo "Examples:"
+    echo;
+    echo "Start capturing events from the 'viya' namespace."
+    echo "  $ kviya-recorder -n viya"
+    echo;
+    echo "Capture a snapshot from the default namespace."
+    echo "  $ kviya-recorder -s"
+    echo;
+    echo "Save the playback file to a specific path."
+    echo "  $ kviya-recorder -o /directory/myplayback.tgz"
+    echo;
+    echo "Capture events for 1 hour at 1 minute intervals."
+    echo "  $ kviya-recorder -t 3600 -i 1m"
+    echo;
+    echo "                                              By: Alexandre Gomes - October 06th 2023"
+    echo "https://gitlab.sas.com/sbralg/tools-and-scripts/-/blob/main/kviya"
+}
+function version {
+    echo "$version"
+}
+
+# Handle ctrl+c
+trap ctrl_c SIGINT
+function ctrl_c() {
+    if [[ $ARGWATCH == 'true' ]]; then
+        # Remove last directory to avoid an incomplete playback directory
+        if [ -d $TEMPDIR/$saveTime ]; then rm -rf $TEMPDIR/$saveTime; fi
+        if [ -f $TEMPDIR/$saveTime.tgz ]; then rm -rf $TEMPDIR/$saveTime.tgz; fi
+    fi
+
+    if [ ! -z $ARGLOGMON ]; then
+        # Kill log collector process
+        if [[ -d "/proc/$logMonPid" ]]; then
+            echo -e "\nWARNING: Process interrupted while collecting logs from active pods"
+        fi
+        echo -e "\nINFO: Killing log collector processes"
+        jobs=$(ps -o pid= --ppid $logMonPid 2> /dev/null)
+        kill $logMonPid > /dev/null 2>&1
+        wait $logMonPid 2> /dev/null
+        kill $jobs > /dev/null 2>&1
+        for logfile in $(ls $TEMPDIR/.kviya/logMon/logs/*.log 2> /dev/null ); do
+            tar -czf ${logfile::-4}.tgz --remove-files --directory=$TEMPDIR/.kviya/logMon/logs ${logfile##*/} 2> /dev/null
+        done
+        mv $TEMPDIR/.kviya/logMon/logs $TEMPDIR/logs
+        mv $TEMPDIR/.kviya/logMon/describe $TEMPDIR/describe
+        rm -rf $TEMPDIR/.kviya
+    fi
+
+    if [ $(ls -p $TEMPDIR | grep -v / | wc -l) -gt 0 ]; then 
+        tar -czf $ARGPLAYBACKPATH --directory=$TEMPDIR .
+        if [ $? -ne 0 ]; then
+            echo;echo "ERROR: Error while saving kviya playback file $ARGPLAYBACKPATH";echo
+            rm -rf $TEMPDIR
+            exit 1
+        else
+            echo;echo "Done! Playback file saved to $ARGPLAYBACKPATH";echo
+            rm -rf $TEMPDIR
+            exit 0
+        fi
+    else
+        echo;echo 'ERROR: Playback directory is empty. Capture events over a longer period of time.';echo
+        rm -rf $TEMPDIR
+        exit 1
+    fi
+}
+
+# Initialize Variables
+KUBECTLCMD='kubectl'
+ARGPLAYBACKPATH="$(pwd)"
+ARGINTERVAL=2s
+ARGWATCH='true'
+
+# Exit if kubectl not available in the PATH or the KUBECONFIG environment variable isn't set and no default config file exists
+if ! type kubectl > /dev/null 2>&1; then
+    echo;echo "ERROR: 'kubectl' not installed in PATH."
+    exit 1
+elif [ -z "$KUBECONFIG" ] && [ ! -f ~/.kube/config ]; then 
+    echo;echo "ERROR: KUBECONFIG environment variable not set and no default config file available."
+    exit 1
+fi
+
+# Exit if no options were provided
+if [ "$1" = "" ]; then usage;echo;exit 1;fi
+
+# Read options
+OPTIND=1
+
+while getopts "vh?l:n:st:i:o:" opt; do
+  case "$opt" in
+    h|\?)
+      usage
+      exit 0
+      ;;
+    v)
+      version
+      exit 0
+      ;;
+    l)
+      ARGLOGMON="$OPTARG"
+      ;;
+    n)  ARGNAMESPACE=$OPTARG
+        # Validate provided namespace
+        if [ $(echo $ARGNAMESPACE | grep -E '^[a-z0-9][-a-z0-9]*[a-z0-9]?$') ]; then
+            if [ $($KUBECTLCMD get ns | awk '{print $1}' | grep ^$ARGNAMESPACE$) ]; then
+                KUBECTLCMD="kubectl -n $ARGNAMESPACE"
+            else
+                echo;echo "ERROR: Namespace '$ARGNAMESPACE' doesn't exist.";echo
+                exit 1
+            fi
+        else
+            echo;echo "ERROR: Namespace '$ARGNAMESPACE' is invalid.";echo
+            exit 1
+        fi
+      ;;
+    s)  ARGWATCH='false'
+      ;;
+    o)  ARGPLAYBACKPATH=$OPTARG
+      ;;
+    i)  ARGINTERVAL=$OPTARG
+        # Validate provided interval
+        if [ ! $(echo $ARGINTERVAL | grep -E '^[0-9]?[0-9]*\.?[0-9]+[0-9smhd]?$') ]; then
+            echo;echo "ERROR: '$ARGINTERVAL' is not a valid sleep interval.";echo
+            exit 1
+        fi
+      ;;
+    t)  # Validate provided time
+        if [ ! $(echo $OPTARG | grep -E '^[0-9]?[0-9]*\.?[0-9]+[0-9]?$') ]; then
+            echo;echo "ERROR: '$OPTARG' is not a valid time interval.";echo
+            exit 1
+        fi
+        currentTime=$(date +%s)
+        targetTime=$[ $currentTime + $OPTARG ]
+      ;;
+    * ) # Check for null option
+        echo "ERROR: Option $opt is not valid."
+        usage
+      ;;
+  esac
+done
+
+shift $((OPTIND-1))
+
+[ "${1:-}" = "--" ] && shift
+
+# If no namespace was provided, try to find one in the current context
+if [ -z $ARGNAMESPACE ]; then
+    defaultNS=$(kubectl config view --minify -o jsonpath='{..namespace}')
+    if [ -z $defaultNS ]; then
+        echo;echo "ERROR: No namespace set on the current context. Use the '-n' option to specify the viya namespace.";echo
+        exit 1
+    else
+        if [ $(kubectl get ns | awk '{print $1}' | grep $defaultNS) ]; then
+            KUBECTLCMD="kubectl -n $defaultNS"
+            ARGNAMESPACE=$defaultNS
+        else
+            # Exit if the obtained namespace doesn't exist
+            echo;echo "ERROR: Current context namespace '$defaultNS' doesn't exist.";echo
+            exit 1
+        fi
+    fi
+fi
+
+# Set default tgz filename
+if [ -d $ARGPLAYBACKPATH ]; then 
+    ARGPLAYBACKPATH=$ARGPLAYBACKPATH/kviya-playback.tgz
+fi
+function addPod {
+    for pod in $@; do
+        if [ -z $podCount ];then podCount=0;fi
+        if [[ ! ${podList[@]} =~ "$pod" ]]; then
+            podList[$podCount]="$pod"
+            podCount=$[ $podCount + 1 ]
+        fi
+    done
+}
+function addLabelSelector {
+    for label in $@; do
+        if [[ ! $label =~ "=" ]]; then label="app=$label" # Default label selector key is "app"
+        elif [[ ${label:0-1} = "=" ]]; then label="${label%=}"; fi # Accept keys without values as label selectors
+        pods=$($KUBECTLCMD get pod -l "$label" 2> /dev/null | grep -v NAME | awk '{print $1}' | tr '\n' ' ' 2> /dev/null)
+        addPod $pods
+    done
+}
+function describePod {
+    mkdir -p $TEMPDIR/.kviya/describePod
+    if [[ ! -f $TEMPDIR/.kviya/describePod/$1\_$2.txt ]]; then
+        if $KUBECTLCMD describe pod $1 > $TEMPDIR/.kviya/describePod/$1\_$2.txt; then
+            mv $TEMPDIR/.kviya/describePod/$1\_$2.txt $TEMPDIR/.kviya/logMon/describe/$1\_$2.txt
+        fi
+    fi
+}
+function logMon {
+    mkdir -p $TEMPDIR/.kviya/logMon/logs $TEMPDIR/.kviya/logMon/describe
+    wasDeleted=()
+    containerStatus=()
+    podInstance=()
+    while true; do
+        addLabelSelector $(tr ',' ' ' <<< $@ 2> /dev/null)
+        if [ ! -z "$podList" ]; then
+            for podIndex in ${!podList[@]}; do
+                if [[ -z ${wasDeleted[$podIndex]} ]]; then
+                    wasDeleted[$podIndex]=0
+                fi
+                if [[ -z ${podInstance[$podIndex]} ]]; then
+                    podInstance[$podIndex]=0
+                fi
+                containerIndex=0
+                containers=()
+                containers=($($KUBECTLCMD get pod ${podList[$podIndex]} -o=jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}' 2> /dev/null))
+                if [[ ${wasDeleted[$podIndex]} -ne 1 ]]; then
+                    if [[ ${#containers[@]} -eq 0 ]]; then
+                        wasDeleted[$podIndex]=1
+                    else
+                        describePod ${podList[$podIndex]} ${podInstance[$podIndex]} &
+                        for container in ${containers[@]}; do 
+                            if [ -z ${containerStatus[$podIndex$containerIndex]} ]; then
+                                containerStatus[$podIndex$containerIndex]=0
+                            fi
+                            if [[ ${containerStatus[$podIndex$containerIndex]} -eq 0 ]]; then
+                                if $KUBECTLCMD logs ${podList[$podIndex]} $container --tail=1 > /dev/null 2>&1; then
+                                    if [[ $ARGWATCH == 'true' ]]; then
+                                        stdbuf -i0 -o0 -e0 $KUBECTLCMD logs ${podList[$podIndex]} $container -f --tail=-1 > $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log &
+                                    else
+                                        echo "INFO: Starting log collector for pod: ${podList[$podIndex]} container: $container"
+                                        stdbuf -i0 -o0 -e0 $KUBECTLCMD logs ${podList[$podIndex]} $container > $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log &
+                                    fi
+                                    logPid[$podIndex$containerIndex]=$!
+                                    containerStatus[$podIndex$containerIndex]=1
+                                fi
+                            elif [[ containerStatus[$podIndex$containerIndex] -eq 1 && ! -d "/proc/${logPid[$podIndex$containerIndex]}" ]]; then
+                                containerStatus[$podIndex$containerIndex]=2
+                                tar -czf $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.tgz --remove-files --directory=$TEMPDIR/.kviya/logMon/logs ${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log 2> /dev/null
+                            fi
+                            containerIndex=$[ $containerIndex + 1 ]
+                        done
+                    fi
+                else
+                    if [[ ${#containers[@]} -gt 0 ]]; then
+                        # pod got recreated with the same name
+                        wasDeleted[$podIndex]=0
+                        for container in ${containers[@]}; do 
+                            containerStatus[$podIndex$containerIndex]=0
+                            containerIndex=$[ $containerIndex + 1 ]
+                        done
+                        podInstance[$podIndex]=$[ ${podInstance[$podIndex]} + 1 ]
+                    fi
+                fi
+            done
+            if [[ $ARGWATCH == 'false' ]]; then 
+                wait ${logPid[@]}
+                break
+            fi
+        fi
+    done
+}
+function captureSnapshot {
+    saveTime=$(date +"%YD%mD%d_%HT%MT%S")
+    mkdir $TEMPDIR/$saveTime
+    $KUBECTLCMD get node > $TEMPDIR/$saveTime/getnodes.out 2> /dev/null
+    $KUBECTLCMD describe node > $TEMPDIR/$saveTime/nodes-describe.out 2> /dev/null
+    $KUBECTLCMD get pod -o wide > $TEMPDIR/$saveTime/getpod.out 2> /dev/null
+    $KUBECTLCMD get events > $TEMPDIR/$saveTime/podevents.out 2> /dev/null
+    $KUBECTLCMD top node > $TEMPDIR/$saveTime/nodesTop.out 2> /dev/null
+    $KUBECTLCMD top pod > $TEMPDIR/$saveTime/podsTop.out 2> /dev/null
+    tar -czf $TEMPDIR/$saveTime.tgz --remove-files --directory=$TEMPDIR $saveTime
+}
+function main {
+    TEMPDIR=$(mktemp -d --tmpdir=$(pwd) -t .kviya.tmp.XXXXXXXXXX 2> /dev/null)
+    if [[ ! -d $TEMPDIR ]]; then TEMPDIR=$(mktemp -d -t .kviya.tmp.XXXXXXXXXX); fi
+    if [[ ! -d $TEMPDIR ]]; then 
+        echo "ERROR: Unable to create a temporary directory in '$(pwd)' or '/tmp'.";echo
+        exit 1
+    fi
+    logPid=()
+    if [ ! -z $ARGLOGMON ]; then
+        echo -e "INFO: Capturing logs from Pods with labels '$ARGLOGMON'"
+        logMon $ARGLOGMON &
+        logMonPid=$!
+    fi
+    if [ "$ARGWATCH" == 'true' ]; then 
+        if [ -z $targetTime ]; then
+            echo -e "INFO: Capturing events from the '$ARGNAMESPACE' namespace every '$ARGINTERVAL'\n\nPress Ctrl+C to stop..."
+            count=0
+            echo "Snapshots captured: $count. Current file size: $(du -h $TEMPDIR --max-depth 0 | awk '{print $1}'). Available Disk Space: $(df -h $TEMPDIR | grep -v Filesystem | awk '{print $4}')."
+            while true; do
+                captureSnapshot
+                sleep $ARGINTERVAL
+                count=$[ $count + 1 ]
+                echo -e "\e[1A\e[KSnapshots captured: $count. Current file size: $(du -h $TEMPDIR --max-depth 0 | awk '{print $1}'). Available Disk Space: $(df -h $TEMPDIR | grep -v Filesystem | awk '{print $4}')."
+            done
+        else
+            echo -e "INFO: Capturing events from the '$ARGNAMESPACE' namespace every '$ARGINTERVAL' until '$(date --date="@$targetTime")'\n\nPress Ctrl+C to stop..."
+            count=0
+            echo "Current time: $(date). Snapshots captured: $count. Current file size: $(du -h $TEMPDIR --max-depth 0 | awk '{print $1}'). Available disk space: $(df -h $TEMPDIR | grep -v Filesystem | awk '{print $4}')."
+            while [ $currentTime -lt $targetTime ]; do
+                captureSnapshot
+                sleep $ARGINTERVAL
+                count=$[ $count + 1 ]
+                echo -e "\e[1A\e[KCurrent time: $(date). Snapshots captured: $count. Current file size: $(du -h $TEMPDIR --max-depth 0 | awk '{print $1}'). Available Disk Space: $(df -h $TEMPDIR | grep -v Filesystem | awk '{print $4}')."
+                currentTime=$(date +%s)
+            done
+            echo -e 'INFO: Target time reached'
+            ctrl_c
+        fi
+    else
+        echo -e "INFO: Capturing events from the '$ARGNAMESPACE' namespace"
+        captureSnapshot
+        wait $logMonPid
+        ctrl_c
+    fi
+}
+main
