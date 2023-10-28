@@ -177,7 +177,7 @@ proc print data=summary;
 title "Summary of Logs and Connections";
 run;
 
-proc means data=work.open_conn max nonobs noprint;
+proc means data=work.open_conn(where=(status="ACCEPTED")) max nonobs noprint;
 	class user;
 	var date;
 	output out=work.lastlog max=date;
