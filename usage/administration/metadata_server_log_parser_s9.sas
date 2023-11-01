@@ -91,6 +91,7 @@ data work.raw_import_open (keep=user status app date time hour timeInt connid) w
 				else if scan(msg,12)="token" then user=scan(msg,14);
 				else if scan(msg,11)="IWA" then user=scan(msg,13);
 				else user=scan(msg,12); 
+				user=lowcase(user);
 			status=upcase(scan(msg,5)); /* Parse acceptance status. */
 			connid=input(compress(scan(msg,4),"()"),8.); /* Parse connection ID. */
 			pos=find(msg,'APPNAME=');
@@ -109,6 +110,7 @@ data work.raw_import_open (keep=user status app date time hour timeInt connid) w
 			closed="Y";
 			msg=substr(_INFILE_,rc); /* Store message string as a single variable. */
 			user=scan(msg,6);/* Read in user name. */
+			user=lowcase(user);
 			connid=scan(msg,3); /* Parse connection ID. */
 			/*if user in ("sasadm@saspw","sastrust@saspw","sasevs@saspw") then; else*/ output raw_import_closed; /* Drop authentications from sastrust, sasadm and sasevs. */
 		end;
