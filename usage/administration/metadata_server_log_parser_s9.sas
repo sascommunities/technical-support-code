@@ -16,7 +16,7 @@
  */
 
 /* Specify the path to the directory containing the log files to be parsed. */
-%let path=C:\Path\To\MetaServerLogs;
+%let path=C:\Path\To\MetadataServer\Logs;
 
 /* Creating a file that is a directory listing of the supplied directory. */
 
@@ -60,18 +60,43 @@ run;
 %macro metaaudit; 
 
 proc datasets library=work nolist;
-     delete raw_import_open raw_import_closed raw_import_redirect redirects open_conn closed_conn opconbyhr clconbyhr conn_summary consum2 opencon2 raw_summary summary;
+     delete raw_import_open raw_import_closed raw_import_redirect raw_import_auditpublic raw_import_memchanges redirects open_conn closed_conn opconbyhr clconbyhr conn_summary consum2 opencon2 raw_summary summary;
 run;
 
 %do i=1 %to &max;
 %put;
 %put NOTE: Reading log file &&fn&i;
 %put;
-data work.raw_import_open (keep=user status app date time hour timeInt connid) work.raw_import_closed (keep=user date time connid hour timeInt closed) work.raw_import_redirect (keep=date time hour timeInt host port);
+data
+	work.raw_import_open (keep=user status app date time hour timeInt connid)
+	work.raw_import_closed (keep=user date time connid hour timeInt closed)
+	work.raw_import_redirect (keep=date time hour timeInt host port)
+	work.raw_import_auditpublic (keep=date time hour user name objid action type)
+	work.raw_import_memchanges (keep=date time hour user memname memobjid tarname tarobjid action type)
+	;
 
 /* Declare variables. */
-	length datetimechar user $ 25 msg $ 500 status $ 8 app host $ 255 closed $ 1 port 8;
+	length datetimechar user action type $ 25 msg $ 500 status $ 8 app host name memname tarname $ 255 closed $ 1 port 8 objid memobjid tarobjid $ 17;
 	format date date9. time time.;
+
+	label	
+			date = "Date"
+			time = "Time"
+			user = "User"
+			action = "Action"
+			type = "Object Type"
+			msg = "Log Message"
+			status = "Status"
+			app = "Application"
+			host = "Host"
+			name = "Name"
+			memname = "Member Name"
+			tarname = "Target Name"
+			closed = "Closed"
+			port = "Port"
+			objid = "Object ID"
+			memobjid = "Member Object ID"
+			tarobjid = "Target Object ID";
 
 /* Specify the file to read in from the macro variable. */
 	
@@ -96,11 +121,11 @@ data work.raw_import_open (keep=user status app date time hour timeInt connid) w
 			connid=input(compress(scan(msg,4),"()"),8.); /* Parse connection ID. */
 			pos=find(msg,'APPNAME=');
 			if pos=0 then app=""; /* Set app variable as missing if we don't find APPNAME in the connection line. */
-			else app=substr(msg,pos+8); /* Extract the client application. */
+			else app=substr(msg,pos+8,(length(substr(msg,pos+8))-1)); /* Extract the client application, omitting the period at the end of the line. */
 			/*if user in ("sasadm@saspw","sastrust@saspw","sasevs@saspw") then; else*/ output raw_import_open; /* Drop authentications from sastrust, sasadm and sasevs. */
 		end;
 	else do;
-	    rc=prxmatch('/Client connection.*closed\./',_INFILE_);
+	    rc=prxmatch('/Client connection.*closed\./',_INFILE_); /* Capture when the connection was closed. */
 		if rc ge 1 then do;
 			datetimechar=scan(_INFILE_,1," ");
 			date=input(substr(datetimechar,1,10),yymmdd10.); /* Parse date. */
@@ -115,7 +140,7 @@ data work.raw_import_open (keep=user status app date time hour timeInt connid) w
 			/*if user in ("sasadm@saspw","sastrust@saspw","sasevs@saspw") then; else*/ output raw_import_closed; /* Drop authentications from sastrust, sasadm and sasevs. */
 		end;
 		else do;
-			rc=find(_INFILE_,'Redirect client in cluster'); /* Only read in authentication lines. */
+			rc=find(_INFILE_,'Redirect client in cluster'); /* Capture connection redirects. */
 			if rc ge 1 then do;
 				datetimechar=scan(_INFILE_,1," ");
 				date=input(substr(datetimechar,1,10),yymmdd10.); /* Parse date. */
@@ -126,6 +151,47 @@ data work.raw_import_open (keep=user status app date time hour timeInt connid) w
 				host=scan(scan(msg,-1," "),1,":");
 				port=input(compress(scan(scan(msg,-1," "),2,":"),"."),5.);
 				output raw_import_redirect;
+			end;
+		else do;
+			rc=find(_INFILE_,'Audit Public Object'); /* Capture updates to public objects. */
+			if rc ge 1 then do;
+						datetimechar=scan(_INFILE_,1," ");
+						date=input(substr(datetimechar,1,10),yymmdd10.); /* Parse date. */
+						time=input(substr(datetimechar,12,8),time8.); /* Parse time. */
+						hour=hour(time);
+						user=scan(scan(_infile_,4," "),2,":");
+						msg=substr(_INFILE_,rc); /* Store message string as a single variable. */
+						namepos=find(msg,'Name=');
+						objidpos=find(msg,'ObjId=');
+						typelen=namepos - 26;
+						type=substr(msg,26,typelen);
+						objid=substr(msg,objidpos+6,17);
+						name=substr(msg,namepos+5,objidpos-namepos-5);
+						action=upcase(compress(scan(msg,-1," "),"."));
+						output raw_import_auditpublic;
+					end;
+				else do;
+					rc=prxmatch('/(Added|Removed) Member/',_INFILE_); /* Capture membership changes. */
+					if rc ge 1 then do;
+						datetimechar=scan(_INFILE_,1," ");
+						date=input(substr(datetimechar,1,10),yymmdd10.); /* Parse date. */
+						time=input(substr(datetimechar,12,8),time8.); /* Parse time. */
+						hour=hour(time);
+						user=scan(scan(_infile_,4," "),2,":");
+						msg=substr(_INFILE_,rc); /* Store message string as a single variable. */
+						action=upcase(cat(scan(msg,1," ")," ","member"));
+						memnamepos=find(msg,'Name=');
+						memobjidpos=find(msg,'ObjId=');
+						tarnamepos=find(msg,'Name=',-1*length(msg));
+						tarobjidpos=find(msg,'ObjId=',-1*length(msg));
+						type=scan(scan(msg,3," "),2,"=");
+						memobjid=substr(msg,memobjidpos+6,17);
+						memname=compress(substr(msg,memnamepos+5,memobjidpos-memnamepos-5),",");
+						tarobjid=substr(msg,tarobjidpos+6,17);;
+						tarname=compress(substr(msg,tarnamepos+5,tarobjidpos-tarnamepos-5),",");
+						output raw_import_memchanges;
+						end;
+				end;
 			end;
 		end;
 	end;
@@ -174,7 +240,7 @@ proc append base=work.closed_conn data=raw_import_closed; run;
 %metaaudit; 
 
 /* Report Generation */
-
+title; title2;
 proc print data=summary;
 title "Summary of Logs and Connections";
 run;
@@ -192,7 +258,7 @@ PROC SQL noprint;
 	create view consum2 as select open_conn.date,open_conn.time,app,open_conn.connid,closed from open_conn LEFT OUTER JOIN closed_conn on open_conn.connid=closed_conn.connid;
 	create view opencon2 as select app, count(connid) as count from consum2 where closed IS NULL group by app; /* Find any connections left open. */
 	create view redir_summary as select date, host, count(hour) as redirects from redirects group by date,host;
-	create view work.lastlogin as select * from work.lastlog where _TYPE_ = 1;
+	create view work.lastlogin as select * from work.lastlog where _TYPE_ = 1 order by date; /* Sort users by when they last logged in. */
 quit;
 
 title "Unclosed Connections by Application for Log Range";
@@ -241,3 +307,17 @@ RUN;
 
 title "Most Recent Login Date by User";
 proc print data=work.lastlogin noobs; var user date; run;
+
+title "Group Membership Changes";
+proc report data=work.raw_import_memchanges ; 
+columns date time user action type memname tarname ; 
+define date/order;
+run;
+
+title "Audit Changes";
+proc report data=work.raw_import_auditpublic ; 
+columns date time user action type name objid ; 
+define date/order;
+run;
+
+title;title2;
