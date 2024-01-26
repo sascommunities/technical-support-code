@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='get-k8s-info v1.2.00'
+version='get-k8s-info v1.2.03'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -219,7 +219,7 @@ if ! grep -E '^CS[0-9]{7}$' > /dev/null 2>> $logfile <<< $CASENUMBER; then
 fi
 # Check if an IaC Github Project was used
 if [ -z $TFVARSFILE ]; then 
-    if $KUBECTLCMD get cm -n kube-system sas-iac-buildinfo > /dev/null 2>&1; then 
+    if $KUBECTLCMD -n kube-system get cm sas-iac-buildinfo > /dev/null 2>&1; then 
         read -p " -> A viya4-iac project was used to create the infrastructure of this environment. Specify the path of the "terraform.tfvars" file that was used (leave blank if not known): " TFVARSFILE
         TFVARSFILE="${TFVARSFILE/#\~/$HOME}"
     fi
@@ -317,7 +317,7 @@ fi
 # Check if the viya4-deployment project was used
 if [ -z $ANSIBLEVARSFILE ]; then
     for ns in $(echo $USER_NS | tr ',' ' '); do
-        if $KUBECTLCMD get cm -n $ns sas-deployment-buildinfo > /dev/null 2>&1; then 
+        if $KUBECTLCMD -n $ns get cm sas-deployment-buildinfo > /dev/null 2>&1; then 
             read -p " -> The viya4-deployment project was used to deploy the environment in the $ns namespace. Specify the path of the "ansible-vars.yaml" file that was used (leave blank if not known): " ANSIBLEVARSFILE
             ANSIBLEVARSFILE="${ANSIBLEVARSFILE/#\~/$HOME}"
         fi
@@ -566,7 +566,7 @@ function podMon {
 
     # Collect initial pod list
     if [ "$ARGPLAYBACK" == 'false' ]; then 
-        $KUBECTLCMD get pod -o wide > $TEMPDIR/.kviya/work/getpod.out 2> /dev/null
+        $KUBECTLCMD -n $ARGNAMESPACE get pod -o wide > $TEMPDIR/.kviya/work/getpod.out 2> /dev/null
     fi
     
     # Totals
@@ -724,7 +724,7 @@ function captureCasLogs {
             for containerIndex in ${!containerList[@]}; do
                 if [[ ${containerStarted[$containerIndex]} -ne 1 && ${containerStatusList[$containerIndex]} != 'Waiting' ]]; then
                     echo "INFO: Capturing logs from the $casDefaultControllerPod:${containerList[$containerIndex]} container on the background" | tee -a $logfile
-                    stdbuf -i0 -o0 -e0 $KUBECTLCMD logs $casDefaultControllerPod ${containerList[$containerIndex]} -f --tail=-1 > $TEMPDIR/kubernetes/$namespace/logs/$casDefaultControllerPod\_${containerList[$containerIndex]}.log 2>&1 &
+                    stdbuf -i0 -o0 -e0 $KUBECTLCMD -n $namespace logs $casDefaultControllerPod ${containerList[$containerIndex]} -f --tail=-1 > $TEMPDIR/kubernetes/$namespace/logs/$casDefaultControllerPod\_${containerList[$containerIndex]}.log 2>&1 &
                     logPid[$containerIndex]=$!
                     containerStarted[$containerIndex]=1
                 fi
@@ -870,7 +870,7 @@ function getNamespaceData() {
                             mkdir -p $TEMPDIR/kubernetes/$namespace/yaml/postgresclusters
                             $KUBECTLCMD -n $namespace get postgresclusters.postgres-operator.crunchydata.com $pgcluster -o yaml > $TEMPDIR/kubernetes/$namespace/yaml/postgresclusters/$pgcluster.yaml 2>> $logfile
                             if [[ $pgcluster =~ 'crunchy' ]]; then
-                                for crunchyPod in $($KUBECTLCMD -n $namespace get pod -l "postgres-operator.crunchydata.com/role,postgres-operator.crunchydata.com/cluster=$pgcluster" --no-headers 2>> $logfile | awk '{print $1}'); do
+                                for crunchyPod in $($KUBECTLCMD -n $namespace get pod -l "postgres-operator.crunchydata.com/data=postgres,postgres-operator.crunchydata.com/cluster=$pgcluster" --no-headers 2>> $logfile | awk '{print $1}'); do
                                     mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$crunchyPod
                                     $KUBECTLCMD -n $namespace exec -it $crunchyPod -c database -- patronictl list > $TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_list.txt 2>> $logfile
                                 done
@@ -1016,6 +1016,24 @@ function getNamespaceData() {
             unset podCount podList
         fi
     done
+}
+function captureDiagramToolFiles {
+    echo 'DEBUG: Capturing JSON files used by the K8S Diagram Tool' >> $logfile
+    mkdir -p $TEMPDIR/.diagram-tool
+    $KUBECTLCMD get nodes -o json > $TEMPDIR/.diagram-tool/nodes.txt 2>> $logfile
+    $KUBECTLCMD get pods --all-namespaces -o json > $TEMPDIR/.diagram-tool/pods.txt 2>> $logfile
+    $KUBECTLCMD get deployments --all-namespaces -o json > $TEMPDIR/.diagram-tool/deployments.txt 2>> $logfile
+    $KUBECTLCMD get configmaps --all-namespaces -o json > $TEMPDIR/.diagram-tool/configmaps.txt 2>> $logfile
+    $KUBECTLCMD get persistentvolumeclaims --all-namespaces -o json > $TEMPDIR/.diagram-tool/pvcs.txt 2>> $logfile
+    $KUBECTLCMD get replicasets --all-namespaces -o json > $TEMPDIR/.diagram-tool/replicasets.txt 2>> $logfile
+    $KUBECTLCMD get statefulsets --all-namespaces -o json > $TEMPDIR/.diagram-tool/statefulsets.txt 2>> $logfile
+    $KUBECTLCMD get daemonsets --all-namespaces -o json > $TEMPDIR/.diagram-tool/daemonsets.txt 2>> $logfile
+    $KUBECTLCMD get events --all-namespaces -o json > $TEMPDIR/.diagram-tool/events.txt 2>> $logfile
+    $KUBECTLCMD get ingresses --all-namespaces -o json > $TEMPDIR/.diagram-tool/ingress.txt 2>> $logfile
+    $KUBECTLCMD get services --all-namespaces -o json > $TEMPDIR/.diagram-tool/services.txt 2>> $logfile
+    $KUBECTLCMD get endpoints --all-namespaces -o json > $TEMPDIR/.diagram-tool/endpoints.txt 2>> $logfile
+    $KUBECTLCMD get jobs --all-namespaces -o json > $TEMPDIR/.diagram-tool/jobs.txt 2>> $logfile
+    $KUBECTLCMD get namespaces -o json > $TEMPDIR/.diagram-tool/namespaces.txt 2>> $logfile
 }
 
 TEMPDIR=$(mktemp -d -p $OUTPATH)
@@ -1169,7 +1187,7 @@ echo "    - kubectl describe" | tee -a $logfile
 mkdir -p $TEMPDIR/kubernetes/clusterwide/describe
 for object in ${clusterobjects[@]}; do
     if [[ $(grep "No resources found\|error: the server doesn't have a resource type" $TEMPDIR/kubernetes/clusterwide/get/$object.txt) ]]; then 
-        cp $TEMPDIR/kubernetes/clusterwide/get/$object.txt $TEMPDIR/kubernetes/clusterwide/describe/$object.txt >> $logfile
+        cp $TEMPDIR/kubernetes/clusterwide/get/$object.txt $TEMPDIR/kubernetes/clusterwide/describe/$object.txt 2>> $logfile
     else
         echo "      - $object" | tee -a $logfile
         $KUBECTLCMD describe $object > $TEMPDIR/kubernetes/clusterwide/describe/$object.txt 2>&1
@@ -1197,6 +1215,9 @@ if [ $DEPLOYPATH != 'unavailable' ]; then
     rm -rf $TEMPDIR/assets/assets.tar 2>> $logfile
     removeSensitiveData $(find $TEMPDIR/assets -type f)
 fi
+
+# Collect files used by the K8S Diagram Tools
+captureDiagramToolFiles
 
 cp $logfile $TEMPDIR
 tar -czf $OUTPATH/${CASENUMBER}.tgz --directory=$TEMPDIR .
