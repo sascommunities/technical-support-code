@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='get-k8s-info v1.2.03'
+version='get-k8s-info v1.2.04'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -296,6 +296,7 @@ if [ -z $USER_NS ]; then
             fi
         fi
         USER_NS=${viyans[$nsCount]}
+        echo -e "USER_NS: $USER_NS" >> $logfile
         namespaces+=($USER_NS)
     else
         echo "WARNING: A namespace was not provided and no Viya deployment was found in any namespace of the current kubernetes cluster. Is the KUBECONFIG file correct?" | tee -a $logfile
@@ -1020,20 +1021,24 @@ function getNamespaceData() {
 function captureDiagramToolFiles {
     echo 'DEBUG: Capturing JSON files used by the K8S Diagram Tool' >> $logfile
     mkdir -p $TEMPDIR/.diagram-tool
-    $KUBECTLCMD get nodes -o json > $TEMPDIR/.diagram-tool/nodes.txt 2>> $logfile
-    $KUBECTLCMD get pods --all-namespaces -o json > $TEMPDIR/.diagram-tool/pods.txt 2>> $logfile
-    $KUBECTLCMD get deployments --all-namespaces -o json > $TEMPDIR/.diagram-tool/deployments.txt 2>> $logfile
+    date -u +"%Y-%m-%dT%H:%M:%SZ" > $TEMPDIR/.diagram-tool/date.txt 2>> $logfile
     $KUBECTLCMD get configmaps --all-namespaces -o json > $TEMPDIR/.diagram-tool/configmaps.txt 2>> $logfile
-    $KUBECTLCMD get persistentvolumeclaims --all-namespaces -o json > $TEMPDIR/.diagram-tool/pvcs.txt 2>> $logfile
-    $KUBECTLCMD get replicasets --all-namespaces -o json > $TEMPDIR/.diagram-tool/replicasets.txt 2>> $logfile
-    $KUBECTLCMD get statefulsets --all-namespaces -o json > $TEMPDIR/.diagram-tool/statefulsets.txt 2>> $logfile
+    $KUBECTLCMD get customresourcedefinitions -o json > $TEMPDIR/.diagram-tool/crd.txt 2>> $logfile
     $KUBECTLCMD get daemonsets --all-namespaces -o json > $TEMPDIR/.diagram-tool/daemonsets.txt 2>> $logfile
+    $KUBECTLCMD get deployments --all-namespaces -o json > $TEMPDIR/.diagram-tool/deployments.txt 2>> $logfile
+    $KUBECTLCMD get endpoints --all-namespaces -o json > $TEMPDIR/.diagram-tool/endpoints.txt 2>> $logfile
     $KUBECTLCMD get events --all-namespaces -o json > $TEMPDIR/.diagram-tool/events.txt 2>> $logfile
     $KUBECTLCMD get ingresses --all-namespaces -o json > $TEMPDIR/.diagram-tool/ingress.txt 2>> $logfile
-    $KUBECTLCMD get services --all-namespaces -o json > $TEMPDIR/.diagram-tool/services.txt 2>> $logfile
-    $KUBECTLCMD get endpoints --all-namespaces -o json > $TEMPDIR/.diagram-tool/endpoints.txt 2>> $logfile
     $KUBECTLCMD get jobs --all-namespaces -o json > $TEMPDIR/.diagram-tool/jobs.txt 2>> $logfile
     $KUBECTLCMD get namespaces -o json > $TEMPDIR/.diagram-tool/namespaces.txt 2>> $logfile
+    $KUBECTLCMD get nodes -o json > $TEMPDIR/.diagram-tool/nodes.txt 2>> $logfile
+    $KUBECTLCMD get persistentvolumeclaims --all-namespaces -o json > $TEMPDIR/.diagram-tool/pvcs.txt 2>> $logfile
+    $KUBECTLCMD get persistentvolumes -o json > $TEMPDIR/.diagram-tool/pvs.txt 2>> $logfile
+    $KUBECTLCMD get pods --all-namespaces -o json > $TEMPDIR/.diagram-tool/pods.txt 2>> $logfile
+    $KUBECTLCMD get replicasets --all-namespaces -o json > $TEMPDIR/.diagram-tool/replicasets.txt 2>> $logfile
+    $KUBECTLCMD get services --all-namespaces -o json > $TEMPDIR/.diagram-tool/services.txt 2>> $logfile
+    $KUBECTLCMD get statefulsets --all-namespaces -o json > $TEMPDIR/.diagram-tool/statefulsets.txt 2>> $logfile
+    $KUBECTLCMD get storageclasses -o json > $TEMPDIR/.diagram-tool/sc.txt 2>> $logfile
 }
 
 TEMPDIR=$(mktemp -d -p $OUTPATH)
