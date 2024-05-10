@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='get-k8s-info v1.2.04'
+version='get-k8s-info v1.2.06'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -792,8 +792,11 @@ function getNamespaceData() {
                 echo '' >> $logfile
 
                 echo "    - Getting cadence information" | tee -a $logfile
-                $KUBECTLCMD -n $namespace get cm $($KUBECTLCMD get cm -n $namespace 2>> $logfile | grep sas-deployment-metadata | cut -f1 -d' ') -o jsonpath='{"\n"}{.data.SAS_CADENCE_DISPLAY_NAME}{"\n"}{.data.SAS_CADENCE_RELEASE}{"\n"}' > $TEMPDIR/versions/$namespace\_cadence.txt 2>> $logfile
+                $KUBECTLCMD -n $namespace get $($KUBECTLCMD get cm -n $namespace -o name 2>> $logfile | grep sas-deployment-metadata) -o jsonpath='{"\n"}{.data.SAS_CADENCE_DISPLAY_NAME}{"\n"}{.data.SAS_CADENCE_RELEASE}{"\n"}' > $TEMPDIR/versions/$namespace\_cadence.txt 2>> $logfile
                 cat $TEMPDIR/versions/$namespace\_cadence.txt >> $logfile
+
+                echo "    - Getting license information" | tee -a $logfile
+                $KUBECTLCMD -n $namespace get $($KUBECTLCMD get secret -n $namespace -o name 2>> $logfile | grep sas-license) -o jsonpath='{.data.SAS_LICENSE}' | base64 -d 2>> $logfile | cut -d '.' -f2 | base64 -d > $TEMPDIR/versions/$namespace\_license.txt 2> /dev/null
 
                 # Collect logs from pods in PODLOGS variable
                 addLabelSelector $(echo $PODLOGS | tr ',' ' ')
