@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='get-k8s-info v1.2.06'
+version='get-k8s-info v1.2.07'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -709,6 +709,26 @@ function kviyaReport {
     cat $TEMPDIR/.kviya/work/nodeMon.out $TEMPDIR/.kviya/work/podMon.out > $TEMPDIR/reports/kviya-report_$namespace.txt
     rm -rf $TEMPDIR/.kviya/work
 }
+function nodesTimeReport {
+    # Check time sync between nodes
+    mkdir $TEMPDIR/reports 2>> $logfile
+    echo -e "Nodes Time Report\n" > $TEMPDIR/reports/nodes-time-report.txt
+    for node in $($KUBECTLCMD get node -o name 2>> $logfile | cut -d '/' -f2); do
+        nodedate=''
+        daterc=-1
+        for pod in $($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep Running | grep $node | awk '{print $1"/"$2}'); do
+            if [[ $daterc -ne 0 ]]; then
+                nodedate=$($KUBECTLCMD -n ${pod%%/*} exec -it ${pod#*/} -- date -u 2>> $logfile)
+                daterc=$?
+            else
+                break;
+            fi
+        done
+        echo -e "$node\t$nodedate" >> $TEMPDIR/reports/nodes-time-report.txt
+    done
+
+    echo -e "\nJumpbox time: $(date -u)" >> $TEMPDIR/reports/nodes-time-report.txt
+}
 function captureCasLogs {
     namespace=$1
     casDefaultControllerPod=$2
@@ -1054,6 +1074,10 @@ $KUBECTLCMD version --short > $TEMPDIR/versions/kubernetes.txt 2>> $logfile
 cat $TEMPDIR/versions/kubernetes.txt >> $logfile
 kustomize version --short > $TEMPDIR/versions/kustomize.txt 2>> $logfile
 cat $TEMPDIR/versions/kustomize.txt >> $logfile
+
+# Capturing nodes time information
+echo "  - Capturing nodes time information" | tee -a $logfile
+nodesTimeReport
 
 # Look for ingress-nginx namespaces
 echo 'DEBUG: Looking for Ingress Controller namespaces' >> $logfile
