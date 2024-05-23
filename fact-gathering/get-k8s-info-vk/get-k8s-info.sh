@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='get-k8s-info v1.2.07'
+version='get-k8s-info v1.2.10'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -53,7 +53,8 @@ function usage {
     echo "  -p|--deploypath  (Optional) Path of the viya \$deploy directory"
     echo "  -o|--out         (Optional) Path where the .tgz file will be created"
     echo "  -l|--logs        (Optional) Capture logs from pods using a comma separated list of label selectors"
-    echo "  -d|--debugtags   (Optional) Enable specific debug tags. Available values are: 'cas', 'config', 'postgres' and 'rabbitmq'"
+    echo "  --disabletags    (Optional) Disable specific debug tags. By default, all tags are enabled."
+    echo "                              Available values are: 'backups', 'cas', 'config', 'postgres' and 'rabbitmq'"
     echo "  -i|--tfvars      (Optional) Path of the terraform.tfvars file"
     echo "  -a|--ansiblevars (Optional) Path of the ansible-vars.yaml file"
     echo "  -s|--sastsdrive  (Optional) Send the .tgz file to SASTSDrive through sftp."
@@ -67,10 +68,10 @@ function usage {
     echo "You can also specify all options in the command line"
     echo "  $ $script --case CS0001234 --namespace viya-prod --deploypath /home/user/viyadeployment --out /tmp"
     echo;
-    echo "Use the '--logs' and '--debugtags' options to collect logs and information from specific components"
-    echo "  $ $script --logs 'sas-microanalytic-score,type=esp,workload.sas.com/class=stateful,job-name=' --debugtags 'postgres,cas'"
+    echo "Use the '--logs' option to collect logs from specific pods"
+    echo "  $ $script --logs 'sas-microanalytic-score,type=esp,workload.sas.com/class=stateful,job-name='"
     echo;
-    echo "                                 By: Alexandre Gomes - August 31st 2023"
+    echo "                                 By: Alexandre Gomes - May 22, 2024"
     echo "https://gitlab.sas.com/sbralg/tools-and-scripts/-/blob/main/get-k8s-info"
 }
 function version {
@@ -121,10 +122,11 @@ if $KUBECTLCMD api-resources 2>> $logfile | grep project.openshift.io > /dev/nul
 else isOpenShift='false';fi
 
 # Initialize Variables
-POSTGRES=false
-RABBITMQ=false
-CAS=false
-CONFIG=false
+POSTGRES=true
+RABBITMQ=true
+CAS=true
+CONFIG=true
+BACKUPS=true
 SASTSDRIVE=false
 
 POSITIONAL_ARGS=()
@@ -148,12 +150,23 @@ while [[ $# -gt 0 ]]; do
       shift # past argument
       shift # past value
       ;;
-    -d|--debugtag|--debugtags)
+    --debugtag|--debugtags)
+      echo -e "WARNING: The '--debugtag' option is deprecated. All debug tags are already enabled by default.\n" | tee -a $logfile
+      shift # past argument
+      shift # past value
+      ;;
+    -d)
+      usage
+      echo -e "\nERROR: The '-d' option is deprecated. All debug tags are already enabled by default. In the future, '-d' will be used to DISABLE specific debug tags." | tee -a $logfile
+      cleanUp 1
+      ;;
+    --disabletag|--disabletags)
       TAGS=$(echo "$2" | tr '[:upper:]' '[:lower:]')
-      if [[ $TAGS =~ 'postgres' ]]; then POSTGRES=true;fi
-      if [[ $TAGS =~ 'rabbitmq' ]]; then RABBITMQ=true;fi
-      if [[ $TAGS =~ 'cas' ]]; then CAS=true;fi
-      if [[ $TAGS =~ 'config' || $TAGS =~ 'consul' ]]; then CONFIG=true;fi
+      if [[ $TAGS =~ 'postgres' ]]; then POSTGRES=false;fi
+      if [[ $TAGS =~ 'rabbitmq' ]]; then RABBITMQ=false;fi
+      if [[ $TAGS =~ 'cas' ]]; then CAS=false;fi
+      if [[ $TAGS =~ 'config' || $TAGS =~ 'consul' ]]; then CONFIG=false;fi
+      if [[ $TAGS =~ 'backup' ]]; then BACKUPS=false;fi
       shift # past argument
       shift # past value
       ;;
@@ -191,7 +204,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     -*|--*)
       usage
-      echo -e "ERROR: Unknown option $1" | tee -a $logfile
+      echo -e "\nERROR: Unknown option $1" | tee -a $logfile
       cleanUp 1
       ;;
     *)
@@ -716,7 +729,7 @@ function nodesTimeReport {
     for node in $($KUBECTLCMD get node -o name 2>> $logfile | cut -d '/' -f2); do
         nodedate=''
         daterc=-1
-        for pod in $($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep Running | grep $node | awk '{print $1"/"$2}'); do
+        for pod in $($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep " Running " | grep " $node " | awk '{print $1"/"$2}'); do
             if [[ $daterc -ne 0 ]]; then
                 nodedate=$($KUBECTLCMD -n ${pod%%/*} exec -it ${pod#*/} -- date -u 2>> $logfile)
                 daterc=$?
@@ -909,11 +922,41 @@ function getNamespaceData() {
                 # rabbitmq debugtag
                 if [[ "$RABBITMQ" = true || $notreadylist =~ 'sas-rabbitmq-server' || $notreadylist =~ 'sas-arke' ]]; then
                     echo "    - Getting rabbitmq information" | tee -a $logfile
-                    addLabelSelector 'sas-rabbitmq-server sas-arke'
+                    addLabelSelector 'sas-rabbitmq-server' 'sas-arke'
                     for rabbitmqPod in $($KUBECTLCMD -n $namespace get pod -l 'app=sas-rabbitmq-server' --no-headers 2>> $logfile | awk '{print $1}'); do
                         mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod
                         $KUBECTLCMD -n $namespace exec -it $rabbitmqPod -c sas-rabbitmq-server 2>> $logfile -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl report' > $TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_report.txt 2>> $logfile
                     done
+                fi
+                # backups debugtag
+                if [[ "$BACKUPS" = true ]]; then
+                    echo "    - Getting backups information" | tee -a $logfile
+                    # Backup related pod logs
+                    addLabelSelector 'sas.com/backup-job-type=scheduled-backup' 'sas.com/backup-job-type=scheduled-backup-incremental' 'sas.com/backup-job-type=restore' 'sas.com/backup-job-type=purge-backup'
+
+                    # Information from backup PVCs
+                    for backupPod in $($KUBECTLCMD -n $namespace get pod -l 'sas.com/backup-job-type in (scheduled-backup,scheduled-backup-incremental,restore,purge-backup)' --no-headers 2>> $logfile | grep ' NotReady \| Running ' | awk '{print $1}'); do
+                        # sas-common-backup-data PVC
+                        mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$backupPod
+                        podContainer=$($KUBECTLCMD -n $namespace get pod $backupPod -o jsonpath={.spec.containers[0].name} 2>> $logfile)
+                        $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer 2>> $logfile -- bash -c 'ls -la /sasviyabackup' > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_ls_sasviyabackup.txt 2>> $logfile
+                        backupsListRc=$?
+                        if [[ $backupsListRc -eq 0 ]]; then 
+                            $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer -- find /sasviyabackup -name status.json -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_find_status.json.txt 2>> $logfile
+                            $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer -- find /sasviyabackup -name SharedServices_pg_dump.log -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_find_SharedServices-pg-dump.log.txt 2>> $logfile
+                            break
+                        else
+                            rm -rf $TEMPDIR/kubernetes/$namespace/exec/$backupPod
+                        fi
+                    done
+                    # sas-cas-backup-data PVC
+                    mkdir -p $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller
+                    $KUBECTLCMD -n $namespace exec -it sas-cas-server-default-controller -c sas-backup-agent 2>> $logfile -- bash -c 'ls -la /sasviyabackup' > $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_ls_sasviyabackups.txt 2>> $logfile
+                    $KUBECTLCMD -n $namespace exec -it sas-cas-server-default-controller -c sas-backup-agent -- find /sasviyabackup -name status.json -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_find_status.json.txt 2>> $logfile
+
+                    # Past backup and restore status
+                    $KUBECTLCMD -n $namespace get jobs -l "sas.com/backup-job-type in (scheduled-backup, scheduled-backup-incremental)" -L "sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-backup-job-status,sas.com/sas-backup-persistence-status,sas.com/sas-backup-datasource-types" --sort-by=.status.startTime > $TEMPDIR/reports/backup-status_$namespace.txt 2>> $logfile
+                    $KUBECTLCMD -n $namespace get jobs -l "sas.com/backup-job-type=restore" -L "sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-restore-id,sas.com/sas-restore-status,sas.com/sas-restore-tenant-status-provider" > $TEMPDIR/reports/restore-status_$namespace.txt 2>> $logfile
                 fi
             else
                 # Not Viya Namespace

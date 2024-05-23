@@ -107,17 +107,20 @@ Namespaces with a Viya deployment:
 
 **Note**: The default label key is "app=". As such, if a value without '=' is provided, the actual label selector will be 'app=\<value\>'.
 
-* -d | --debugtags  
+* --disabletags  
 
-    Used to perform specific actions from the script based on a debugtag provided. Available debugtags are:  
+    Used to disable specific actions from the script based on a debug tag provided. Available debug tags are:  
 
+    * 'backups': Capture logs from all backup and restore pods, capture information from backup pvcs and generate reports with status from past backups and restores.  
     * 'cas': Capture logs from all cas related pods (sas-cas-control, sas-cas-operator, sas-cas-server controller and workers) and capture all casdeployment objects YAML definition.  
     * 'config': Dump all key-value pairs currently defined in Consul.  
     * 'postgres': Collect log from the sas-data-server-operator pod and all pgcluster objects YAML definition. If Postgres was deployed internally, also collect logs from all crunchy data pods, the pgha configmap YAML definition and the 'patronictl' command output.
     * 'rabbitmq': Collects logs from all rabbitmq and sas-arke pods and also collects specific rabbitmq information by running the 'rabbitmqctl report' command on each pod.
 
+**Note**: All debug tags are enabled by default.
+
 ```
-./get-k8s-info.sh --debugtags 'postgres,cas'
+./get-k8s-info.sh --disabletags 'postgres,cas'
 ```
 
 * -i | --tfvars 
