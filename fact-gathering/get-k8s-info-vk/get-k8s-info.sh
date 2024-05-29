@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='get-k8s-info v1.2.10'
+version='get-k8s-info v1.2.12'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -114,6 +114,11 @@ elif type oc > /dev/null 2>> $logfile; then
     KUBECTLCMD='oc'
 else
     echo;echo "ERROR: Neither 'kubectl' or 'oc' are installed in PATH." | tee -a $logfile
+    cleanUp 1
+fi
+if ! $KUBECTLCMD get namespaces > /dev/null 2>> $logfile; then
+    $KUBECTLCMD get namespaces > /dev/null
+    echo -e "\nERROR: Error while executing '$KUBECTLCMD' commands. Make sure you're able to use '$KUBECTLCMD' against the kubernetes cluster before running this script." | tee -a $logfile
     cleanUp 1
 fi
 
@@ -939,11 +944,12 @@ function getNamespaceData() {
                         # sas-common-backup-data PVC
                         mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$backupPod
                         podContainer=$($KUBECTLCMD -n $namespace get pod $backupPod -o jsonpath={.spec.containers[0].name} 2>> $logfile)
-                        $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer 2>> $logfile -- bash -c 'ls -la /sasviyabackup' > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_ls_sasviyabackup.txt 2>> $logfile
+                        $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer 2>> $logfile -- bash -c 'ls -lRa /sasviyabackup' > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_ls_sasviyabackup.txt 2>> $logfile
                         backupsListRc=$?
                         if [[ $backupsListRc -eq 0 ]]; then 
                             $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer -- find /sasviyabackup -name status.json -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_find_status.json.txt 2>> $logfile
-                            $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer -- find /sasviyabackup -name SharedServices_pg_dump.log -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_find_SharedServices-pg-dump.log.txt 2>> $logfile
+                            $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer -- find /sasviyabackup -name *_pg_dump.log -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_find_pg-dump.log.txt 2>> $logfile
+                            $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer -- find /sasviyabackup -name pg_restore_*.log -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_find_pg-restore.log.txt 2>> $logfile
                             break
                         else
                             rm -rf $TEMPDIR/kubernetes/$namespace/exec/$backupPod
@@ -951,7 +957,7 @@ function getNamespaceData() {
                     done
                     # sas-cas-backup-data PVC
                     mkdir -p $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller
-                    $KUBECTLCMD -n $namespace exec -it sas-cas-server-default-controller -c sas-backup-agent 2>> $logfile -- bash -c 'ls -la /sasviyabackup' > $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_ls_sasviyabackups.txt 2>> $logfile
+                    $KUBECTLCMD -n $namespace exec -it sas-cas-server-default-controller -c sas-backup-agent 2>> $logfile -- bash -c 'ls -lRa /sasviyabackup' > $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_ls_sasviyabackups.txt 2>> $logfile
                     $KUBECTLCMD -n $namespace exec -it sas-cas-server-default-controller -c sas-backup-agent -- find /sasviyabackup -name status.json -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_find_status.json.txt 2>> $logfile
 
                     # Past backup and restore status
