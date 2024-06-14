@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='kviya-recorder v1.1.9'
+version='kviya-recorder v1.1.11'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -27,6 +27,8 @@ version='kviya-recorder v1.1.9'
 # If you do not have an existing agreement with SAS governing the Software, you may not use the Code.
 
 echo -e "$version\n$(date)\n$(bash --version | head -1)\n$(uname -a)\nCommand: ${0} ${@}\n"
+
+script=$(echo $0 | rev | cut -d '/' -f1 | rev)
 function usage {
     echo Version: "$version"
     echo;echo "Usage: kviya-recorder [OPTIONS]..."
@@ -76,12 +78,17 @@ function ctrl_c() {
             echo -e "\nWARNING: Process interrupted while collecting logs from active pods"
         fi
         echo -e "\nINFO: Killing log collector processes"
-        jobs=$(ps -o pid= --ppid $logMonPid 2> /dev/null)
+        pgid=$(ps -o pgid= $$)
+        jobs=($(ps -eo pid=,cmd=,pgid= 2> /dev/null | grep $pgid | grep $KUBECTLCMD | grep -v grep | awk '{print $1}'))
         kill $logMonPid > /dev/null 2>&1
         wait $logMonPid 2> /dev/null
-        kill $jobs > /dev/null 2>&1
+        kill ${jobs[@]} > /dev/null 2>&1
         for logfile in $(ls $TEMPDIR/.kviya/logMon/logs/*.log 2> /dev/null ); do
-            tar -czf ${logfile::-4}.tgz --remove-files --directory=$TEMPDIR/.kviya/logMon/logs ${logfile##*/} 2> /dev/null
+            if [ -s $logfile ]; then
+                tar -czf ${logfile::-4}.tgz --remove-files --directory=$TEMPDIR/.kviya/logMon/logs ${logfile##*/} 2> /dev/null
+            else
+                rm $logfile
+            fi
         done
         mv $TEMPDIR/.kviya/logMon/logs $TEMPDIR/logs
         mv $TEMPDIR/.kviya/logMon/describe $TEMPDIR/describe
@@ -106,10 +113,39 @@ function ctrl_c() {
     fi
 }
 
+# Check for updates
+latestVersion=$(curl -s https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/kviya-recorder-vk/kviya-recorder 2> /dev/null | grep '^version=' | cut -d "'" -f2)
+if [[ ! -z $latestVersion ]]; then
+    if [[ $(cut -d 'v' -f3 <<< $latestVersion | tr -d '.') -gt $(version | cut -d 'v' -f3 | tr -d '.') ]]; then
+        echo "WARNING: A new version is available! ($latestVersion)"
+        read -p "WARNING: It is highly recommended to use the latest version. Do you want to update this script ($(version))? (y/n) " k
+        if [ "$k" == 'y' ] || [ "$k" == 'Y' ] ; then
+            updatedScript=$(mktemp)
+            curl -s -o $updatedScript https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/kviya-recorder-vk/kviya-recorder > /dev/null 2>&1
+            scriptPath=$(dirname $(realpath -s $0))
+            if cp $updatedScript $scriptPath/$script; then echo -e "INFO: Script updated successfully. Restarting...\n";rm $updatedScript;$scriptPath/$script ${@};exit $?;else echo -e "ERROR: Script update failed!\n\nINFO: Update it manually from https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/kviya-recorder-vk/kviya-recorder"; exit 1;fi
+        fi
+    fi
+fi
+
+# Check kubectl
+if type kubectl > /dev/null; then
+    KUBECTLCMD='kubectl'
+elif type oc > /dev/null; then
+    KUBECTLCMD='oc'
+else
+    echo;echo "ERROR: Neither 'kubectl' or 'oc' are installed in PATH."
+    exit 1
+fi
+if ! $KUBECTLCMD get namespaces > /dev/null; then
+    $KUBECTLCMD get namespaces > /dev/null
+    echo -e "\nERROR: Error while executing '$KUBECTLCMD' commands. Make sure you're able to use '$KUBECTLCMD' against the kubernetes cluster before running this script."
+    exit 1
+fi
+
 # Initialize Variables
-KUBECTLCMD='kubectl'
 ARGPLAYBACKPATH="$(pwd)"
-ARGINTERVAL=2s
+ARGINTERVAL=0s
 ARGWATCH='true'
 
 # Exit if kubectl not available in the PATH or the KUBECONFIG environment variable isn't set and no default config file exists
@@ -143,9 +179,7 @@ while getopts "vh?l:n:st:i:o:" opt; do
     n)  ARGNAMESPACE=$OPTARG
         # Validate provided namespace
         if [ $(echo $ARGNAMESPACE | grep -E '^[a-z0-9][-a-z0-9]*[a-z0-9]?$') ]; then
-            if [ $($KUBECTLCMD get ns | awk '{print $1}' | grep ^$ARGNAMESPACE$) ]; then
-                KUBECTLCMD="kubectl -n $ARGNAMESPACE"
-            else
+            if [ ! $($KUBECTLCMD get ns | awk '{print $1}' | grep ^$ARGNAMESPACE$) ]; then
                 echo;echo "ERROR: Namespace '$ARGNAMESPACE' doesn't exist.";echo
                 exit 1
             fi
@@ -186,13 +220,12 @@ shift $((OPTIND-1))
 
 # If no namespace was provided, try to find one in the current context
 if [ -z $ARGNAMESPACE ]; then
-    defaultNS=$(kubectl config view --minify -o jsonpath='{..namespace}')
+    defaultNS=$($KUBECTLCMD config view --minify -o jsonpath='{..namespace}')
     if [ -z $defaultNS ]; then
         echo;echo "ERROR: No namespace set on the current context. Use the '-n' option to specify the viya namespace.";echo
         exit 1
     else
-        if [ $(kubectl get ns | awk '{print $1}' | grep $defaultNS) ]; then
-            KUBECTLCMD="kubectl -n $defaultNS"
+        if [ $($KUBECTLCMD get ns --no-headers | awk '{print $1}' | grep -E "^$defaultNS$") ]; then
             ARGNAMESPACE=$defaultNS
         else
             # Exit if the obtained namespace doesn't exist
@@ -205,6 +238,14 @@ fi
 # Set default tgz filename
 if [ -d $ARGPLAYBACKPATH ]; then 
     ARGPLAYBACKPATH=$ARGPLAYBACKPATH/kviya-playback.tgz
+fi
+# Check write permission
+touch $ARGPLAYBACKPATH 2> /dev/null
+if [ $? -ne 0 ]; then
+    echo "ERROR: Unable to create the output file '$ARGPLAYBACKPATH'. Make sure to specify a valid path with write permissions using the '-o' option.";echo
+    exit 1
+else
+    rm $ARGPLAYBACKPATH
 fi
 function addPod {
     for pod in $@; do
@@ -219,20 +260,19 @@ function addLabelSelector {
     for label in $@; do
         if [[ ! $label =~ "=" ]]; then label="app=$label" # Default label selector key is "app"
         elif [[ ${label:0-1} = "=" ]]; then label="${label%=}"; fi # Accept keys without values as label selectors
-        pods=$($KUBECTLCMD get pod -l "$label" 2> /dev/null | grep -v NAME | awk '{print $1}' | tr '\n' ' ' 2> /dev/null)
+        pods=$($KUBECTLCMD -n $ARGNAMESPACE get pod -l "$label" 2> /dev/null | grep -v NAME | awk '{print $1}' | tr '\n' ' ' 2> /dev/null)
         addPod $pods
     done
 }
 function describePod {
     mkdir -p $TEMPDIR/.kviya/describePod
     if [[ ! -f $TEMPDIR/.kviya/describePod/$1\_$2.txt ]]; then
-        if $KUBECTLCMD describe pod $1 > $TEMPDIR/.kviya/describePod/$1\_$2.txt; then
+        if $KUBECTLCMD -n $ARGNAMESPACE describe pod $1 > $TEMPDIR/.kviya/describePod/$1\_$2.txt; then
             mv $TEMPDIR/.kviya/describePod/$1\_$2.txt $TEMPDIR/.kviya/logMon/describe/$1\_$2.txt
         fi
     fi
 }
 function logMon {
-    mkdir -p $TEMPDIR/.kviya/logMon/logs $TEMPDIR/.kviya/logMon/describe
     wasDeleted=()
     containerStatus=()
     podInstance=()
@@ -248,7 +288,7 @@ function logMon {
                 fi
                 containerIndex=0
                 containers=()
-                containers=($($KUBECTLCMD get pod ${podList[$podIndex]} -o=jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}' 2> /dev/null))
+                containers=($($KUBECTLCMD -n $ARGNAMESPACE get pod ${podList[$podIndex]} -o=jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}' 2> /dev/null))
                 if [[ ${wasDeleted[$podIndex]} -ne 1 ]]; then
                     if [[ ${#containers[@]} -eq 0 ]]; then
                         wasDeleted[$podIndex]=1
@@ -259,12 +299,12 @@ function logMon {
                                 containerStatus[$podIndex$containerIndex]=0
                             fi
                             if [[ ${containerStatus[$podIndex$containerIndex]} -eq 0 ]]; then
-                                if $KUBECTLCMD logs ${podList[$podIndex]} $container --tail=1 > /dev/null 2>&1; then
+                                if $KUBECTLCMD -n $ARGNAMESPACE logs ${podList[$podIndex]} $container --tail=1 > /dev/null 2>&1; then
                                     if [[ $ARGWATCH == 'true' ]]; then
-                                        stdbuf -i0 -o0 -e0 $KUBECTLCMD logs ${podList[$podIndex]} $container -f --tail=-1 > $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log &
+                                        stdbuf -i0 -o0 -e0 $KUBECTLCMD -n $ARGNAMESPACE logs ${podList[$podIndex]} $container -f --tail=-1 > $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log 2>> $TEMPDIR/.kviya/logMon/logs/kviya-recorder_logmon.log &
                                     else
                                         echo "INFO: Starting log collector for pod: ${podList[$podIndex]} container: $container"
-                                        stdbuf -i0 -o0 -e0 $KUBECTLCMD logs ${podList[$podIndex]} $container > $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log &
+                                        stdbuf -i0 -o0 -e0 $KUBECTLCMD -n $ARGNAMESPACE logs ${podList[$podIndex]} $container > $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log 2>> $TEMPDIR/.kviya/logMon/logs/kviya-recorder_logmon.log &
                                     fi
                                     logPid[$podIndex$containerIndex]=$!
                                     containerStatus[$podIndex$containerIndex]=1
@@ -300,10 +340,10 @@ function captureSnapshot {
     mkdir $TEMPDIR/$saveTime
     $KUBECTLCMD get node > $TEMPDIR/$saveTime/getnodes.out 2> /dev/null
     $KUBECTLCMD describe node > $TEMPDIR/$saveTime/nodes-describe.out 2> /dev/null
-    $KUBECTLCMD get pod -o wide > $TEMPDIR/$saveTime/getpod.out 2> /dev/null
-    $KUBECTLCMD get events > $TEMPDIR/$saveTime/podevents.out 2> /dev/null
+    $KUBECTLCMD -n $ARGNAMESPACE get pod -o wide > $TEMPDIR/$saveTime/getpod.out 2> /dev/null
+    $KUBECTLCMD -n $ARGNAMESPACE get events > $TEMPDIR/$saveTime/podevents.out 2> /dev/null
     $KUBECTLCMD top node > $TEMPDIR/$saveTime/nodesTop.out 2> /dev/null
-    $KUBECTLCMD top pod > $TEMPDIR/$saveTime/podsTop.out 2> /dev/null
+    $KUBECTLCMD -n $ARGNAMESPACE top pod > $TEMPDIR/$saveTime/podsTop.out 2> /dev/null
     tar -czf $TEMPDIR/$saveTime.tgz --remove-files --directory=$TEMPDIR $saveTime
 }
 function main {
@@ -315,8 +355,9 @@ function main {
     fi
     logPid=()
     if [ ! -z $ARGLOGMON ]; then
+        mkdir -p $TEMPDIR/.kviya/logMon/logs $TEMPDIR/.kviya/logMon/describe
         echo -e "INFO: Capturing logs from Pods with labels '$ARGLOGMON'"
-        logMon $ARGLOGMON &
+        logMon $ARGLOGMON 2>> $TEMPDIR/.kviya/logMon/logs/kviya-recorder_logmon.log &
         logMonPid=$!
     fi
     if [ "$ARGWATCH" == 'true' ]; then 

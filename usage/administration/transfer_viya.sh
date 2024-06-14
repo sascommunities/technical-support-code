@@ -1227,20 +1227,25 @@ if [ "$isnull" = "1" ]
                     then
                     echo "ERROR: HTTP 404 when accessing folder member $uri."
                     query="select(.uri == \"$uri\")"
-                    deluri=$(jq -r "$query" "$srcchecktmp" | jq -r '.Links[] | select(.rel == "delete" ) | .href' )
-                    echo "ERROR: Need to delete the member using DELETE method on ${baseurl}${deluri}"
-                    srccheckfail=1
-                    if [ "$delete" = "1" ]
-                        then
-                        echo "NOTE: Delete option (--delete) is set. Attempting to delete the problem object."
-                        RC=$(curl -s -o /dev/null --request DELETE -w "%{http_code}" "${baseurl}${deluri}" --header "Authorization: Bearer $token")
-                        if [ "$RC" != "204" ]
+                    deluri=$(jq -r "$query" "$srcchecktmp" | jq -r '.links[] | select(.rel == "delete" ) | .href' )
+                    if [ -n "$deluri" ]
+                    then
+                        echo "ERROR: Need to delete the member using DELETE method on ${baseurl}${deluri}"
+                        srccheckfail=1
+                        if [ "$delete" = "1" ]
                             then
-                            echo "ERROR: Failed to delete object. HTTP response $RC."
-                            else
-                            echo "NOTE: Object deleted."
-                            srccheckfail=0
+                            echo "NOTE: Delete option (--delete) is set. Attempting to delete the problem object."
+                            RC=$(curl -s -o /dev/null --request DELETE -w "%{http_code}" "${baseurl}${deluri}" --header "Authorization: Bearer $token")
+                            if [ "$RC" != "204" ]
+                                then
+                                echo "ERROR: Failed to delete object. HTTP response $RC."
+                                else
+                                echo "NOTE: Object deleted."
+                                srccheckfail=0
+                            fi
                         fi
+                    else
+                        echo "ERROR: Failed to resolve delete href for member uri: $uri"
                     fi
                 fi
         done
