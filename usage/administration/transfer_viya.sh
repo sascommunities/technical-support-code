@@ -114,6 +114,7 @@ function usage {
     echo " --files                              Tell the script to export individual objects the content path supplied, rather than folders."
     echo " --endpoint                           Specify instead of --content-path to export all the item results of a given endpoint, e.g. /reports/reports"
     echo " --chunksize                          How many objects to include in each package when using --endpoint. Default is 10."
+    echo " --include-dependencies               When exporting, adds the --include-dependencies option."
     echo " --insecure, -k                       Do not fail due to certificate validation errors."
     echo "  -h, --help                          Show this usage information."
     echo ""
@@ -182,6 +183,8 @@ while [ "$1" != "" ]
                                 ;;
     --chunksize )               shift
                                 chunksize=$1
+                                ;;
+    --include-dependencies )    incdepopt="-d"
                                 ;;
     --insecure | -k )           insec=1
                                 ;;
@@ -655,8 +658,8 @@ function export {
             # Export based on endpoint
 
             # Get the base URL and access token from the profile.
-            token=$(jq ."${profile}" ~/.sas/credentials.json | jq -r '."access-token"')
-            baseurl=$(jq ."${profile}" ~/.sas/config.json | jq -r '."sas-endpoint"')
+            token=$(jq ".[\"${profile}\"]" ~/.sas/credentials.json | jq -r '."access-token"')
+            baseurl=$(jq ".[\"${profile}\"]" ~/.sas/config.json | jq -r '."sas-endpoint"')
 
             # Get the first chunk of reports to export
 
@@ -959,7 +962,7 @@ function exportdownload {
     tmpfile=$(mktemp)
 
     # Export the package and capture the output to a file.
-    $admincli $insecopt --output json -p "$srcprofile" transfer export --name "$ename" --resource-uri "$uri" > "$tmpfile" 2>&1
+    $admincli $insecopt --output json -p "$srcprofile" transfer export "${incdepopt}" --name "$ename" --resource-uri "$uri" > "$tmpfile" 2>&1
     RC=$?
 
     # Check if the output is blank, suggesting we encountered an issue connecting to the service. If so, wait a minute a try again (-s means if file exists and has a size greater than 0)
@@ -970,7 +973,7 @@ function exportdownload {
         sleep 60
         echo "NOTE: Attempting (again) to create export package for resource $uri."
         echo "$(date +"%F %T %Z") NOTE: Attempting (again) to create export package for resource $uri." >> "${efname%/*}/export.log"
-        $admincli $insecopt --output json -p "$srcprofile" transfer export --name "$ename" --resource-uri "$uri" > "$tmpfile" 2>&1
+        $admincli $insecopt --output json -p "$srcprofile" transfer export "${incdepopt}" --name "$ename" --resource-uri "$uri" > "$tmpfile" 2>&1
         RC=$?        
     fi
 
@@ -1041,7 +1044,7 @@ function endpointexportdownload {
     # Build an export
 
     # Export the package and capture the output to a file.
-    $admincli $insecopt --output json -p "$srcprofile" transfer export --request @"$package" > "$tmpfile"  2>&1
+    $admincli $insecopt --output json -p "$srcprofile" transfer export "${incdepopt}" --request @"$package" > "$tmpfile"  2>&1
     RC=$?
 
     # Check if the output is blank, suggesting we encountered an issue connecting to the service. If so, wait a minute a try again (-s means if file exists and has a size greater than 0)
@@ -1052,7 +1055,7 @@ function endpointexportdownload {
         sleep 60
         echo "NOTE: Attempting (again) to create export package for chunk $enum of endpoint $endpoint."
         echo "$(date +"%F %T %Z") NOTE: Attempting (again) to create export package for chunk $enum of endpoint $endpoint." >> "${efname%/*}/export.log"
-        $admincli $insecopt --output json -p "$srcprofile" transfer export --request @"$package "> "$tmpfile"  2>&1
+        $admincli $insecopt --output json -p "$srcprofile" transfer export "${incdepopt}" --request @"$package "> "$tmpfile"  2>&1
         RC=$?        
     fi
 
@@ -1203,8 +1206,8 @@ if [ "$isnull" = "1" ]
         fi
         
         # Get the base URL and access token from the profile.
-        token=$(jq ."${profile}" ~/.sas/credentials.json | jq -r '."access-token"')
-        baseurl=$(jq ."${profile}" ~/.sas/config.json | jq -r '."sas-endpoint"')
+        token=$(jq ".[\"${profile}\"]" ~/.sas/credentials.json | jq -r '."access-token"')
+        baseurl=$(jq ".[\"${profile}\"]" ~/.sas/config.json | jq -r '."sas-endpoint"')
         
         var=baseurl; varcheck
         
@@ -1337,7 +1340,7 @@ function errcheck {
 # If not, login.
 function authcheck {
     # only log in if our access token has expired.
-    expire=$(jq ."${profile}" ~/.sas/credentials.json | jq -r '."expiry"')
+    expire=$(jq ".[\"${profile}\"]" ~/.sas/credentials.json | jq -r '."expiry"')
 
     declare -i intexpire
     intexpire=$(date -d "$expire" +%s)
