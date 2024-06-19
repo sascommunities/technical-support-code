@@ -1517,6 +1517,13 @@ if [ -n "$endpoint" ] && [ -n "$contentpath" ]
     exit 2
 fi
 
+# If specifying files and srccheck, throw an error
+if [ -n "$srccheck" ] && [ -n "$files" ]
+    then
+    echo "ERROR: --srccheck and --files cannot both be set."
+    exit 2
+fi
+
 # Execute the appropriate function based on options specified.
 
 # If only expcheck is set, run its function directly.
