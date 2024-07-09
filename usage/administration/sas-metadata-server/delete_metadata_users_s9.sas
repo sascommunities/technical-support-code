@@ -18,14 +18,15 @@ options metaserver='meta.example.com'
 /* DATA Step to create a data set of users to delete. */
  
 data work.delusers;
+	infile datalines truncover;
     length username $ 255;
     call missing (of _character_);
-    input username $;
+    input username $1-255;
     datalines;
   deltest
   deltest1
   deltest2
-  deltest3
+  del test3
 ;;
 run;
  
