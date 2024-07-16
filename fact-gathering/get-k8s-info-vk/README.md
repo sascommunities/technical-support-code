@@ -5,7 +5,7 @@ may include:
 
 - Versions from softwares in use by the deployment
 - List and describe output from objects created in the SAS deployment namespace and other related namespaces (including kube-system)
-- YAML definition from some objects
+- YAML definition from objects
 - Describe and top output from nodes in the cluster
 - Logs from pods
 - key-value pairs from Consul
@@ -76,7 +76,7 @@ The following example runs the script providing all required options in the comm
 
 ### Additional Options
 
-You can specify options to enable additional features or collect additional information.
+You can specify options to control the script execution or collect additional information.
 
 * -n | --namespace | --namespaces
 
@@ -97,30 +97,19 @@ Namespaces with a Viya deployment:
  -> Select the namespace where the information should be collected from: 
 ```
 
-* -l | --log | --logs  
-
-    Used to capture logs from pods using a comma separated list of label selectors. 
-
-```
-./get-k8s-info.sh --logs 'sas-microanalytic-score,type=esp,workload.sas.com/class=stateful'
-```
-
-**Note**: The default label key is "app=". As such, if a value without '=' is provided, the actual label selector will be 'app=\<value\>'.
-
 * --disabletags  
 
     Used to disable specific actions from the script based on a debug tag provided. Available debug tags are:  
 
-    * 'backups': Capture logs from all backup and restore pods, capture information from backup pvcs and generate reports with status from past backups and restores.  
-    * 'cas': Capture logs from all cas related pods (sas-cas-control, sas-cas-operator, sas-cas-server controller and workers) and capture all casdeployment objects YAML definition.  
+    * 'backups': Capture information from backup pvcs and generate reports with status from past backups and restores.  
     * 'config': Dump all key-value pairs currently defined in Consul.  
-    * 'postgres': Collect log from the sas-data-server-operator pod and all pgcluster objects YAML definition. If Postgres was deployed internally, also collect logs from all crunchy data pods, the pgha configmap YAML definition and the 'patronictl' command output.
-    * 'rabbitmq': Collects logs from all rabbitmq and sas-arke pods and also collects specific rabbitmq information by running the 'rabbitmqctl report' command on each pod.
+    * 'postgres': Collects the 'patronictl list' command output.
+    * 'rabbitmq': Collects specific rabbitmq information by running the 'rabbitmqctl report' command on each pod.
 
 **Note**: All debug tags are enabled by default.
 
 ```
-./get-k8s-info.sh --disabletags 'postgres,cas'
+./get-k8s-info.sh --disabletags 'postgres,config'
 ```
 
 * -i | --tfvars 
@@ -130,6 +119,10 @@ Namespaces with a Viya deployment:
 * -a | --ansiblevars  
 
     Used to provide the path for the "ansible-vars.yaml" file that was used with the DaC project and include it in the script output file.
+
+* -w | --workers  
+
+    Used to specify how many workers the script will use to execute 'kubectl' commands in parallel. If not specified, 5 workers are used by default."
 
 * -s | --sastsdrive  
 
@@ -141,14 +134,13 @@ Namespaces with a Viya deployment:
 
 ### Automatic Debugging and Default Behavior
 
-The script has some built-in debugging steps, which can trigger additional debugtags and collect logs from pods automatically:
+The script has some built-in debugging steps which are executed automatically:
 
-* Not Ready Pods: If a pod is currently not healthy (i.e.: not "1/1 Running"), it will collect the logs from that pod automatically.
+* Pod Logs: All logs from all pods are collected by default.
 * Previous Logs: If a pod has ever been restarted automatically by kubernetes, it will collect the previous logs from that pod automatically.
 * Restarting/Unhealthy CAS: If the default CAS controller pod is not available or if it has just recently been started, the script will wait for a while and collect any log that is generated for the default CAS controller pod.
-* CAS, Postgres or Rabbitmq Pods Not Ready: If a pod from CAS, Postgres or Rabbitmq is not ready, it will automatically perform all actions from the respective debugtag.
-* Redaction of Sensitive Data: For files that can contain sensitive data (usually inside deployment assets, consul config dump or YAML object definitions), the script parses those files and redacts 
-  certificate, private keys, secrets, passwords and tokens with the string '{{ sensitive data removed }}'.
+* Time sync information: A report with the current date and time from each k8s node is generated.
+* Redaction of Sensitive Data: For files that can contain sensitive data (usually inside deployment assets, consul config dump or YAML object definitions), the script parses those files and redacts certificate, private keys, secrets, passwords and tokens with the string '{{ sensitive data removed }}'.
 
 ### Help with the Command
 

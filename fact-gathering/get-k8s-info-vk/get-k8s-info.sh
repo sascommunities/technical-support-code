@@ -4,8 +4,8 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-
-version='get-k8s-info v1.2.12'
+#set -x
+version='get-k8s-info v1.3.05'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -51,27 +51,25 @@ function usage {
     echo "  -c|--case        (Optional) SAS Tech Support case number"
     echo "  -n|--namespaces  (Optional) Comma separated list of namespaces"
     echo "  -p|--deploypath  (Optional) Path of the viya \$deploy directory"
-    echo "  -o|--out         (Optional) Path where the .tgz file will be created"
-    echo "  -l|--logs        (Optional) Capture logs from pods using a comma separated list of label selectors"
-    echo "  --disabletags    (Optional) Disable specific debug tags. By default, all tags are enabled."
-    echo "                              Available values are: 'backups', 'cas', 'config', 'postgres' and 'rabbitmq'"
     echo "  -i|--tfvars      (Optional) Path of the terraform.tfvars file"
     echo "  -a|--ansiblevars (Optional) Path of the ansible-vars.yaml file"
+    echo "  -o|--out         (Optional) Path where the .tgz file will be created"
+    echo "  --disabletags    (Optional) Disable specific debug tags. By default, all tags are enabled."
+    echo "                              Available values are: 'backups', 'config', 'postgres' and 'rabbitmq'"
     echo "  -s|--sastsdrive  (Optional) Send the .tgz file to SASTSDrive through sftp."
     echo "                              Only use this option after you were authorized by Tech Support to send files to SASTSDrive for the case."
+    echo "  -w|--workers     (Optional) Number of simultaneous "kubectl" commands that the script can execute in parallel."
+    echo "                              If not specified, 5 workers are used by default."
     echo;
     echo "Examples:"
     echo;
     echo "Run the script with no arguments for options to be prompted interactively"
     echo "  $ $script"
     echo;
-    echo "You can also specify all options in the command line"
+    echo "You can also specify options in the command line"
     echo "  $ $script --case CS0001234 --namespace viya-prod --deploypath /home/user/viyadeployment --out /tmp"
     echo;
-    echo "Use the '--logs' option to collect logs from specific pods"
-    echo "  $ $script --logs 'sas-microanalytic-score,type=esp,workload.sas.com/class=stateful,job-name='"
-    echo;
-    echo "                                 By: Alexandre Gomes - May 22, 2024"
+    echo "                                 By: Alexandre Gomes - Jun 10, 2024"
     echo "https://gitlab.sas.com/sbralg/tools-and-scripts/-/blob/main/get-k8s-info"
 }
 function version {
@@ -86,6 +84,23 @@ function cleanUp() {
             if [[ -z $1 ]]; then echo -e "\nFATAL: The script was terminated unexpectedly." | tee -a $logfile; fi
             echo -e "\nScript log saved at: $logfile"
         else rm -f $logfile; fi
+    fi
+    # Kill Subshells
+    if [[ -d $TEMPDIR/.get-k8s-info ]]; then
+        # Kill Workers
+        for worker in $(seq 1 $workers); do
+            if [[ -f $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid ]]; then
+                workerPid=$(cat $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid)
+                jobs=$(ps -o pid= --ppid $workerPid 2> /dev/null)
+                kill $jobs > /dev/null 2>&1
+                kill $workerPid > /dev/null 2>&1
+            fi
+        done
+        # Kill Task Manager
+        if [[ -f $TEMPDIR/.get-k8s-info/taskmanager/pid ]]; then
+            taskManagerPid=$(cat $TEMPDIR/.get-k8s-info/taskmanager/pid)
+            kill $taskManagerPid > /dev/null 2>&1
+        fi
     fi
     rm -rf $TEMPDIR $updatedScript
     exit $1
@@ -102,7 +117,7 @@ if [[ ! -z $latestVersion ]]; then
             updatedScript=$(mktemp)
             curl -s -o $updatedScript https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/get-k8s-info-vk/get-k8s-info.sh >> $logfile 2>&1
             scriptPath=$(dirname $(realpath -s $0))
-            if cp $updatedScript $scriptPath/$script > /dev/null 2>> $logfile; then echo -e "INFO: Script updated successfully. Restarting...\n";rm $updatedScript;$scriptPath/$script ${@};exit $?;else echo -e "ERROR: Script update failed!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile;cleanUp 1;fi
+            if cp $updatedScript $scriptPath/$script > /dev/null 2>> $logfile; then echo -e "INFO: Script updated successfully. Restarting...\n";rm -f $updatedScript;$scriptPath/$script ${@};exit $?;else echo -e "ERROR: Script update failed!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile;cleanUp 1;fi
         fi
     fi
 fi
@@ -129,10 +144,10 @@ else isOpenShift='false';fi
 # Initialize Variables
 POSTGRES=true
 RABBITMQ=true
-CAS=true
 CONFIG=true
 BACKUPS=true
 SASTSDRIVE=false
+WORKERS=5
 
 POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
@@ -144,6 +159,11 @@ while [[ $# -gt 0 ]]; do
     -v|--version)
       version
       cleanUp 0
+      ;;
+    -w|--workers)
+      WORKERS="$2"
+      shift # past argument
+      shift # past value
       ;;
     -c|--case|-t|--track)
       CASENUMBER="$2"
@@ -169,14 +189,13 @@ while [[ $# -gt 0 ]]; do
       TAGS=$(echo "$2" | tr '[:upper:]' '[:lower:]')
       if [[ $TAGS =~ 'postgres' ]]; then POSTGRES=false;fi
       if [[ $TAGS =~ 'rabbitmq' ]]; then RABBITMQ=false;fi
-      if [[ $TAGS =~ 'cas' ]]; then CAS=false;fi
       if [[ $TAGS =~ 'config' || $TAGS =~ 'consul' ]]; then CONFIG=false;fi
       if [[ $TAGS =~ 'backup' ]]; then BACKUPS=false;fi
       shift # past argument
       shift # past value
       ;;
     -l|--log|--logs)
-      PODLOGS="$2"
+      echo -e "\nINFO: The '-l|--log|--logs' option is deprecated. All logs from all pods are collected by default." | tee -a $logfile
       shift # past argument
       shift # past value
       ;;
@@ -242,12 +261,16 @@ if [ -z $TFVARSFILE ]; then
         TFVARSFILE="${TFVARSFILE/#\~/$HOME}"
     fi
 fi
-if [ ! -z $TFVARSFILE ]; then 
-    TFVARSFILE=$(realpath $TFVARSFILE 2> /dev/null)
-    if [ -d $TFVARSFILE ]; then TFVARSFILE="$TFVARSFILE/terraform.tfvars";fi
-    if [ ! -f $TFVARSFILE ]; then 
-        echo "ERROR: File '$TFVARSFILE' doesn't exist" | tee -a $logfile
-        cleanUp 1
+if [ ! -z $TFVARSFILE ]; then
+    if [[ $TFVARSFILE != 'unavailable' ]]; then
+        TFVARSFILE=$(realpath $TFVARSFILE 2> /dev/null)
+        if [ -d $TFVARSFILE ]; then TFVARSFILE="$TFVARSFILE/terraform.tfvars";fi
+        if [ ! -f $TFVARSFILE ]; then
+            echo "ERROR: --tfvars file '$TFVARSFILE' doesn't exist" | tee -a $logfile
+            cleanUp 1
+        fi
+    else
+        TFVARSFILE=''
     fi
 fi
 echo TFVARSFILE: $TFVARSFILE >> $logfile
@@ -257,7 +280,7 @@ if [ -z $DEPLOYPATH ]; then
     DEPLOYPATH="${DEPLOYPATH/#\~/$HOME}"
     if [ -z $DEPLOYPATH ]; then DEPLOYPATH=$(pwd); fi
 fi
-if [ $DEPLOYPATH != 'unavailable' ];then 
+if [ $DEPLOYPATH != 'unavailable' ]; then
     DEPLOYPATH=$(realpath $DEPLOYPATH 2> /dev/null)
     # Exit if deployment assets are not found
     if [[ ! -d $DEPLOYPATH/site-config || ! -f $DEPLOYPATH/kustomization.yaml ]]; then 
@@ -293,10 +316,6 @@ namespaces=('kube-system')
 # Look for Viya namespaces
 echo 'DEBUG: Looking for Viya namespaces' >> $logfile
 viyans=($(echo $($KUBECTLCMD get cm --all-namespaces 2>> $logfile | grep sas-deployment-metadata | awk '{print $1}') $($KUBECTLCMD get sasdeployment --all-namespaces --no-headers 2>> $logfile | awk '{print $1}') | tr ' ' '\n' | sort | uniq ))
-if [[ ! -z $ANSIBLEVARSFILE ]]; then
-    # include dac namespace
-    viyans+=($(grep 'NAMESPACE: ' $ANSIBLEVARSFILE 2>> $logfile | awk '{gsub(/\047|\"/,"");print $2}'))
-fi
 if [ ${#viyans[@]} -gt 0 ]; then echo -e "VIYA_NS: ${viyans[@]}" >> $logfile; fi
 if [ -z $USER_NS ]; then 
     if [ ${#viyans[@]} -gt 0 ]; then
@@ -325,12 +344,12 @@ else
     hasViya=false
     for ns in $(echo $USER_NS | tr ',' ' '); do
         if [[ " ${viyans[*]} " =~ " ${ns} " ]]; then hasViya=true; fi
+        if [[ ! " ${namespaces[*]} " =~ " ${ns} " ]]; then namespaces+=($ns); fi
     done
     if [ $hasViya == false ]; then
         echo "WARNING: No Viya deployments were found in any of the namespaces provided" | tee -a $logfile
         echo "WARNING: The script will continue capturing information from the namespaces provided and Viya related namespaces" | tee -a $logfile
     fi
-    namespaces+=($(echo $USER_NS | tr ',' ' '))
 fi
 
 # Check if the viya4-deployment project was used
@@ -343,7 +362,7 @@ if [ -z $ANSIBLEVARSFILE ]; then
         if [ ! -z $ANSIBLEVARSFILE ]; then 
             ANSIBLEVARSFILE=$(realpath $ANSIBLEVARSFILE 2> /dev/null)
             if [ -d $ANSIBLEVARSFILE ]; then ANSIBLEVARSFILE="$ANSIBLEVARSFILE/ansible-vars.yaml";fi
-            if [ ! -f $ANSIBLEVARSFILE ]; then 
+            if [ ! -f $ANSIBLEVARSFILE ]; then
                 echo "ERROR: File '$ANSIBLEVARSFILE' doesn't exist" | tee -a $logfile
                 cleanUp 1
             else
@@ -351,26 +370,25 @@ if [ -z $ANSIBLEVARSFILE ]; then
             fi
         fi
     done
-fi
-echo ANSIBLEVARSFILES: $ANSIBLEVARSFILES >> $logfile
-
-function addPod {
-    for pod in $@; do
-        if [ -z $podCount ];then podCount=0;fi
-        if [[ ! ${podList[@]} =~ "$pod" ]]; then
-            podList[$podCount]="$pod"
-            podCount=$[ $podCount + 1 ]
+elif [[ $ANSIBLEVARSFILE != 'unavailable' ]]; then
+    ANSIBLEVARSFILE=$(realpath $ANSIBLEVARSFILE 2> /dev/null)
+    if [ -d $ANSIBLEVARSFILE ]; then ANSIBLEVARSFILE="$ANSIBLEVARSFILE/ansible-vars.yaml";fi
+    if [ ! -f $ANSIBLEVARSFILE ]; then 
+        echo "ERROR: --ansiblevars file '$ANSIBLEVARSFILE' doesn't exist" | tee -a $logfile
+        cleanUp 1
+    else
+        # include dac namespace
+        dacns=$(grep 'NAMESPACE: ' $ANSIBLEVARSFILE 2>> $logfile | cut -d ' ' -f2)
+        if [[ ! -z $dacns && " ${viyans[*]} " =~ " $dacns " ]]; then
+            viyans+=($dacns)
+        elif [[ -z $dacns ]]; then
+            dacns='none'
         fi
-    done
-}
-function addLabelSelector {
-    for label in $@; do
-        if [[ ! $label =~ "=" ]]; then label="app=$label" # Default label selector key is "app"
-        elif [[ ${label:0-1} = "=" ]]; then label="${label%=}"; fi # Accept keys without values as label selectors
-        pods=$($KUBECTLCMD -n $namespace get pod -l "$label" --no-headers 2>> $logfile | awk '{print $1}' | tr '\n' ' ')
-        addPod $pods
-    done
-}
+        ANSIBLEVARSFILES+=("$ANSIBLEVARSFILE#$dacns")
+    fi
+fi
+echo ANSIBLEVARSFILES: ${ANSIBLEVARSFILES[*]} >> $logfile
+
 function removeSensitiveData {
     for file in $@; do
         echo "        - Removing sensitive data from ${file#*/*/*/}" | tee -a $logfile
@@ -578,7 +596,7 @@ function nodeMon {
         fi
     done
     unset nodeNames nodeStatuses nodeTaints nodeLabels nodeConditions nodePods nodeTop nodeResources nodeZone nodeVm
-    rm $TEMPDIR/.kviya/work/k8snode*
+    rm -f $TEMPDIR/.kviya/work/k8snode*
 }
 function podMon {
     ## Pod Monitoring
@@ -729,16 +747,16 @@ function kviyaReport {
 }
 function nodesTimeReport {
     # Check time sync between nodes
-    mkdir $TEMPDIR/reports 2>> $logfile
     echo -e "Nodes Time Report\n" > $TEMPDIR/reports/nodes-time-report.txt
     for node in $($KUBECTLCMD get node -o name 2>> $logfile | cut -d '/' -f2); do
         nodedate=''
         daterc=-1
         for pod in $($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep " Running " | grep " $node " | awk '{print $1"/"$2}'); do
             if [[ $daterc -ne 0 ]]; then
-                nodedate=$($KUBECTLCMD -n ${pod%%/*} exec -it ${pod#*/} -- date -u 2>> $logfile)
+                nodedate=$($KUBECTLCMD -n ${pod%%/*} exec ${pod#*/} -- date -u 2>> $logfile)
                 daterc=$?
             else
+                echo -e "    - $node\t$nodedate" | tee -a $logfile
                 break;
             fi
         done
@@ -750,12 +768,13 @@ function nodesTimeReport {
 function captureCasLogs {
     namespace=$1
     casDefaultControllerPod=$2
+    logFinished='false'
     echo "INFO: The sas-cas-server-default-controller from the $namespace namespace has recently started. Capturing logs on the background for up to 2 minutes..." | tee -a $logfile
-    # Wait a few seconds before checking containers and status
-    sleep 10
+    containerList=($($KUBECTLCMD -n $namespace get casdeployment default -o=jsonpath='{.spec.controllerTemplate.spec.initContainers[*].name} {.spec.controllerTemplate.spec.containers[*].name}' 2>> $logfile))
+    podUid=$($KUBECTLCMD -n $namespace get pod $casDefaultControllerPod -o=jsonpath='{.metadata.uid}' 2>> $logfile)
     while [[ $logFinished != 'true' ]]; do
-        containerList=($($KUBECTLCMD -n $namespace get pod $casDefaultControllerPod -o=jsonpath='{.spec.initContainers[*].name}' 2>> $logfile) $($KUBECTLCMD -n $namespace get pod $casDefaultControllerPod -o=jsonpath='{.spec.containers[*].name}' 2>> $logfile))
-        if [[ -z $containerList ]]; then
+        newPodUid=$($KUBECTLCMD -n $namespace get pod $casDefaultControllerPod -o=jsonpath='{.metadata.uid}' 2>> $logfile)
+        if [[ -z $newPodUid || $newPodUid != $podUid ]]; then
             echo "WARNING: The $casDefaultControllerPod pod crashed" | tee -a $logfile
             logFinished='true'
         else
@@ -763,7 +782,7 @@ function captureCasLogs {
             for containerIndex in ${!containerList[@]}; do
                 if [[ ${containerStarted[$containerIndex]} -ne 1 && ${containerStatusList[$containerIndex]} != 'Waiting' ]]; then
                     echo "INFO: Capturing logs from the $casDefaultControllerPod:${containerList[$containerIndex]} container on the background" | tee -a $logfile
-                    stdbuf -i0 -o0 -e0 $KUBECTLCMD -n $namespace logs $casDefaultControllerPod ${containerList[$containerIndex]} -f --tail=-1 > $TEMPDIR/kubernetes/$namespace/logs/$casDefaultControllerPod\_${containerList[$containerIndex]}.log 2>&1 &
+                    stdbuf -i0 -o0 -e0 $KUBECTLCMD -n $namespace logs $casDefaultControllerPod ${containerList[$containerIndex]} -f --tail=-1 > $TEMPDIR/kubernetes/$namespace/logs/${casDefaultControllerPod}_${containerList[$containerIndex]}.log 2>&1 &
                     logPid[$containerIndex]=$!
                     containerStarted[$containerIndex]=1
                 fi
@@ -799,19 +818,140 @@ function waitForCas {
             sleep 1
             currentTime=$(date +%s)
         done
-        echo "INFO: Killing log collector processes that were running on the background" | tee -a $logfile
         jobs=$(ps -o pid= --ppid $captureCasLogsPid 2> /dev/null)
-        kill $captureCasLogsPid > /dev/null 2>&1
-        wait $captureCasLogsPid 2> /dev/null
-        kill $jobs > /dev/null 2>&1
+        if [[ ! -z $jobs || -d "/proc/$captureCasLogsPid" ]]; then
+            echo "DEBUG: Killing log collector processes that were running on the background for namespace $namespace" >> $logfile
+            kill $captureCasLogsPid > /dev/null 2>&1
+            wait $captureCasLogsPid 2> /dev/null
+            kill $jobs > /dev/null 2>&1
+        fi
     else
         echo "WARNING: The sas-cas-server-default-controller did not start" | tee -a $logfile
     fi
 }
+function createTask() {
+    echo $1:$2 >> $TEMPDIR/.get-k8s-info/taskmanager/tasks
+}
+function runTask() {
+    task=$1
+    taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d ':' -f1)
+    taskOutput=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d ':' -f2)
+    echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Executing" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+    eval ${taskCommand} > ${taskOutput} 2> $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log
+    if [[ $? -ne 0 ]]; then
+        echo -e "\nTask #$task: $taskCommand > ${taskOutput}" | cat - $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log >> $TEMPDIR/.get-k8s-info/kubectl_errors.log
+    fi
+    echo $task >> $TEMPDIR/.get-k8s-info/workers/worker${worker}/completedTasks
+    echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Finished" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+}
+function taskWorker() {
+    worker=$1
+    echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] - Started" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+    currentTask=0
+    lastTask=0
+
+    mkdir $TEMPDIR/.get-k8s-info/workers/worker$worker
+    touch $TEMPDIR/.get-k8s-info/workers/worker${worker}/assignedTasks
+    touch $TEMPDIR/.get-k8s-info/workers/worker${worker}/completedTasks
+    echo $BASHPID > $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid
+    
+    while true; do
+        currentTask=$(tail -1 $TEMPDIR/.get-k8s-info/workers/worker${worker}/assignedTasks)
+        if [[ $currentTask -ne $lastTask && ! -z $currentTask ]]; then
+            runTask $currentTask
+            lastTask=$currentTask
+        fi
+        if [[ ! -f $TEMPDIR/.get-k8s-info/taskmanager/pid ]]; then
+            echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] - Exiting (taskmanager was terminated)" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+            rm -f $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid
+            exit 1
+        fi
+    done
+}
+function taskManager() {
+    echo $BASHPID > $TEMPDIR/.get-k8s-info/taskmanager/pid
+
+    workers=$1
+    nextTask=1
+    totalTasks=0
+    endSignal=0
+    workersStatus=()
+    
+    # Initialize control files
+    touch $TEMPDIR/.get-k8s-info/taskmanager/tasks
+    echo 0 > $TEMPDIR/.get-k8s-info/taskmanager/assigned
+    echo 0 > $TEMPDIR/.get-k8s-info/taskmanager/completed
+    echo 0 > $TEMPDIR/.get-k8s-info/taskmanager/total
+
+    # Initialize workers
+    for worker in $(seq 1 $workers); do
+        workersStatus[$worker]='running'
+        taskWorker $worker &
+        while [[ ! -f "$TEMPDIR/.get-k8s-info/workers/worker$worker/pid" ]]; do
+            sleep 0.1
+        done
+    done
+    while true; do
+        if [[ $endSignal -lt 2 ]]; then
+            if [[ -f $TEMPDIR/.get-k8s-info/taskmanager/endsignal ]]; then endSignal=1; fi
+            if [[ $endSignal -eq 0 ]]; then
+                # Look for new tasks
+                totalTasks=$(wc -l < $TEMPDIR/.get-k8s-info/taskmanager/tasks)
+                echo $totalTasks > $TEMPDIR/.get-k8s-info/taskmanager/total
+            else
+                # Check for new tasks one last time
+                newTotalTasks=$(wc -l < $TEMPDIR/.get-k8s-info/taskmanager/tasks)
+                if [[ $newTotalTasks -eq $totalTasks ]]; then
+                    endSignal=2
+                else
+                    totalTasks=$newTotalTasks
+                    echo $totalTasks > $TEMPDIR/.get-k8s-info/taskmanager/total
+                fi
+            fi
+        fi
+
+        # Assign tasks to workers
+        assignedTasks=0
+        completedTasks=0
+        for worker in $(seq 1 $workers); do
+            workerAssignedTasks=$(wc -l < $TEMPDIR/.get-k8s-info/workers/worker${worker}/assignedTasks)
+            workerCompletedTasks=$(wc -l < $TEMPDIR/.get-k8s-info/workers/worker${worker}/completedTasks)
+            if [[ $workerAssignedTasks -eq $workerCompletedTasks && $nextTask -le $totalTasks ]]; then
+                echo $nextTask >> $TEMPDIR/.get-k8s-info/workers/worker${worker}/assignedTasks
+                nextTask=$[ $nextTask + 1 ]
+                workerAssignedTasks=$[ $workerAssignedTasks + 1 ]
+            fi
+            assignedTasks=$[ $assignedTasks + $workerAssignedTasks ]
+            completedTasks=$[ $completedTasks + $workerCompletedTasks ]
+            if [[ $endSignal -eq 3 ]]; then
+                if [[ -f $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid && $workerAssignedTasks -eq $workerCompletedTasks ]]; then
+                    workerPid=$(cat $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid)
+                    kill $workerPid > /dev/null 2>&1
+                    rm -f $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log
+                    workersStatus[$worker]='idle'
+                    echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] - Exiting (killed by taskmanager)" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+                fi
+            fi
+        done
+        echo $assignedTasks > $TEMPDIR/.get-k8s-info/taskmanager/assigned
+        echo $completedTasks > $TEMPDIR/.get-k8s-info/taskmanager/completed
+        if [[ ! ${workersStatus[@]} =~ 'running' ]]; then
+            rm -f $TEMPDIR/.get-k8s-info/taskmanager/pid
+            exit 0
+        fi
+        if [[ $endSignal -eq 2 && $assignedTasks -eq $totalTasks ]]; then
+            endSignal=3
+        fi
+        if [[ ! -f $TEMPDIR/.get-k8s-info/pid ]]; then
+            exit 1
+        fi
+    done
+}
 function getNamespaceData() {
     for namespace in $@; do
-        isViyaNs='false'
         casDefaultControllerPod=''
+        isViyaNs='false'
+        waitForCasPid=''
         if [ ! -d $TEMPDIR/kubernetes/$namespace ]; then
             echo "  - Collecting information from the '$namespace' namespace" | tee -a $logfile
             mkdir -p $TEMPDIR/kubernetes/$namespace/get $TEMPDIR/kubernetes/$namespace/describe
@@ -825,61 +965,20 @@ function getNamespaceData() {
                 fi
 
                 echo "    - Getting order number" | tee -a $logfile
-                $KUBECTLCMD -n $namespace get secret -l 'orchestration.sas.com/lifecycle=image' -o jsonpath={.items[0].data.username} 2>> $logfile | base64 -d > $TEMPDIR/versions/$namespace\_order.txt 2>> $logfile
-                cat $TEMPDIR/versions/$namespace\_order.txt >> $logfile
-                echo '' >> $logfile
+                createTask "$KUBECTLCMD -n $namespace get secret -l 'orchestration.sas.com/lifecycle=image' -o jsonpath={.items[0].data.username} 2>> $logfile | base64 -d" "$TEMPDIR/versions/${namespace}_order.txt"
 
                 echo "    - Getting cadence information" | tee -a $logfile
-                $KUBECTLCMD -n $namespace get $($KUBECTLCMD get cm -n $namespace -o name 2>> $logfile | grep sas-deployment-metadata) -o jsonpath='{"\n"}{.data.SAS_CADENCE_DISPLAY_NAME}{"\n"}{.data.SAS_CADENCE_RELEASE}{"\n"}' > $TEMPDIR/versions/$namespace\_cadence.txt 2>> $logfile
-                cat $TEMPDIR/versions/$namespace\_cadence.txt >> $logfile
+                createTask "$KUBECTLCMD -n $namespace get $($KUBECTLCMD get cm -n $namespace -o name 2>> $logfile | grep sas-deployment-metadata) -o jsonpath='VERSION {.data.SAS_CADENCE_DISPLAY_NAME}   RELEASE {.data.SAS_CADENCE_RELEASE}'" "$TEMPDIR/versions/${namespace}_cadence.txt"
 
                 echo "    - Getting license information" | tee -a $logfile
-                $KUBECTLCMD -n $namespace get $($KUBECTLCMD get secret -n $namespace -o name 2>> $logfile | grep sas-license) -o jsonpath='{.data.SAS_LICENSE}' | base64 -d 2>> $logfile | cut -d '.' -f2 | base64 -d > $TEMPDIR/versions/$namespace\_license.txt 2> /dev/null
+                createTask "$KUBECTLCMD -n $namespace get $($KUBECTLCMD get secret -n $namespace -o name 2>> $logfile | grep sas-license) -o jsonpath='{.data.SAS_LICENSE}' | base64 -d 2>> $logfile | cut -d '.' -f2 | base64 -d" "$TEMPDIR/versions/${namespace}_license.txt"
 
-                # Collect logs from pods in PODLOGS variable
-                addLabelSelector $(echo $PODLOGS | tr ',' ' ')
-                # Collect logs from Not Ready pods
-                notreadylist=$($KUBECTLCMD -n $namespace get pod --no-headers 2>> $logfile | grep -v '1/1\|2/2\|3/3\|4/4\|5/5\|6/6\|7/7\|8/8\|9/9\|Completed' | awk '{print $1}' | tr '\n' ' ')
-
-                addPod $notreadylist
-                # Collect logs from upper pods (using same rules as start-sequencer)
-                ## Level 1: Pods that should wait for Consul to be ready
-                if [[ $notreadylist =~ 'sas-arke' || $notreadylist =~ 'sas-cache' || $notreadylist =~ 'sas-redis' ]]; then 
-                    echo "INFO: Including logs from sas-consul-server pods, because there are dependent pods not ready..." | tee -a $logfile
-                    addLabelSelector 'sas-consul-server'
-                fi
-                # Level 2: Pods that should wait for Consul, Arke, and Postgres
-                if [[ $notreadylist =~ 'sas-logon-app' || $notreadylist =~ 'sas-identities' || $notreadylist =~ 'sas-configuration' || $notreadylist =~ 'sas-authorization' ]]; then 
-                    echo "INFO: Including logs from sas-consul-server and sas-arke pods and also enabling 'postgres' and 'rabbitmq' debugtags, because there are dependent pods not ready..." | tee -a $logfile
-                    addLabelSelector 'sas-consul-server'
-                    POSTGRES=true
-                    RABBITMQ=true
-                fi
-                # Level 3: Pods that should wait for SAS Logon
-                if [[ $notreadylist =~ 'sas-app-registry' || $notreadylist =~ 'sas-types' || $notreadylist =~ 'sas-transformations' || $notreadylist =~ 'sas-relationships' || \
-                    $notreadylist =~ 'sas-preferences' || $notreadylist =~ 'sas-folders' || $notreadylist =~ 'sas-files' || $notreadylist =~ 'sas-cas-administration' || \
-                    $notreadylist =~ 'sas-launcher' || $notreadylist =~ 'sas-feature-flags' || $notreadylist =~ 'sas-audit' || $notreadylist =~ 'sas-credentials' || \
-                    $notreadylist =~ 'sas-model-publish' || $notreadylist =~ 'sas-forecasting-pipelines' || $notreadylist =~ 'sas-localization' || \
-                    $notreadylist =~ 'sas-cas-operator' || $notreadylist =~ 'sas-app-registry' || $notreadylist =~ 'sas-types' || $notreadylist =~ 'sas-transformations' || \
-                    $notreadylist =~ 'sas-relationships' || $notreadylist =~ 'sas-preferences' || $notreadylist =~ 'sas-folders' || $notreadylist =~ 'sas-files' || \
-                    $notreadylist =~ 'sas-cas-administration' || $notreadylist =~ 'sas-launcher' || $notreadylist =~ 'sas-feature-flags' || $notreadylist =~ 'sas-audit' || \
-                    $notreadylist =~ 'sas-credentials' || $notreadylist =~ 'sas-model-publish' || $notreadylist =~ 'sas-forecasting-pipelines' || \
-                    $notreadylist =~ 'sas-localization' || $notreadylist =~ 'sas-cas-operator' ]]; then 
-                    echo "INFO: Including logs from sas-logon-app pod, because there are dependent pods not ready..." | tee -a $logfile
-                    addLabelSelector 'sas-logon-app'
-                fi
-                # cas debugtag
-                casDefaultControllerPod=$($KUBECTLCMD -n $namespace get pod -l casoperator.sas.com/node-type=controller,casoperator.sas.com/server=default --no-headers 2>> $logfile | awk '{print $1}')
-                if [[ "$CAS" = true || $notreadylist =~ 'sas-cas-' || -z $casDefaultControllerPod ]]; then
-                    echo "    - Getting cas information" | tee -a $logfile
-                    addLabelSelector "sas-cas-control" "sas-cas-operator" "app.kubernetes.io/name=sas-cas-server"
-                fi
                 # config debugtag
                 if [[ "$CONFIG" = true ]]; then
                     echo "    - Running sas-bootstrap-config kv read" | tee -a $logfile
                     for consulPod in $($KUBECTLCMD -n $namespace get pod -l 'app=sas-consul-server' --no-headers 2>> $logfile | awk '{print $1}'); do
                         mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$consulPod
-                        $KUBECTLCMD -n $namespace exec -it $consulPod -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=https://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read --prefix 'config/' --recurse" > $TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_sas-bootstrap-config_kv_read.txt 2>> $logfile
+                        $KUBECTLCMD -n $namespace exec $consulPod -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=https://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read --prefix 'config/' --recurse" > $TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_sas-bootstrap-config_kv_read.txt 2>> $logfile
                         if [ $? -eq 0 ]; then 
                             removeSensitiveData $TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_sas-bootstrap-config_kv_read.txt
                             break
@@ -887,246 +986,267 @@ function getNamespaceData() {
                     done
                 fi
                 # postgres debugtag
-                crunchynotreadylist=$($KUBECTLCMD -n $namespace get pod 2>> $logfile | grep 'sas-crunchy' | grep -v '1/1\|2/2\|3/3\|4/4\|5/5\|6/6\|7/7\|8/8\|9/9' | awk '{print $1"\\|"}' | grep -v "$($KUBECTLCMD -n $namespace get pod -l 'job-name' --no-headers 2>> $logfile | awk '{print $1}')" | cut -d '\' -f1 | tr '\n' ' ')
-                if [[ "$POSTGRES" = true || $notreadylist =~ 'sas-data-server-operator' || ! -z $crunchynotreadylist ]]; then
+                if [[ "$POSTGRES" = true ]]; then
                     echo "    - Getting postgres information" | tee -a $logfile
                     if [ $($KUBECTLCMD get crd pgclusters > /dev/null 2>&1;echo $?) -eq 0 ]; then
                         #Crunchy4 commands
                         for pgcluster in $($KUBECTLCMD -n $namespace get pgclusters --no-headers 2>> $logfile | awk '{print $1}'); do
-                            mkdir -p $TEMPDIR/kubernetes/$namespace/yaml/pgclusters
-                            $KUBECTLCMD -n $namespace get pgclusters $pgcluster -o yaml > $TEMPDIR/kubernetes/$namespace/yaml/pgclusters/$pgcluster.yaml 2>> $logfile
                             if [[ $pgcluster =~ 'crunchy' ]]; then 
-                                mkdir -p $TEMPDIR/kubernetes/$namespace/yaml/configmaps
-                                $KUBECTLCMD -n $namespace get configmap $pgcluster-pgha-config -o yaml > $TEMPDIR/kubernetes/$namespace/yaml/configmaps/$pgcluster-pgha-config.yaml 2>> $logfile
                                 for crunchyPod in $($KUBECTLCMD -n $namespace get pod -l "crunchy-pgha-scope=$pgcluster,role" --no-headers 2>> $logfile | awk '{print $1}'); do
                                     mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$crunchyPod
-                                    $KUBECTLCMD -n $namespace exec -it $crunchyPod -c database -- patronictl list > $TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_list.txt 2>> $logfile
+                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- patronictl list" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_list.txt"
                                 done
-                                addLabelSelector "vendor=crunchydata"
                             fi
                         done
                     fi
                     if [ $($KUBECTLCMD get crd postgresclusters.postgres-operator.crunchydata.com > /dev/null 2>&1;echo $?) -eq 0 ]; then
                         #Crunchy5 commands
                         for pgcluster in $($KUBECTLCMD -n $namespace get postgresclusters.postgres-operator.crunchydata.com --no-headers 2>> $logfile | awk '{print $1}'); do
-                            mkdir -p $TEMPDIR/kubernetes/$namespace/yaml/postgresclusters
-                            $KUBECTLCMD -n $namespace get postgresclusters.postgres-operator.crunchydata.com $pgcluster -o yaml > $TEMPDIR/kubernetes/$namespace/yaml/postgresclusters/$pgcluster.yaml 2>> $logfile
                             if [[ $pgcluster =~ 'crunchy' ]]; then
                                 for crunchyPod in $($KUBECTLCMD -n $namespace get pod -l "postgres-operator.crunchydata.com/data=postgres,postgres-operator.crunchydata.com/cluster=$pgcluster" --no-headers 2>> $logfile | awk '{print $1}'); do
                                     mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$crunchyPod
-                                    $KUBECTLCMD -n $namespace exec -it $crunchyPod -c database -- patronictl list > $TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_list.txt 2>> $logfile
+                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- patronictl list" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_list.txt"
                                 done
-                                addLabelSelector "postgres-operator.crunchydata.com/cluster=$pgcluster"
-                                crunchypods=$($KUBECTLCMD -n $namespace get pod 2>> $logfile | grep crunchy | awk '{print $1}' | tr '\n' ' ')
-                                addPod $crunchypods
                             fi
                         done
                     fi
-                    addLabelSelector "sas-data-server-operator"
                 fi
                 # rabbitmq debugtag
-                if [[ "$RABBITMQ" = true || $notreadylist =~ 'sas-rabbitmq-server' || $notreadylist =~ 'sas-arke' ]]; then
+                if [[ "$RABBITMQ" = true ]]; then
                     echo "    - Getting rabbitmq information" | tee -a $logfile
-                    addLabelSelector 'sas-rabbitmq-server' 'sas-arke'
                     for rabbitmqPod in $($KUBECTLCMD -n $namespace get pod -l 'app=sas-rabbitmq-server' --no-headers 2>> $logfile | awk '{print $1}'); do
                         mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod
-                        $KUBECTLCMD -n $namespace exec -it $rabbitmqPod -c sas-rabbitmq-server 2>> $logfile -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl report' > $TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_report.txt 2>> $logfile
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl report'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_report.txt"
                     done
+                fi
+                # Check if we should wait for cas logs
+                casDefaultControllerPod=$($KUBECTLCMD -n $namespace get pod -l casoperator.sas.com/node-type=controller,casoperator.sas.com/server=default --no-headers 2>> $logfile | awk '{print $1}')
+                if [[ (-z $casDefaultControllerPod || $($KUBECTLCMD -n $namespace get pod $casDefaultControllerPod --no-headers 2>> $logfile | awk '{print $5}' | grep -cE '^[0-9]+s$') -gt 0) ]]; then
+                    waitForCasTimeout=$[ $(date +%s) + 120 ]
+                    waitForCas $namespace $casDefaultControllerPod &
+                    waitForCasPid=$!
+                    echo $waitForCasPid:$waitForCasTimeout:$namespace >> $TEMPDIR/.get-k8s-info/waitForCas
                 fi
                 # backups debugtag
                 if [[ "$BACKUPS" = true ]]; then
                     echo "    - Getting backups information" | tee -a $logfile
-                    # Backup related pod logs
-                    addLabelSelector 'sas.com/backup-job-type=scheduled-backup' 'sas.com/backup-job-type=scheduled-backup-incremental' 'sas.com/backup-job-type=restore' 'sas.com/backup-job-type=purge-backup'
-
                     # Information from backup PVCs
                     for backupPod in $($KUBECTLCMD -n $namespace get pod -l 'sas.com/backup-job-type in (scheduled-backup,scheduled-backup-incremental,restore,purge-backup)' --no-headers 2>> $logfile | grep ' NotReady \| Running ' | awk '{print $1}'); do
                         # sas-common-backup-data PVC
                         mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$backupPod
                         podContainer=$($KUBECTLCMD -n $namespace get pod $backupPod -o jsonpath={.spec.containers[0].name} 2>> $logfile)
-                        $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer 2>> $logfile -- bash -c 'ls -lRa /sasviyabackup' > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_ls_sasviyabackup.txt 2>> $logfile
+                        $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer 2>> $logfile -- bash -c 'ls -lRa /sasviyabackup' > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_ls_sasviyabackup.txt 2>> $logfile
                         backupsListRc=$?
-                        if [[ $backupsListRc -eq 0 ]]; then 
-                            $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer -- find /sasviyabackup -name status.json -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_find_status.json.txt 2>> $logfile
-                            $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer -- find /sasviyabackup -name *_pg_dump.log -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_find_pg-dump.log.txt 2>> $logfile
-                            $KUBECTLCMD -n $namespace exec -it $backupPod -c $podContainer -- find /sasviyabackup -name pg_restore_*.log -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/$podContainer\_find_pg-restore.log.txt 2>> $logfile
+                        if [[ $backupsListRc -eq 0 ]]; then
+                            $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name status.json -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_status.json.txt 2>> $logfile
+                            $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name *_pg_dump.log -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-dump.log.txt 2>> $logfile
+                            $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name pg_restore_*.log -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-restore.log.txt 2>> $logfile
                             break
                         else
                             rm -rf $TEMPDIR/kubernetes/$namespace/exec/$backupPod
                         fi
                     done
                     # sas-cas-backup-data PVC
-                    mkdir -p $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller
-                    $KUBECTLCMD -n $namespace exec -it sas-cas-server-default-controller -c sas-backup-agent 2>> $logfile -- bash -c 'ls -lRa /sasviyabackup' > $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_ls_sasviyabackups.txt 2>> $logfile
-                    $KUBECTLCMD -n $namespace exec -it sas-cas-server-default-controller -c sas-backup-agent -- find /sasviyabackup -name status.json -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_find_status.json.txt 2>> $logfile
-
+                    if [[ ! -z $casDefaultControllerPod ]]; then
+                        mkdir -p $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller
+                        $KUBECTLCMD -n $namespace exec sas-cas-server-default-controller -c sas-backup-agent 2>> $logfile -- bash -c 'ls -lRa /sasviyabackup' > $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_ls_sasviyabackups.txt 2>> $logfile
+                        $KUBECTLCMD -n $namespace exec sas-cas-server-default-controller -c sas-backup-agent -- find /sasviyabackup -name status.json -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_find_status.json.txt 2>> $logfile
+                    fi
                     # Past backup and restore status
                     $KUBECTLCMD -n $namespace get jobs -l "sas.com/backup-job-type in (scheduled-backup, scheduled-backup-incremental)" -L "sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-backup-job-status,sas.com/sas-backup-persistence-status,sas.com/sas-backup-datasource-types" --sort-by=.status.startTime > $TEMPDIR/reports/backup-status_$namespace.txt 2>> $logfile
                     $KUBECTLCMD -n $namespace get jobs -l "sas.com/backup-job-type=restore" -L "sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-restore-id,sas.com/sas-restore-status,sas.com/sas-restore-tenant-status-provider" > $TEMPDIR/reports/restore-status_$namespace.txt 2>> $logfile
                 fi
-            else
-                # Not Viya Namespace
-                podList=$($KUBECTLCMD -n $namespace get pod --no-headers 2>> $logfile | awk '{print $1}')
             fi
             # Collect logs
+            podList=$($KUBECTLCMD -n $namespace get pod --no-headers 2>> $logfile | awk '{print $1}')
             if [ ! -z "$podList" ]; then
                 echo "    - kubectl logs" | tee -a $logfile
-                mkdir -p $TEMPDIR/kubernetes/$namespace/logs
+                mkdir -p $TEMPDIR/kubernetes/$namespace/logs/previous
+                restartedPodList=$($KUBECTLCMD -n $namespace get pod --no-headers 2>> $logfile | awk '{if ($4 > 0) print $1}' | tr '\n' ' ')
                 for pod in ${podList[@]}; do 
-                    if [ $(find $TEMPDIR/kubernetes/$namespace/logs -maxdepth 1 -name $pod* | wc -l) -eq 0 ]; then
-                        echo "      - $pod" | tee -a $logfile
-                        for container in $($KUBECTLCMD -n $namespace get pod $pod -o=jsonpath='{.spec.initContainers[*].name}' 2>> $logfile) $($KUBECTLCMD -n $namespace get pod $pod -o=jsonpath='{.spec.containers[*].name}' 2>> $logfile); do 
-                            $KUBECTLCMD -n $namespace logs $pod $container > $TEMPDIR/kubernetes/$namespace/logs/$pod\_$container.log 2>&1
-                            if [ $? -ne 0 ]; then cat $TEMPDIR/kubernetes/$namespace/logs/$pod\_$container.log >> $logfile; fi
+                    echo "      - $pod" | tee -a $logfile
+                    if [[ $isViyaNs == 'false' || -z $waitForCasPid || $pod != 'sas-cas-server-default-controller' ]]; then
+                        for container in $($KUBECTLCMD -n $namespace get pod $pod -o=jsonpath='{.spec.containers[*].name} {.spec.initContainers[*].name}' 2>> $logfile); do 
+                            createTask "$KUBECTLCMD -n $namespace logs $pod $container" "$TEMPDIR/kubernetes/$namespace/logs/${pod}_$container.log"
+                            if [[ " ${restartedPodList[@]} " =~ " $pod " ]]; then
+                                createTask "$KUBECTLCMD -n $namespace logs $pod $container --previous" "$TEMPDIR/kubernetes/$namespace/logs/previous/${pod}_${container}_previous.log"
+                            fi
                         done
+                    else
+                        echo "INFO: Logs from the sas-cas-server-default-controller pod are being collected through a background process." | tee -a $logfile
                     fi
                 done
             fi
-            # Check if we should wait for cas logs
-            if [[ (-z $casDefaultControllerPod || $($KUBECTLCMD -n $namespace get pod $casDefaultControllerPod --no-headers 2>> $logfile | awk '{print $5}' | grep -cE '^[0-9]+s$') -gt 0) && $isViyaNs == 'true' ]]; then
-                waitForCasTimeout=$[ $(date +%s) + 120 ]
-                waitForCas $namespace $casDefaultControllerPod &
-                waitForCasPid=$!
-            fi
-            
-            # If a pod has ever been restarted by kubernetes, try to capture its previous logs
-            restartedPodList=$($KUBECTLCMD -n $namespace get pod --no-headers 2>> $logfile | awk '{if ($4 > 0) print $1}' | tr '\n' ' ')
-            if [ ! -z "$restartedPodList" ]; then
-                echo "    - kubectl logs --previous" | tee -a $logfile
-                mkdir -p $TEMPDIR/kubernetes/$namespace/logs/previous
-                for pod in $restartedPodList; do
-                    echo "      - $pod" | tee -a $logfile
-                    for container in $($KUBECTLCMD -n $namespace get pod $pod -o=jsonpath='{.spec.initContainers[*].name}' 2>> $logfile) $($KUBECTLCMD -n $namespace get pod $pod -o=jsonpath='{.spec.containers[*].name}' 2>> $logfile); do 
-                        $KUBECTLCMD -n $namespace logs $pod $container --previous > $TEMPDIR/kubernetes/$namespace/logs/previous/$pod\_$container\_previous.log 2>&1
-                        if [ $? -ne 0 ]; then cat $TEMPDIR/kubernetes/$namespace/logs/previous/$pod\_$container\_previous.log >> $logfile; fi
-                    done
-                done
-            fi
+
             getobjects=(casdeployments certificaterequests certificates configmaps cronjobs daemonsets dataservers deployments distributedredisclusters endpoints espconfigs esploadbalancers esprouters espservers espupdates events horizontalpodautoscalers ingresses issuers jobs opendistroclusters persistentvolumeclaims pgclusters poddisruptionbudgets pods podtemplates postgresclusters replicasets rolebindings roles routes sasdeployments secrets securitycontextconstraints serviceaccounts services statefulsets)
             describeobjects=(casdeployments certificaterequests certificates configmaps cronjobs daemonsets dataservers deployments distributedredisclusters endpoints espconfigs esploadbalancers esprouters espservers espupdates horizontalpodautoscalers ingresses issuers jobs opendistroclusters persistentvolumeclaims pgclusters poddisruptionbudgets pods podtemplates postgresclusters replicasets rolebindings roles routes sasdeployments secrets securitycontextconstraints serviceaccounts services statefulsets)
-            yamlobjects=(casdeployments sasdeployments)
+            yamlobjects=(casdeployments certificaterequests certificates configmaps cronjobs daemonsets dataservers deployments distributedredisclusters endpoints espconfigs esploadbalancers esprouters espservers espupdates horizontalpodautoscalers ingresses issuers jobs opendistroclusters persistentvolumeclaims pgclusters poddisruptionbudgets pods podtemplates postgresclusters replicasets rolebindings roles routes sasdeployments securitycontextconstraints serviceaccounts services statefulsets)
             # get objects
             echo "    - kubectl get" | tee -a $logfile
             for object in ${getobjects[@]}; do
                 echo "      - $object" | tee -a $logfile
-                $KUBECTLCMD -n $namespace get $object -o wide > $TEMPDIR/kubernetes/$namespace/get/$object.txt 2>&1
-                if [[ $? -ne 0 || $(grep 'No resources found' $TEMPDIR/kubernetes/$namespace/get/$object.txt) ]]; then cat $TEMPDIR/kubernetes/$namespace/get/$object.txt >> $logfile; fi
+                createTask "$KUBECTLCMD -n $namespace get $object -o wide" "$TEMPDIR/kubernetes/$namespace/get/$object.txt"
             done
             # describe objects
             echo "    - kubectl describe" | tee -a $logfile
             for object in ${describeobjects[@]}; do
-                if [[ $(grep "No resources found\|error: the server doesn't have a resource type" $TEMPDIR/kubernetes/$namespace/get/$object.txt) ]]; then 
-                    cp $TEMPDIR/kubernetes/$namespace/get/$object.txt $TEMPDIR/kubernetes/$namespace/describe/$object.txt
-                else
-                    echo "      - $object" | tee -a $logfile
-                    if [ $object == 'replicasets' ]; then 
-                        # describe only active replicasets
-                        $KUBECTLCMD -n $namespace describe $object $($KUBECTLCMD -n $namespace get $object --no-headers 2>> $logfile | awk '{if ($2 > 0)print $1}' | tr '\n' ' ') > $TEMPDIR/kubernetes/$namespace/describe/$object.txt 2>&1
-                    else 
-                        $KUBECTLCMD -n $namespace describe $object > $TEMPDIR/kubernetes/$namespace/describe/$object.txt 2>&1
+                echo "      - $object" | tee -a $logfile
+                if [ $object == 'replicasets' ]; then 
+                    # describe only active replicasets
+                    createTask "$KUBECTLCMD -n $namespace describe $object $($KUBECTLCMD -n $namespace get $object --no-headers 2>> $logfile | awk '{if ($2 > 0)print $1}' | tr '\n' ' ')" "$TEMPDIR/kubernetes/$namespace/describe/$object.txt"
+                elif [[ $object == 'sasdeployments' && $isViyaNs == 'true' ]]; then 
+                    $KUBECTLCMD -n $namespace describe $object > $TEMPDIR/kubernetes/$namespace/describe/$object.txt 2>&1
+                    if [[ $? -ne 0 ]]; then 
+                        cat $TEMPDIR/kubernetes/$namespace/describe/$object.txt >> $logfile
+                    else
+                        removeSensitiveData $TEMPDIR/kubernetes/$namespace/describe/$object.txt
                     fi
-                    if [[ $? -ne 0 ]]; then cat $TEMPDIR/kubernetes/$namespace/describe/$object.txt >> $logfile; fi
-                    if [ $object == 'sasdeployments' ]; then removeSensitiveData $TEMPDIR/kubernetes/$namespace/describe/$object.txt; fi
+                else 
+                    createTask "$KUBECTLCMD -n $namespace describe $object" "$TEMPDIR/kubernetes/$namespace/describe/$object.txt"
                 fi
             done
             # yaml objects
             echo "    - kubectl get -o yaml" | tee -a $logfile
             for object in ${yamlobjects[@]}; do
-                if [[ ! $(grep "No resources found\|error: the server doesn't have a resource type" $TEMPDIR/kubernetes/$namespace/get/$object.txt) ]]; then
-                    mkdir -p $TEMPDIR/kubernetes/$namespace/yaml/$object
-                    echo "      - $object" | tee -a $logfile
-                    for objectName in $($KUBECTLCMD -n $namespace get $object --no-headers --output=custom-columns=PHASE:.metadata.name 2>> $logfile); do
-                        $KUBECTLCMD -n $namespace get $object $objectName -o yaml > $TEMPDIR/kubernetes/$namespace/yaml/$object/$objectName.yaml 2>&1
-                        if [[ $? -ne 0 ]]; then cat $TEMPDIR/kubernetes/$namespace/yaml/$object/$objectName.yaml >> $logfile; fi
-                        if [ $object == 'sasdeployments' ]; then removeSensitiveData $TEMPDIR/kubernetes/$namespace/yaml/$object/$objectName.yaml; fi
-                    done
+                mkdir -p $TEMPDIR/kubernetes/$namespace/yaml
+                echo "      - $object" | tee -a $logfile
+                if [ $object == 'replicasets' ]; then
+                    createTask "$KUBECTLCMD -n $namespace get $object $($KUBECTLCMD -n $namespace get $object --no-headers 2>> $logfile | awk '{if ($2 > 0)print $1}' | tr '\n' ' ') -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
+                elif [[ $object == 'sasdeployments' && $isViyaNs == 'true' ]]; then
+                    $KUBECTLCMD -n $namespace get $object -o yaml > $TEMPDIR/kubernetes/$namespace/yaml/$object.yaml 2>&1
+                    if [[ $? -ne 0 ]]; then 
+                        cat $TEMPDIR/kubernetes/$namespace/yaml/$object.yaml >> $logfile
+                        echo -n '' > $TEMPDIR/kubernetes/$namespace/yaml/$object.yaml
+                    else
+                        removeSensitiveData $TEMPDIR/kubernetes/$namespace/yaml/$object.yaml
+                    fi
+                else
+                    createTask "$KUBECTLCMD -n $namespace get $object -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
                 fi
             done
             # kubectl top pods
             echo "    - kubectl top pod" | tee -a $logfile
             if [[ $isOpenShift == 'false' ]]; then
                 mkdir -p $TEMPDIR/kubernetes/$namespace/top
-                $KUBECTLCMD -n $namespace top pod > $TEMPDIR/kubernetes/$namespace/top/pods.txt 2>> $logfile
+                createTask "$KUBECTLCMD -n $namespace top pod" "$TEMPDIR/kubernetes/$namespace/top/pods.txt"
             fi
-            # Collect 'kviya' compatible playback file (https://gitlab.sas.com/sbralg/tools-and-scripts/-/blob/main/kviya)
-            echo "    - Building kviya playback file" | tee -a $logfile
-            saveTime=$(date +"%YD%mD%d_%HT%MT%S")
-            mkdir -p $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime
-            cp $TEMPDIR/kubernetes/clusterwide/get/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/getnodes.out 2>> $logfile
-            cp $TEMPDIR/kubernetes/clusterwide/describe/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodes-describe.out 2>> $logfile
-            cp $TEMPDIR/kubernetes/$namespace/get/pods.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/getpod.out 2>> $logfile
-            cp $TEMPDIR/kubernetes/$namespace/get/events.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podevents.out 2>> $logfile
-            if [[ $isOpenShift == 'false' ]]; then
-                cp $TEMPDIR/kubernetes/clusterwide/top/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodesTop.out 2>> $logfile
-                cp $TEMPDIR/kubernetes/$namespace/top/pods.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podsTop.out 2>> $logfile
-            else
-                touch $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodesTop.out $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podsTop.out
-            fi
-            if [[ $isViyaNs == 'true' ]]; then
-                # Generate kviya report
-                echo "      - Generating kviya report" | tee -a $logfile
-                kviyaReport $namespace
-            fi
-            tar -czf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime.tgz --directory=$TEMPDIR/kubernetes/$namespace/.kviya $saveTime 2>> $logfile
-            rm -rf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime 2>> $logfile
-
-            if [[ ! -z $waitForCasPid && -d /proc/$waitForCasPid ]]; then
-                currentTime=$[ $(date +%s) - 30 ]
-                if [[ $currentTime -lt $waitForCasTimeout ]]; then
-                    echo "INFO: Waiting $[ $waitForCasTimeout - $currentTime ] seconds for background processes to finish"
-                    sleep $[ $waitForCasTimeout - $currentTime ]
-                fi
-                captureCasLogsPid=$(ps -o pid= --ppid "$waitForCasPid")
-                if [[ ! -z $captureCasLogsPid && -d /proc/$captureCasLogsPid ]]; then
-                    jobs=$(ps -o pid= --ppid "$captureCasLogsPid")
-                    kill $captureCasLogsPid > /dev/null 2>&1
-                    wait $captureCasLogsPid 2> /dev/null
-                    kill $jobs > /dev/null 2>&1
-                fi
-                kill $waitForCasPid > /dev/null 2>&1
-                wait $waitForCasPid 2> /dev/null
-            fi
-            unset podCount podList
+            unset podList
         fi
     done
+}
+function generateKviyaReport() {
+    namespace=$1
+    # Collect 'kviya' compatible playback file
+    saveTime=$(date +"%YD%mD%d_%HT%MT%S")
+    mkdir -p $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime
+    cp $TEMPDIR/kubernetes/clusterwide/get/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/getnodes.out 2>> $logfile
+    cp $TEMPDIR/kubernetes/clusterwide/describe/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodes-describe.out 2>> $logfile
+    cp $TEMPDIR/kubernetes/$namespace/get/pods.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/getpod.out 2>> $logfile
+    cp $TEMPDIR/kubernetes/$namespace/get/events.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podevents.out 2>> $logfile
+    if [[ $isOpenShift == 'false' ]]; then
+        cp $TEMPDIR/kubernetes/clusterwide/top/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodesTop.out 2>> $logfile
+        cp $TEMPDIR/kubernetes/$namespace/top/pods.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podsTop.out 2>> $logfile
+    else
+        touch $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodesTop.out $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podsTop.out
+    fi
+    if [[ " ${viyans[@]} " =~ " $namespace " ]]; then
+        # Generate kviya report
+        echo "DEBUG: Generating kviya report for namespace $namespace" >> $logfile
+        kviyaReport $namespace
+    fi
+    tar -czf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime.tgz --directory=$TEMPDIR/kubernetes/$namespace/.kviya $saveTime 2>> $logfile
+    rm -rf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime 2>> $logfile
 }
 function captureDiagramToolFiles {
     echo 'DEBUG: Capturing JSON files used by the K8S Diagram Tool' >> $logfile
     mkdir -p $TEMPDIR/.diagram-tool
     date -u +"%Y-%m-%dT%H:%M:%SZ" > $TEMPDIR/.diagram-tool/date.txt 2>> $logfile
-    $KUBECTLCMD get configmaps --all-namespaces -o json > $TEMPDIR/.diagram-tool/configmaps.txt 2>> $logfile
-    $KUBECTLCMD get customresourcedefinitions -o json > $TEMPDIR/.diagram-tool/crd.txt 2>> $logfile
-    $KUBECTLCMD get daemonsets --all-namespaces -o json > $TEMPDIR/.diagram-tool/daemonsets.txt 2>> $logfile
-    $KUBECTLCMD get deployments --all-namespaces -o json > $TEMPDIR/.diagram-tool/deployments.txt 2>> $logfile
-    $KUBECTLCMD get endpoints --all-namespaces -o json > $TEMPDIR/.diagram-tool/endpoints.txt 2>> $logfile
-    $KUBECTLCMD get events --all-namespaces -o json > $TEMPDIR/.diagram-tool/events.txt 2>> $logfile
-    $KUBECTLCMD get ingresses --all-namespaces -o json > $TEMPDIR/.diagram-tool/ingress.txt 2>> $logfile
-    $KUBECTLCMD get jobs --all-namespaces -o json > $TEMPDIR/.diagram-tool/jobs.txt 2>> $logfile
-    $KUBECTLCMD get namespaces -o json > $TEMPDIR/.diagram-tool/namespaces.txt 2>> $logfile
-    $KUBECTLCMD get nodes -o json > $TEMPDIR/.diagram-tool/nodes.txt 2>> $logfile
-    $KUBECTLCMD get persistentvolumeclaims --all-namespaces -o json > $TEMPDIR/.diagram-tool/pvcs.txt 2>> $logfile
-    $KUBECTLCMD get persistentvolumes -o json > $TEMPDIR/.diagram-tool/pvs.txt 2>> $logfile
-    $KUBECTLCMD get pods --all-namespaces -o json > $TEMPDIR/.diagram-tool/pods.txt 2>> $logfile
-    $KUBECTLCMD get replicasets --all-namespaces -o json > $TEMPDIR/.diagram-tool/replicasets.txt 2>> $logfile
-    $KUBECTLCMD get services --all-namespaces -o json > $TEMPDIR/.diagram-tool/services.txt 2>> $logfile
-    $KUBECTLCMD get statefulsets --all-namespaces -o json > $TEMPDIR/.diagram-tool/statefulsets.txt 2>> $logfile
-    $KUBECTLCMD get storageclasses -o json > $TEMPDIR/.diagram-tool/sc.txt 2>> $logfile
+    createTask "$KUBECTLCMD get configmaps --all-namespaces -o json" "$TEMPDIR/.diagram-tool/configmaps.txt"
+    createTask "$KUBECTLCMD get customresourcedefinitions -o json" "$TEMPDIR/.diagram-tool/crd.txt"
+    createTask "$KUBECTLCMD get daemonsets --all-namespaces -o json" "$TEMPDIR/.diagram-tool/daemonsets.txt"
+    createTask "$KUBECTLCMD get deployments --all-namespaces -o json" "$TEMPDIR/.diagram-tool/deployments.txt"
+    createTask "$KUBECTLCMD get endpoints --all-namespaces -o json" "$TEMPDIR/.diagram-tool/endpoints.txt"
+    createTask "$KUBECTLCMD get events --all-namespaces -o json" "$TEMPDIR/.diagram-tool/events.txt"
+    createTask "$KUBECTLCMD get ingresses --all-namespaces -o json" "$TEMPDIR/.diagram-tool/ingress.txt"
+    createTask "$KUBECTLCMD get jobs --all-namespaces -o json" "$TEMPDIR/.diagram-tool/jobs.txt"
+    createTask "$KUBECTLCMD get namespaces -o json" "$TEMPDIR/.diagram-tool/namespaces.txt"
+    createTask "$KUBECTLCMD get nodes -o json" "$TEMPDIR/.diagram-tool/nodes.txt"
+    createTask "$KUBECTLCMD get persistentvolumeclaims --all-namespaces -o json" "$TEMPDIR/.diagram-tool/pvcs.txt"
+    createTask "$KUBECTLCMD get persistentvolumes -o json" "$TEMPDIR/.diagram-tool/pvs.txt"
+    createTask "$KUBECTLCMD get pods --all-namespaces -o json" "$TEMPDIR/.diagram-tool/pods.txt"
+    createTask "$KUBECTLCMD get replicasets --all-namespaces -o json" "$TEMPDIR/.diagram-tool/replicasets.txt"
+    createTask "$KUBECTLCMD get services --all-namespaces -o json" "$TEMPDIR/.diagram-tool/services.txt"
+    createTask "$KUBECTLCMD get statefulsets --all-namespaces -o json" "$TEMPDIR/.diagram-tool/statefulsets.txt"
+    createTask "$KUBECTLCMD get storageclasses -o json" "$TEMPDIR/.diagram-tool/sc.txt"
+}
+function waitForTasks {
+    touch $TEMPDIR/.get-k8s-info/taskmanager/endsignal
+
+    loading='/'
+    assignedTasks=0
+    completedTasks=0
+    totalTasks=0
+
+    echo -e '\nWaiting for tasks to finish:'
+    while [[ $completedTasks -lt $totalTasks || $totalTasks -eq 0 ]]; do
+        newCompletedTasks=$(cat $TEMPDIR/.get-k8s-info/taskmanager/completed)
+        newAssignedTasks=$(cat $TEMPDIR/.get-k8s-info/taskmanager/assigned)
+        if [[ ! -z $newCompletedTasks && ! -z $newAssignedTasks ]]; then
+            newTotalTasks=$(cat $TEMPDIR/.get-k8s-info/taskmanager/total)
+            if [[ ! -z $newTotalTasks ]]; then 
+                completedTasks=$newCompletedTasks
+                assignedTasks=$newAssignedTasks
+                totalTasks=$newTotalTasks
+            fi
+        fi
+        
+        if [ $loading == '/' ]; then loading='-'
+        elif [ $loading == '-' ]; then loading='\'
+        elif [ $loading == '\' ]; then loading='|'
+        elif [ $loading == '|' ]; then loading='/'
+        fi
+
+        echo -e -n "\r\e[0K$loading Completed: $completedTasks Pending: $[ $totalTasks - $completedTasks ] Unassigned: $[ $totalTasks - $assignedTasks ] Running: $[ $assignedTasks - $completedTasks ] "
+
+        if [[ ! -f $TEMPDIR/.get-k8s-info/taskmanager/pid ]]; then
+            echo -e -n "\r\e[0K$loading Completed: $totalTasks Pending: 0 Unassigned: 0 Running: 0 "
+            break
+        fi
+        sleep 0.5s
+    done
+    echo;
+
+    if [[ -f $TEMPDIR/.get-k8s-info/waitForCas ]]; then
+        for line in $(cat $TEMPDIR/.get-k8s-info/waitForCas); do
+            waitForCasPid=$(cut -d ':' -f1 <<< $line)
+            waitForCasTimeout=$(cut -d ':' -f2 <<< $line)
+            waitForCasNamespace=$(cut -d ':' -f3 <<< $line)
+            currentTime=$[ $(date +%s) - 30 ]
+            if [[ $currentTime -lt $waitForCasTimeout ]]; then
+                echo -e "INFO: Waiting $[ $waitForCasTimeout - $currentTime ] seconds for background processes from namespace $waitForCasNamespace to finish"
+                sleep $[ $waitForCasTimeout - $currentTime ]
+            fi
+            captureCasLogsPid=$(ps -o pid= --ppid "$waitForCasPid")
+            if [[ ! -z $captureCasLogsPid && -d /proc/$captureCasLogsPid ]]; then
+                jobs=$(ps -o pid= --ppid "$captureCasLogsPid")
+                kill $captureCasLogsPid > /dev/null 2>&1
+                wait $captureCasLogsPid 2> /dev/null
+                kill $jobs > /dev/null 2>&1
+            fi
+            kill $waitForCasPid > /dev/null 2>&1
+            wait $waitForCasPid 2> /dev/null
+        done
+    fi
 }
 
-TEMPDIR=$(mktemp -d -p $OUTPATH)
-mkdir $TEMPDIR/versions
+TEMPDIR=$(mktemp -d --tmpdir=$OUTPATH -t .get-k8s-info.tmp.XXXXXXXXXX 2> /dev/null)
+mkdir -p $TEMPDIR/.get-k8s-info/workers $TEMPDIR/.get-k8s-info/taskmanager $TEMPDIR/reports $TEMPDIR/versions
+echo $BASHPID > $TEMPDIR/.get-k8s-info/pid
+
+# Launch workers
+taskManager $WORKERS &
 
 echo -e "\nINFO: Capturing environment information...\n" | tee -a $logfile
-
-echo "  - Kubernetes and Kustomize versions" | tee -a $logfile
-$KUBECTLCMD version --short > $TEMPDIR/versions/kubernetes.txt 2>> $logfile
-cat $TEMPDIR/versions/kubernetes.txt >> $logfile
-kustomize version --short > $TEMPDIR/versions/kustomize.txt 2>> $logfile
-cat $TEMPDIR/versions/kustomize.txt >> $logfile
-
-# Capturing nodes time information
-echo "  - Capturing nodes time information" | tee -a $logfile
-nodesTimeReport
 
 # Look for ingress-nginx namespaces
 echo 'DEBUG: Looking for Ingress Controller namespaces' >> $logfile
@@ -1141,9 +1261,7 @@ if [ ${#ingressns[@]} -gt 0 ]; then
     for INGRESS_NS in ${ingressns[@]}; do
         echo INGRESS_NS: $INGRESS_NS >> $logfile
         echo "  - Ingress controller version" | tee -a $logfile
-        $KUBECTLCMD -n $INGRESS_NS get deploy -l 'app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller' -o jsonpath='{.items[0].spec.template.spec.containers[].image}' > $TEMPDIR/versions/$INGRESS_NS\_ingress-controller-version.txt 2>> $logfile
-        cat $TEMPDIR/versions/$INGRESS_NS\_ingress-controller-version.txt >> $logfile
-        echo '' >> $logfile
+        createTask "$KUBECTLCMD -n $INGRESS_NS get deploy -l 'app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller' -o jsonpath='{.items[0].spec.template.spec.containers[].image}'" "$TEMPDIR/versions/${INGRESS_NS}_ingress-controller-version.txt"
     done
     namespaces+=(${ingressns[@]})
 else
@@ -1160,9 +1278,7 @@ if [ ${#certmgrns[@]} -gt 0 ]; then
     for CERTMGR_NS in ${certmgrns[@]}; do
         echo -e "CERTMGR_NS: $CERTMGR_NS" >> $logfile
         echo "  - cert-manager version" | tee -a $logfile
-        $KUBECTLCMD -n $CERTMGR_NS get deploy -l 'app.kubernetes.io/name=cert-manager,app.kubernetes.io/component=controller' -o jsonpath='{.items[0].spec.template.spec.containers[].image}' > $TEMPDIR/versions/$CERTMGR_NS\_cert-manager-version.txt 2>> $logfile
-        cat $TEMPDIR/versions/$CERTMGR_NS\_cert-manager-version.txt >> $logfile
-        echo '' >> $logfile
+        createTask "$KUBECTLCMD -n $CERTMGR_NS get deploy -l 'app.kubernetes.io/name=cert-manager,app.kubernetes.io/component=controller' -o jsonpath='{.items[0].spec.template.spec.containers[].image}'" "$TEMPDIR/versions/${CERTMGR_NS}_cert-manager-version.txt"
     done
     namespaces+=(${certmgrns[@]})
 fi
@@ -1177,9 +1293,7 @@ if [[ $isOpenShift == 'true' ]]; then
         for OCPCERTUTILS_NS in ${ocpcertutilsns[@]}; do
             echo -e "OCPCERTUTILS_NS: $OCPCERTUTILS_NS" >> $logfile
             echo "  - cert-utils-operator version" | tee -a $logfile
-            $KUBECTLCMD -n $OCPCERTUTILS_NS get deploy cert-utils-operator-controller-manager -o jsonpath='{.spec.template.spec.containers[].image}' > $TEMPDIR/versions/$OCPCERTUTILS_NS\_ocp-cert-utils-operator-version.txt 2>> $logfile
-            cat $TEMPDIR/versions/$OCPCERTUTILS_NS\_ocp-cert-utils-operator-version.txt >> $logfile
-            echo '' >> $logfile
+            createTask "$KUBECTLCMD -n $OCPCERTUTILS_NS get deploy cert-utils-operator-controller-manager -o jsonpath='{.spec.template.spec.containers[].image}'" "$TEMPDIR/versions/${OCPCERTUTILS_NS}_ocp-cert-utils-operator-version.txt"
         done
         namespaces+=(${ocpcertutilsns[@]})
     fi
@@ -1194,9 +1308,7 @@ if [ ${#nfsprovisionerns[@]} -gt 0 ]; then
     for NFSPROVISIONER_NS in ${nfsprovisionerns[@]}; do
         echo -e "NFSPROVISIONER_NS: $NFSPROVISIONER_NS" >> $logfile
         echo "  - NFS External Provisioner version" | tee -a $logfile
-        $KUBECTLCMD -n $NFSPROVISIONER_NS get deploy -l 'app=nfs-subdir-external-provisioner' -o jsonpath='{.items[0].spec.template.spec.containers[].image}' > $TEMPDIR/versions/$NFSPROVISIONER_NS\_nfs-provisioner-version.txt 2>> $logfile
-        cat $TEMPDIR/versions/$NFSPROVISIONER_NS\_nfs-provisioner-version.txt >> $logfile
-        echo '' >> $logfile
+        createTask "$KUBECTLCMD -n $NFSPROVISIONER_NS get deploy -l 'app=nfs-subdir-external-provisioner' -o jsonpath='{.items[0].spec.template.spec.containers[].image}'" "$TEMPDIR/versions/${NFSPROVISIONER_NS}_nfs-provisioner-version.txt"
     done
     namespaces+=(${nfsprovisionerns[@]})
 fi
@@ -1206,31 +1318,28 @@ sasoperatorns=($($KUBECTLCMD get deploy -l 'app.kubernetes.io/name=sas-deploymen
 if [ ${#sasoperatorns[@]} -gt 0 ]; then
     namespaces+=(${sasoperatorns[@]})
     for SASOPERATOR_NS in ${sasoperatorns[@]}; do
-        echo -e "SASOPERATOR_NS: $SASOPERATOR_NS" > $TEMPDIR/versions/$SASOPERATOR_NS\_sas-deployment-operator-version.txt
+        echo -e "SASOPERATOR_NS: $SASOPERATOR_NS" > $TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt
         echo "  - SAS Deployment Operator and sas-orchestration image versions" | tee -a $logfile
         # Check sasoperator mode
         if [[ $($KUBECTLCMD -n $SASOPERATOR_NS get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].env[1].valueFrom}' 2>> $logfile) == '' ]]; then 
-            echo -e "SASOPERATOR MODE: Cluster-Wide" >> $TEMPDIR/versions/$SASOPERATOR_NS\_sas-deployment-operator-version.txt
+            echo -e "SASOPERATOR MODE: Cluster-Wide" >> $TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt
         else
-            echo -e "SASOPERATOR MODE: Namespace" >> $TEMPDIR/versions/$SASOPERATOR_NS\_sas-deployment-operator-version.txt
+            echo -e "SASOPERATOR MODE: Namespace" >> $TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt
         fi
-        $KUBECTLCMD -n $SASOPERATOR_NS get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].image}' >> $TEMPDIR/versions/$SASOPERATOR_NS\_sas-deployment-operator-version.txt 2>> $logfile
-        cat $TEMPDIR/versions/$SASOPERATOR_NS\_sas-deployment-operator-version.txt >> $logfile
-        echo '' >> $logfile
+        createTask "$KUBECTLCMD -n $SASOPERATOR_NS get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].image}'" "$TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt"
     done
     docker image ls 2>> $logfile | grep $(docker image ls 2>> $logfile | grep '^sas-orchestration' | awk '{print $3}') > $TEMPDIR/versions/sas-orchestration-docker-image-version.txt 2>> $logfile
-    cat $TEMPDIR/versions/sas-orchestration-docker-image-version.txt >> $logfile
 fi
 
 # Look for Logging and Monitoring namespaces
 echo 'DEBUG: Looking for Logging namespaces' >> $logfile
-loggingns=($($KUBECTLCMD get deploy -l 'v4m.sas.com/name=viya4-monitoring-kubernetes' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq))
+loggingns=($($KUBECTLCMD get deploy -l 'app=eventrouter' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq))
 if [[ ${#loggingns[@]} -gt 0 ]]; then 
     echo -e "LOGGING_NS: ${loggingns[@]}" >> $logfile
     namespaces+=(${loggingns[@]})
 fi
 echo 'DEBUG: Looking for Monitoring namespaces' >> $logfile
-monitoringns=($($KUBECTLCMD get deploy -l 'sas.com/monitoring-base=kube-viya-monitoring' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq))
+monitoringns=($($KUBECTLCMD get deploy -l 'app=v4m-operator' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq))
 if [[ ${#monitoringns[@]} -gt 0 ]]; then 
     echo -e "MONITORING_NS: ${monitoringns[@]}" >> $logfile
     namespaces+=(${monitoringns[@]})
@@ -1260,70 +1369,85 @@ echo "    - kubectl get" | tee -a $logfile
 mkdir -p $TEMPDIR/kubernetes/clusterwide/get
 for object in ${clusterobjects[@]}; do
     echo "      - $object" | tee -a $logfile
-    $KUBECTLCMD get $object -o wide > $TEMPDIR/kubernetes/clusterwide/get/$object.txt 2>&1
-    if [[ $? -ne 0 || $(grep "No resources found\|error: the server doesn't have a resource type" $TEMPDIR/kubernetes/clusterwide/get/$object.txt) ]]; then cat $TEMPDIR/kubernetes/clusterwide/get/$object.txt >> $logfile; fi
+    createTask "$KUBECTLCMD get $object -o wide" "$TEMPDIR/kubernetes/clusterwide/get/$object.txt"
 done
 # describe cluster objects
 echo "    - kubectl describe" | tee -a $logfile
 mkdir -p $TEMPDIR/kubernetes/clusterwide/describe
 for object in ${clusterobjects[@]}; do
-    if [[ $(grep "No resources found\|error: the server doesn't have a resource type" $TEMPDIR/kubernetes/clusterwide/get/$object.txt) ]]; then 
-        cp $TEMPDIR/kubernetes/clusterwide/get/$object.txt $TEMPDIR/kubernetes/clusterwide/describe/$object.txt 2>> $logfile
-    else
-        echo "      - $object" | tee -a $logfile
-        $KUBECTLCMD describe $object > $TEMPDIR/kubernetes/clusterwide/describe/$object.txt 2>&1
-        if [[ $? -ne 0 ]]; then cat $TEMPDIR/kubernetes/clusterwide/describe/$object.txt >> $logfile; fi
-    fi
+    echo "      - $object" | tee -a $logfile
+    createTask "$KUBECTLCMD describe $object" "$TEMPDIR/kubernetes/clusterwide/describe/$object.txt"  
 done
 
 # kubectl top nodes
 echo "    - kubectl top nodes" | tee -a $logfile
 if [[ $isOpenShift == 'false' ]]; then
     mkdir -p $TEMPDIR/kubernetes/clusterwide/top
-    $KUBECTLCMD top node > $TEMPDIR/kubernetes/clusterwide/top/nodes.txt 2>> $logfile
+    createTask "$KUBECTLCMD top node" "$TEMPDIR/kubernetes/clusterwide/top/nodes.txt"
 fi
 
 # Collect information from selected namespaces
 getNamespaceData ${namespaces[@]}
+
+# Collect files used by the K8S Diagram Tools
+captureDiagramToolFiles
+
+echo "  - Kubernetes and Kustomize versions" | tee -a $logfile
+$KUBECTLCMD version --short > $TEMPDIR/versions/kubernetes.txt 2>> $logfile
+cat $TEMPDIR/versions/kubernetes.txt >> $logfile
+kustomize version --short > $TEMPDIR/versions/kustomize.txt 2>> $logfile
+cat $TEMPDIR/versions/kustomize.txt >> $logfile
+
+# Capturing nodes time information
+echo "  - Capturing nodes time information" | tee -a $logfile
+nodesTimeReport
 
 # Collect deployment assets
 if [ $DEPLOYPATH != 'unavailable' ]; then
     echo "  - Collecting deployment assets" | tee -a $logfile
     mkdir $TEMPDIR/assets 2>> $logfile
     cd $DEPLOYPATH 2>> $logfile
-    find . -path ./sas-bases -prune -false -o -name "*.yaml" -exec tar -rf $TEMPDIR/assets/assets.tar {} \; 2>> $logfile
+    find . -path ./sas-bases -prune -false -o -name "*.yaml" 2>> $logfile | grep -vE '\./.*sas-bases.*/.*' | tar -cf $TEMPDIR/assets/assets.tar -T - 2>> $logfile
     tar xf $TEMPDIR/assets/assets.tar --directory $TEMPDIR/assets 2>> $logfile
     rm -rf $TEMPDIR/assets/assets.tar 2>> $logfile
     removeSensitiveData $(find $TEMPDIR/assets -type f)
 fi
 
-# Collect files used by the K8S Diagram Tools
-captureDiagramToolFiles
+# Wait for pending tasks
+waitForTasks
 
-cp $logfile $TEMPDIR
+# Generate kviya reports
+for namespace in ${namespaces[@]}; do
+    if [[ ! -d $TEMPDIR/kubernetes/$namespace/.kviya ]]; then
+        generateKviyaReport $namespace
+    fi
+done
+rm -rf $TEMPDIR/.kviya
+
+cp $logfile $TEMPDIR/.get-k8s-info
 tar -czf $OUTPATH/${CASENUMBER}.tgz --directory=$TEMPDIR .
 if [ $? -eq 0 ]; then
     if [ $SASTSDRIVE == 'true' ]; then
-        echo -e "\nDone! File '$OUTPATH/${CASENUMBER}.tgz' was successfully created." | tee -a $logfile
+        echo -e "\nDone! File '$OUTPATH/${CASENUMBER}.tgz' was successfully created."
         # use an sftp batch file since the user password is expected from stdin
         cat > $TEMPDIR/SASTSDrive.batch <<< "put $OUTPATH/${CASENUMBER}.tgz $CASENUMBER"
-        echo -e "\nINFO: Performing SASTSDrive login. Use only an email that was authorized by SAS Tech Support for the case\n" | tee -a $logfile
+        echo -e "\nINFO: Performing SASTSDrive login. Use only an email that was authorized by SAS Tech Support for the case\n"
         read -p " -> SAS Profile Email: " EMAIL
-        echo '' | tee -a $logfile
-        sftp -oPubkeyAuthentication=no -oPasswordAuthentication=no -oNumberOfPasswordPrompts=2 -oConnectTimeout=1 -oBatchMode=no -b $TEMPDIR/SASTSDrive.batch "${EMAIL}"@sft.sas.com > /dev/null 2>> $logfile
+        echo ''
+        sftp -oPubkeyAuthentication=no -oPasswordAuthentication=no -oNumberOfPasswordPrompts=2 -oConnectTimeout=1 -oBatchMode=no -b $TEMPDIR/SASTSDrive.batch "${EMAIL}"@sft.sas.com > /dev/null
         if [ $? -ne 0 ]; then 
-            echo -e "\nERROR: Failed to send the '$OUTPATH/${CASENUMBER}.tgz' file to SASTSDrive through sftp. Will not retry." | tee -a $logfile
-            echo -e "\nSend the '$OUTPATH/${CASENUMBER}.tgz' file to SAS Tech Support using a browser (https://support.sas.com/kb/65/014.html#upload) or through the case.\n" | tee -a $logfile
+            echo -e "\nERROR: Failed to send the '$OUTPATH/${CASENUMBER}.tgz' file to SASTSDrive through sftp. Will not retry."
+            echo -e "\nSend the '$OUTPATH/${CASENUMBER}.tgz' file to SAS Tech Support using a browser (https://support.sas.com/kb/65/014.html#upload) or through the case.\n"
             cleanUp 1
         else 
-            echo -e "\nDone! File successfully sent to SASTSDrive.\n" | tee -a $logfile
+            echo -e "\nFile successfully sent to SASTSDrive.\n"
             cleanUp 0
         fi
     else
-        echo -e "\nDone! File '$OUTPATH/${CASENUMBER}.tgz' was successfully created. Send it to SAS Tech Support.\n" | tee -a $logfile
+        echo -e "\nDone! File '$OUTPATH/${CASENUMBER}.tgz' was successfully created. Send it to SAS Tech Support.\n"
         cleanUp 0
     fi
 else
-    echo "ERROR: Failed to save output file '$OUTPATH/${CASENUMBER}.tgz'." | tee -a $logfile
+    echo "\nERROR: Failed to save output file '$OUTPATH/${CASENUMBER}.tgz'."
     cleanUp 1
 fi
