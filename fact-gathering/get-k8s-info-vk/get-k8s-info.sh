@@ -4,8 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-#set -x
-version='get-k8s-info v1.3.05'
+version='get-k8s-info v1.3.06'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -952,13 +951,75 @@ function getNamespaceData() {
         casDefaultControllerPod=''
         isViyaNs='false'
         waitForCasPid=''
+
+        certmanagerobjects=(certificaterequests certificates issuers)
+        crunchydata4objects=(pgclusters)
+        crunchydata5objects=(pgupgrades postgresclusters)
+        espobjects=(espconfigs esploadbalancers esprouters espservers espupdates)
+        monitoringobjects=(alertmanagerconfigs alertmanagers podmonitors probes prometheusagents prometheuses prometheusrules scrapeconfigs servicemonitors thanosrulers)
+        nginxobjects=(ingresses)
+        openshiftobjects=(routes securitycontextconstraints)
+        orchestrationobjects=(sasdeployments)
+        viyaobjects=(casdeployments dataservers distributedredisclusters opendistroclusters)
+
+        getobjects=(configmaps cronjobs daemonsets deployments endpoints events horizontalpodautoscalers jobs persistentvolumeclaims poddisruptionbudgets pods podtemplates replicasets rolebindings roles secrets serviceaccounts services statefulsets)
+        describeobjects=(configmaps cronjobs daemonsets deployments endpoints horizontalpodautoscalers jobs persistentvolumeclaims poddisruptionbudgets pods podtemplates replicasets rolebindings roles secrets serviceaccounts services statefulsets)
+        yamlobjects=(configmaps cronjobs daemonsets deployments endpoints horizontalpodautoscalers jobs persistentvolumeclaims poddisruptionbudgets pods podtemplates replicasets rolebindings roles serviceaccounts services statefulsets)
+
+        if [[ $hasMonitoringCRD == 'true' ]]; then
+            getobjects+=(${monitoringobjects[@]})
+            describeobjects+=(${monitoringobjects[@]})
+            yamlobjects+=(${monitoringobjects[@]})
+        fi
+        if [[ $isOpenShift == 'true' ]]; then
+            getobjects+=(${openshiftobjects[@]})
+            describeobjects+=(${openshiftobjects[@]})
+            yamlobjects+=(${openshiftobjects[@]})
+        else
+            getobjects+=(${nginxobjects[@]})
+            describeobjects+=(${nginxobjects[@]})
+            yamlobjects+=(${nginxobjects[@]})
+        fi
+        if [[ $hasOrchestrationCRD == 'true' ]]; then
+            getobjects+=(${orchestrationobjects[@]})
+            describeobjects+=(${orchestrationobjects[@]})
+            yamlobjects+=(${orchestrationobjects[@]})
+        fi
+        
         if [ ! -d $TEMPDIR/kubernetes/$namespace ]; then
             echo "  - Collecting information from the '$namespace' namespace" | tee -a $logfile
-            mkdir -p $TEMPDIR/kubernetes/$namespace/get $TEMPDIR/kubernetes/$namespace/describe
+            mkdir -p $TEMPDIR/kubernetes/$namespace/describe $TEMPDIR/kubernetes/$namespace/get $TEMPDIR/kubernetes/$namespace/yaml
 
             # If this namespace contains a Viya deployment
             if [[ " ${viyans[*]} " =~ " ${namespace} " ]]; then
                 isViyaNs='true'
+
+                getobjects+=(${viyaobjects[@]})
+                describeobjects+=(${viyaobjects[@]})
+                yamlobjects+=(${viyaobjects[@]})
+
+                if [[ $hasCertManagerCRD == 'true' ]]; then
+                    getobjects+=(${certmanagerobjects[@]})
+                    describeobjects+=(${certmanagerobjects[@]})
+                    yamlobjects+=(${certmanagerobjects[@]})
+                fi
+                if [[ $hasCrunchyDataCRD != 'false' ]]; then
+                    if [[ $hasCrunchyDataCRD == 'v5' ]]; then
+                        getobjects+=(${crunchydata5objects[@]})
+                        describeobjects+=(${crunchydata5objects[@]})
+                        yamlobjects+=(${crunchydata5objects[@]})
+                    else
+                        getobjects+=(${crunchydata4objects[@]})
+                        describeobjects+=(${crunchydata4objects[@]})
+                        yamlobjects+=(${crunchydata4objects[@]})
+                    fi
+                fi
+                if [[ $hasEspCRD == 'true' ]]; then
+                    getobjects+=(${espobjects[@]})
+                    describeobjects+=(${espobjects[@]})
+                    yamlobjects+=(${espobjects[@]})
+                fi
+                
                 # If using Cert-Manager
                 if [[ "$($KUBECTLCMD -n $namespace get $($KUBECTLCMD -n $namespace get cm -o name 2>> $logfile| grep sas-certframe-user-config | tail -1) -o=jsonpath='{.data.SAS_CERTIFICATE_GENERATOR}' 2>> $logfile)" == 'cert-manager' && "${#certmgrns[@]}" -eq 0 ]]; then 
                     echo "WARNING: cert-manager configured to be used by Viya in namespace $namespace, but a cert-manager instance wasn't found in the kubernetes cluster." | tee -a $logfile
@@ -988,7 +1049,7 @@ function getNamespaceData() {
                 # postgres debugtag
                 if [[ "$POSTGRES" = true ]]; then
                     echo "    - Getting postgres information" | tee -a $logfile
-                    if [ $($KUBECTLCMD get crd pgclusters > /dev/null 2>&1;echo $?) -eq 0 ]; then
+                    if [ $hasCrunchyDataCRD == 'v4' ]; then
                         #Crunchy4 commands
                         for pgcluster in $($KUBECTLCMD -n $namespace get pgclusters --no-headers 2>> $logfile | awk '{print $1}'); do
                             if [[ $pgcluster =~ 'crunchy' ]]; then 
@@ -999,7 +1060,7 @@ function getNamespaceData() {
                             fi
                         done
                     fi
-                    if [ $($KUBECTLCMD get crd postgresclusters.postgres-operator.crunchydata.com > /dev/null 2>&1;echo $?) -eq 0 ]; then
+                    if [ $hasCrunchyDataCRD == 'v5' ]; then
                         #Crunchy5 commands
                         for pgcluster in $($KUBECTLCMD -n $namespace get postgresclusters.postgres-operator.crunchydata.com --no-headers 2>> $logfile | awk '{print $1}'); do
                             if [[ $pgcluster =~ 'crunchy' ]]; then
@@ -1078,9 +1139,6 @@ function getNamespaceData() {
                 done
             fi
 
-            getobjects=(casdeployments certificaterequests certificates configmaps cronjobs daemonsets dataservers deployments distributedredisclusters endpoints espconfigs esploadbalancers esprouters espservers espupdates events horizontalpodautoscalers ingresses issuers jobs opendistroclusters persistentvolumeclaims pgclusters poddisruptionbudgets pods podtemplates postgresclusters replicasets rolebindings roles routes sasdeployments secrets securitycontextconstraints serviceaccounts services statefulsets)
-            describeobjects=(casdeployments certificaterequests certificates configmaps cronjobs daemonsets dataservers deployments distributedredisclusters endpoints espconfigs esploadbalancers esprouters espservers espupdates horizontalpodautoscalers ingresses issuers jobs opendistroclusters persistentvolumeclaims pgclusters poddisruptionbudgets pods podtemplates postgresclusters replicasets rolebindings roles routes sasdeployments secrets securitycontextconstraints serviceaccounts services statefulsets)
-            yamlobjects=(casdeployments certificaterequests certificates configmaps cronjobs daemonsets dataservers deployments distributedredisclusters endpoints espconfigs esploadbalancers esprouters espservers espupdates horizontalpodautoscalers ingresses issuers jobs opendistroclusters persistentvolumeclaims pgclusters poddisruptionbudgets pods podtemplates postgresclusters replicasets rolebindings roles routes sasdeployments securitycontextconstraints serviceaccounts services statefulsets)
             # get objects
             echo "    - kubectl get" | tee -a $logfile
             for object in ${getobjects[@]}; do
@@ -1108,7 +1166,6 @@ function getNamespaceData() {
             # yaml objects
             echo "    - kubectl get -o yaml" | tee -a $logfile
             for object in ${yamlobjects[@]}; do
-                mkdir -p $TEMPDIR/kubernetes/$namespace/yaml
                 echo "      - $object" | tee -a $logfile
                 if [ $object == 'replicasets' ]; then
                     createTask "$KUBECTLCMD -n $namespace get $object $($KUBECTLCMD -n $namespace get $object --no-headers 2>> $logfile | awk '{if ($2 > 0)print $1}' | tr '\n' ' ') -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
@@ -1339,7 +1396,7 @@ if [[ ${#loggingns[@]} -gt 0 ]]; then
     namespaces+=(${loggingns[@]})
 fi
 echo 'DEBUG: Looking for Monitoring namespaces' >> $logfile
-monitoringns=($($KUBECTLCMD get deploy -l 'app=v4m-operator' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq))
+monitoringns=($($KUBECTLCMD get deploy -l 'app.kubernetes.io/name=grafana' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq))
 if [[ ${#monitoringns[@]} -gt 0 ]]; then 
     echo -e "MONITORING_NS: ${monitoringns[@]}" >> $logfile
     namespaces+=(${monitoringns[@]})
@@ -1362,14 +1419,19 @@ if [[ ! -z $ANSIBLEVARSFILES ]]; then
 fi
 
 echo "  - Collecting cluster wide information" | tee -a $logfile
-clusterobjects=(clusterissuers clusterrolebindings clusterroles customresourcedefinitions namespaces nodes persistentvolumes storageclasses)
+clusterobjects=(clusterrolebindings clusterroles customresourcedefinitions namespaces nodes persistentvolumes storageclasses)
+if $KUBECTLCMD get crd | grep clusterissuers.cert-manager.io > /dev/null 2>&1; then clusterobjects+=(clusterissuers); fi
 
 # get cluster objects
 echo "    - kubectl get" | tee -a $logfile
 mkdir -p $TEMPDIR/kubernetes/clusterwide/get
 for object in ${clusterobjects[@]}; do
     echo "      - $object" | tee -a $logfile
-    createTask "$KUBECTLCMD get $object -o wide" "$TEMPDIR/kubernetes/clusterwide/get/$object.txt"
+    if [[ $object == 'customresourcedefinitions' ]]; then
+        $KUBECTLCMD get $object -o wide > $TEMPDIR/kubernetes/clusterwide/get/$object.txt 2>> $logfile
+    else
+        createTask "$KUBECTLCMD get $object -o wide" "$TEMPDIR/kubernetes/clusterwide/get/$object.txt"
+    fi
 done
 # describe cluster objects
 echo "    - kubectl describe" | tee -a $logfile
@@ -1385,6 +1447,19 @@ if [[ $isOpenShift == 'false' ]]; then
     mkdir -p $TEMPDIR/kubernetes/clusterwide/top
     createTask "$KUBECTLCMD top node" "$TEMPDIR/kubernetes/clusterwide/top/nodes.txt"
 fi
+
+hasCertManagerCRD='false'
+hasCrunchyDataCRD='false'
+hasEspCRD='false'
+hasMonitoringCRD='false'
+hasOrchestrationCRD='false'
+
+if grep certificates.cert-manager.io $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasCertManagerCRD='true'; fi
+if grep postgresclusters.postgres-operator.crunchydata.com $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasCrunchyDataCRD='v5'
+  elif grep pgclusters $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasCrunchyDataCRD='v4'; fi
+if grep iot.sas.com $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasEspCRD='true'; fi
+if grep monitoring.coreos.com $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasMonitoringCRD='true'; fi
+if grep orchestration.sas.com $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasOrchestrationCRD='true'; fi
 
 # Collect information from selected namespaces
 getNamespaceData ${namespaces[@]}
