@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.06'
+version='get-k8s-info v1.3.07'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -1440,7 +1440,13 @@ for object in ${clusterobjects[@]}; do
     echo "      - $object" | tee -a $logfile
     createTask "$KUBECTLCMD describe $object" "$TEMPDIR/kubernetes/clusterwide/describe/$object.txt"  
 done
-
+# get yaml cluster objects
+echo "    - kubectl get -o yaml" | tee -a $logfile
+mkdir -p $TEMPDIR/kubernetes/clusterwide/yaml
+for object in ${clusterobjects[@]}; do
+    echo "      - $object" | tee -a $logfile
+    createTask "$KUBECTLCMD get $object -o yaml" "$TEMPDIR/kubernetes/clusterwide/yaml/$object.yaml"
+done
 # kubectl top nodes
 echo "    - kubectl top nodes" | tee -a $logfile
 if [[ $isOpenShift == 'false' ]]; then
