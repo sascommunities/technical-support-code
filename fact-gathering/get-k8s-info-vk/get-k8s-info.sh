@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.07'
+version='get-k8s-info v1.3.08'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -427,13 +427,22 @@ function removeSensitiveData {
             do
                 if [ ${file##*/} == 'sas-consul-server_sas-bootstrap-config_kv_read.txt' ]; then
                     # New key
-                    if [[ "${p}" =~ 'config/' ]]; then
+                    if [[ "${p}" =~ 'config/' || "${p}" =~ 'configurationservice/' ]]; then
                         isSensitive='false'
-                        if [[ "${p}" =~ '-----BEGIN' || "${p}" =~ 'password=' ]]; then
+                        if [[ "${p}" =~ '-----BEGIN' || "${p}" =~ 'password=' || "${p}" =~ '"password":"' ]]; then
                             isSensitive='true'
                             printf '%s=%s\n' "${p%%=*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
                         elif [[ "${p}" =~ 'pwd=' ]] ;then
                             printf '%s%s%s\n' "${p%%pwd*}" 'pwd={{ sensitive data removed }};' "$(cut -d ';' -f2- <<< ${p##*pwd=})" >> $file.parsed 2>> $logfile
+                        else
+                            printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                        fi
+                    elif [[ "${p::6}" != 'config' ]]; then
+                        # Multi-line value
+                        isSensitive='false'
+                        p_lower=$(tr '[:upper:]' '[:lower:]' <<< ${p})
+                        if [[ "${p_lower}" =~ 'password' || "${p_lower}" =~ 'pass' || "${p_lower}" =~ 'pwd' || "${p_lower}" =~ 'secret' || "${p_lower}" =~ 'token' ]]; then
+                            printf '%s\n' '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
                         else
                             printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
                         fi
