@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.08'
+version='get-k8s-info v1.3.09'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -838,12 +838,12 @@ function waitForCas {
     fi
 }
 function createTask() {
-    echo $1:$2 >> $TEMPDIR/.get-k8s-info/taskmanager/tasks
+    echo $1\$$2 >> $TEMPDIR/.get-k8s-info/taskmanager/tasks
 }
 function runTask() {
     task=$1
-    taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d ':' -f1)
-    taskOutput=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d ':' -f2)
+    taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '$' -f1)
+    taskOutput=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '$' -f2)
     echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Executing" >> $TEMPDIR/.get-k8s-info/workers/workers.log
     eval ${taskCommand} > ${taskOutput} 2> $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log
     if [[ $? -ne 0 ]]; then
@@ -1103,17 +1103,14 @@ function getNamespaceData() {
                     # Information from backup PVCs
                     for backupPod in $($KUBECTLCMD -n $namespace get pod -l 'sas.com/backup-job-type in (scheduled-backup,scheduled-backup-incremental,restore,purge-backup)' --no-headers 2>> $logfile | grep ' NotReady \| Running ' | awk '{print $1}'); do
                         # sas-common-backup-data PVC
-                        mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$backupPod
                         podContainer=$($KUBECTLCMD -n $namespace get pod $backupPod -o jsonpath={.spec.containers[0].name} 2>> $logfile)
-                        $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer 2>> $logfile -- bash -c 'ls -lRa /sasviyabackup' > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_ls_sasviyabackup.txt 2>> $logfile
-                        backupsListRc=$?
-                        if [[ $backupsListRc -eq 0 ]]; then
-                            $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name status.json -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_status.json.txt 2>> $logfile
-                            $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name *_pg_dump.log -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-dump.log.txt 2>> $logfile
-                            $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name pg_restore_*.log -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-restore.log.txt 2>> $logfile
+                        if $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- df -h /sasviyabackup 2>> $logfile > /dev/null; then
+                            mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$backupPod
+                            createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name status.json -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_status.json.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name *_pg_dump.log -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-dump.log.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name pg_restore_*.log -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-restore.log.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- bash -c 'ls -lRa /sasviyabackup'" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_ls_sasviyabackup.txt"
                             break
-                        else
-                            rm -rf $TEMPDIR/kubernetes/$namespace/exec/$backupPod
                         fi
                     done
                     # sas-cas-backup-data PVC
@@ -1123,7 +1120,7 @@ function getNamespaceData() {
                         $KUBECTLCMD -n $namespace exec sas-cas-server-default-controller -c sas-backup-agent -- find /sasviyabackup -name status.json -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_find_status.json.txt 2>> $logfile
                     fi
                     # Past backup and restore status
-                    $KUBECTLCMD -n $namespace get jobs -l "sas.com/backup-job-type in (scheduled-backup, scheduled-backup-incremental)" -L "sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-backup-job-status,sas.com/sas-backup-persistence-status,sas.com/sas-backup-datasource-types" --sort-by=.status.startTime > $TEMPDIR/reports/backup-status_$namespace.txt 2>> $logfile
+                    $KUBECTLCMD -n $namespace get jobs -l "sas.com/backup-job-type in (scheduled-backup, scheduled-backup-incremental)" -L "sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-backup-job-status,sas.com/sas-backup-persistence-status,sas.com/sas-backup-datasource-types,sas.com/sas-backup-include-postgres" --sort-by=.status.startTime > $TEMPDIR/reports/backup-status_$namespace.txt 2>> $logfile
                     $KUBECTLCMD -n $namespace get jobs -l "sas.com/backup-job-type=restore" -L "sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-restore-id,sas.com/sas-restore-status,sas.com/sas-restore-tenant-status-provider" > $TEMPDIR/reports/restore-status_$namespace.txt 2>> $logfile
                 fi
             fi
@@ -1253,7 +1250,7 @@ function waitForTasks {
     completedTasks=0
     totalTasks=0
 
-    echo -e '\nWaiting for tasks to finish:'
+    echo -e '\nWaiting for tasks to finish:\n'
     while [[ $completedTasks -lt $totalTasks || $totalTasks -eq 0 ]]; do
         newCompletedTasks=$(cat $TEMPDIR/.get-k8s-info/taskmanager/completed)
         newAssignedTasks=$(cat $TEMPDIR/.get-k8s-info/taskmanager/assigned)
@@ -1265,20 +1262,33 @@ function waitForTasks {
                 totalTasks=$newTotalTasks
             fi
         fi
-        
+
         if [ $loading == '/' ]; then loading='-'
         elif [ $loading == '-' ]; then loading='\'
         elif [ $loading == '\' ]; then loading='|'
         elif [ $loading == '|' ]; then loading='/'
         fi
 
-        echo -e -n "\r\e[0K$loading Completed: $completedTasks Pending: $[ $totalTasks - $completedTasks ] Unassigned: $[ $totalTasks - $assignedTasks ] Running: $[ $assignedTasks - $completedTasks ] "
+        if [[ -f $TEMPDIR/.get-k8s-info/taskmanager/pid ]]; then
+            echo -e "$loading Completed: $completedTasks Pending: $[ $totalTasks - $completedTasks ] Unassigned: $[ $totalTasks - $assignedTasks ] Running: $[ $assignedTasks - $completedTasks ]\n"
 
-        if [[ ! -f $TEMPDIR/.get-k8s-info/taskmanager/pid ]]; then
-            echo -e -n "\r\e[0K$loading Completed: $totalTasks Pending: 0 Unassigned: 0 Running: 0 "
+            for worker in $(seq 1 $WORKERS); do
+                taskCommand=''
+                task=$(tail -1 $TEMPDIR/.get-k8s-info/workers/worker${worker}/assignedTasks)
+                taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '$' -f1)
+                if [[ ${#taskCommand} -gt 100 ]]; then
+                    echo "Worker $worker: ${taskCommand::100} ..."
+                else
+                    echo "Worker $worker: $taskCommand"
+                fi
+            done
+        else
+            echo -e "$loading Completed: $totalTasks Pending: 0 Unassigned: 0 Running: 0"
             break
         fi
         sleep 0.5s
+        tput cuu $[ $WORKERS + 2 ]
+        tput ed
     done
     echo;
 
@@ -1476,11 +1486,11 @@ if grep iot.sas.com $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinition
 if grep monitoring.coreos.com $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasMonitoringCRD='true'; fi
 if grep orchestration.sas.com $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasOrchestrationCRD='true'; fi
 
-# Collect information from selected namespaces
-getNamespaceData ${namespaces[@]}
-
 # Collect files used by the K8S Diagram Tools
 captureDiagramToolFiles
+
+# Collect information from selected namespaces
+getNamespaceData ${namespaces[@]}
 
 echo "  - Kubernetes and Kustomize versions" | tee -a $logfile
 $KUBECTLCMD version --short > $TEMPDIR/versions/kubernetes.txt 2>> $logfile
