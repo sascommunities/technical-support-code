@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.09'
+version='get-k8s-info v1.3.10'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -754,24 +754,57 @@ function kviyaReport {
     rm -rf $TEMPDIR/.kviya/work
 }
 function nodesTimeReport {
+    mkdir -p $TEMPDIR/.get-k8s-info/nodesTimeReport
+
     # Check time sync between nodes
     echo -e "Nodes Time Report\n" > $TEMPDIR/reports/nodes-time-report.txt
-    for node in $($KUBECTLCMD get node -o name 2>> $logfile | cut -d '/' -f2); do
-        nodedate=''
-        daterc=-1
-        for pod in $($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep " Running " | grep " $node " | awk '{print $1"/"$2}'); do
-            if [[ $daterc -ne 0 ]]; then
-                nodedate=$($KUBECTLCMD -n ${pod%%/*} exec ${pod#*/} -- date -u 2>> $logfile)
-                daterc=$?
-            else
-                echo -e "    - $node\t$nodedate" | tee -a $logfile
-                break;
+    nodes=($($KUBECTLCMD get node -o name 2>> $logfile | cut -d '/' -f2))
+    nodeTimePods=()
+
+    # Look for pods running on each node that have the 'date' command available
+    for nodeIndex in ${!nodes[@]}; do
+        for pod in $($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep " Running " | grep " ${nodes[$nodeIndex]} " | awk '{print $1"/"$2}'); do
+            if $KUBECTLCMD -n ${pod%%/*} exec ${pod#*/} -- date -u > /dev/null 2>&1; then
+                nodeTimePods[$nodeIndex]=$pod
+                break
             fi
         done
-        echo -e "$node\t$nodedate" >> $TEMPDIR/reports/nodes-time-report.txt
     done
 
-    echo -e "\nJumpbox time: $(date -u)" >> $TEMPDIR/reports/nodes-time-report.txt
+    # Collect date from all nodes headless
+    for nodeIndex in ${!nodes[@]}; do
+        nodeTimePod=${nodeTimePods[$nodeIndex]}
+        if [[ ! -z $nodeTimePod ]]; then
+            $KUBECTLCMD -n ${nodeTimePod%%/*} exec ${nodeTimePod#*/} -- date -u > $TEMPDIR/.get-k8s-info/nodesTimeReport/node$nodeIndex.out 2>> $logfile &
+        fi
+    done
+    date -u > $TEMPDIR/.get-k8s-info/nodesTimeReport/jump.out 2>> $logfile &
+
+    # Wait for results
+    countWait=0
+    countReady=0
+    while [[ $countReady -ne ${#nodeTimePods[@]} && $countWait -le 10 ]]; do
+        countReady=0
+        for nodeIndex in ${!nodes[@]}; do
+            if [[ -s $TEMPDIR/.get-k8s-info/nodesTimeReport/node$nodeIndex.out ]]; then
+                countReady=$[ $countReady + 1 ]
+            fi
+        done
+        countWait=$[ $countWait + 1 ]
+        sleep 1
+    done
+    # Print report
+    for nodeIndex in ${!nodes[@]}; do
+        nodeDate=''
+        nodeDate=$(cat $TEMPDIR/.get-k8s-info/nodesTimeReport/node$nodeIndex.out)
+        echo -e "    - ${nodes[$nodeIndex]}\t$nodeDate" | tee -a $logfile
+        echo -e "${nodes[$nodeIndex]}\t$nodeDate" >> $TEMPDIR/reports/nodes-time-report.txt
+    done
+
+    if [[ -s $TEMPDIR/.get-k8s-info/nodesTimeReport/jump.out ]]; then
+        jumpDate=$(cat $TEMPDIR/.get-k8s-info/nodesTimeReport/jump.out)
+    fi
+    echo -e "\nJumpbox time: $jumpDate" >> $TEMPDIR/reports/nodes-time-report.txt
 }
 function captureCasLogs {
     namespace=$1
