@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.10'
+version='get-k8s-info v1.3.12'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -101,7 +101,7 @@ function cleanUp() {
             kill $taskManagerPid > /dev/null 2>&1
         fi
     fi
-    rm -rf $TEMPDIR $updatedScript
+    rm -rf $TEMPDIR $updatedScript $k8sApiResources
     exit $1
 }
 
@@ -130,14 +130,15 @@ else
     echo;echo "ERROR: Neither 'kubectl' or 'oc' are installed in PATH." | tee -a $logfile
     cleanUp 1
 fi
-if ! $KUBECTLCMD get namespaces > /dev/null 2>> $logfile; then
-    $KUBECTLCMD get namespaces > /dev/null
+k8sApiResources=$(mktemp)
+if ! $KUBECTLCMD api-resources > $k8sApiResources 2>> $logfile; then
+    $KUBECTLCMD api-resources > /dev/null
     echo -e "\nERROR: Error while executing '$KUBECTLCMD' commands. Make sure you're able to use '$KUBECTLCMD' against the kubernetes cluster before running this script." | tee -a $logfile
     cleanUp 1
 fi
 
 # Check if k8s is OpenShift
-if $KUBECTLCMD api-resources 2>> $logfile | grep project.openshift.io > /dev/null; then isOpenShift='true'
+if grep project.openshift.io $k8sApiResources > /dev/null; then isOpenShift='true'
 else isOpenShift='false';fi
 
 # Initialize Variables
@@ -1265,7 +1266,11 @@ function captureDiagramToolFiles {
     createTask "$KUBECTLCMD get events --all-namespaces -o json" "$TEMPDIR/.diagram-tool/events.txt"
     createTask "$KUBECTLCMD get ingresses --all-namespaces -o json" "$TEMPDIR/.diagram-tool/ingress.txt"
     createTask "$KUBECTLCMD get jobs --all-namespaces -o json" "$TEMPDIR/.diagram-tool/jobs.txt"
-    createTask "$KUBECTLCMD get namespaces -o json" "$TEMPDIR/.diagram-tool/namespaces.txt"
+    if [[ $isOpenShift == 'false' ]]; then
+        createTask "$KUBECTLCMD get namespaces -o json" "$TEMPDIR/.diagram-tool/namespaces.txt"
+    else
+        createTask "$KUBECTLCMD get projects -o json" "$TEMPDIR/.diagram-tool/namespaces.txt"
+    fi
     createTask "$KUBECTLCMD get nodes -o json" "$TEMPDIR/.diagram-tool/nodes.txt"
     createTask "$KUBECTLCMD get persistentvolumeclaims --all-namespaces -o json" "$TEMPDIR/.diagram-tool/pvcs.txt"
     createTask "$KUBECTLCMD get persistentvolumes -o json" "$TEMPDIR/.diagram-tool/pvs.txt"
@@ -1473,10 +1478,12 @@ fi
 echo "  - Collecting cluster wide information" | tee -a $logfile
 clusterobjects=(clusterrolebindings clusterroles customresourcedefinitions namespaces nodes persistentvolumes storageclasses)
 if $KUBECTLCMD get crd | grep clusterissuers.cert-manager.io > /dev/null 2>&1; then clusterobjects+=(clusterissuers); fi
+if [[ $isOpenShift == 'true' ]]; then clusterobjects+=(projects); fi
 
 # get cluster objects
 echo "    - kubectl get" | tee -a $logfile
 mkdir -p $TEMPDIR/kubernetes/clusterwide/get
+mv $k8sApiResources $TEMPDIR/kubernetes/clusterwide/api-resources.txt
 for object in ${clusterobjects[@]}; do
     echo "      - $object" | tee -a $logfile
     if [[ $object == 'customresourcedefinitions' ]]; then
