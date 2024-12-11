@@ -1184,7 +1184,6 @@ pathcheck
 
 srccheckfail=0
 
-
 if [ "$isnull" = "1" ]
     then
         echo "NOTE: Folder $contentpath is empty. Skipping check."
@@ -1192,31 +1191,59 @@ if [ "$isnull" = "1" ]
 
         # Get a list of child objects in the supplied folder into an temp file.
         srcchecktmp=$(mktemp)
-        $admincli $insecopt --quiet --profile "$srcprofile" --output fulljson folders list-members --path "$contentpath" --recursive | jq -r '.items[] | select (.type == "child" )' > "$srcchecktmp"
+        # Need to get this in a different way, CLI I think is paging this json such that I can't query it properly.
 
-        # Check if the output is blank, suggesting we encountered an issue connecting to the service. If so, wait a minute a try again (-s means if file exists and has a size greater than 0)
-        if [ ! -s "$srcchecktmp" ]
-            then 
-            echo "WARN: It looks like we are having trouble connecting to the folders service. Pausing for 60 seconds and retrying."
-            sleep 60
-            echo "NOTE: Attempting (again) to get a list of child objects in $contentpath."
-            
-            $admincli $insecopt --quiet --profile "$srcprofile" --output fulljson folders list-members --path "$contentpath" --recursive | jq -r '.items[] | select (.type == "child" )' > "$srcchecktmp"
-            RC=$?        
-        fi
-        
         # Get the base URL and access token from the profile.
         token=$(jq ".[\"${profile}\"]" ~/.sas/credentials.json | jq -r '."access-token"')
         baseurl=$(jq ".[\"${profile}\"]" ~/.sas/config.json | jq -r '."sas-endpoint"')
-        
         var=baseurl; varcheck
+
+        # First, get the folder ID for our content path:
+        scfldrid=$(curl -k -s -L "${baseurl}/folders/folders/@item?path=$contentpath" --header 'Content-Type: application/json' --header "Authorization: Bearer $token" | jq -r '.id')
         
-        mapfile -t srccheckarray < <(jq -r '.uri' "$srcchecktmp")
+        # Next, query for a recursive list of members into our file.
+        curl -k -s -L "${baseurl}/folders/folders/$scfldrid/members?recursive=true" --header 'Content-Type: application/json' --header "Authorization: Bearer $token" > "$srcchecktmp"
+
+        # Now we need to parse our file into an array, with the URI for the member object (e.g. /folders/folders/folder_id/members/member_id)
+        # and the URI of that object's target (e.g. /files/files/file_id).
+        
+        mapfile -t srccheckarray < <(jq -r '.items[] | select(.type == "child") | [.uri, (.links[]|select (.rel == "delete")|.href)] | join(",")' "$srcchecktmp")
+
+        # The array should now be populated with the URI of the object target and the delete link for the member if we need to delete it, for the first page of results.
+        # We now need to pull any remaining pages so we have a full list of members.
+
+        # Empty the next variable
+        nexturl=
+
+        # Pull a nexturl if present from the output
+        nexturl=$(jq -r '.links[] | select(.rel == "next")|.href' "$srcchecktmp")
+
+        # Create a loop to parse the pages
+        while [ -n "$nexturl" ]
+            do
+            # Pull the next page into our temp file
+            curl -k -s -L "${baseurl}${nexturl}" --header 'Content-Type: application/json' --header "Authorization: Bearer $token" > "$srcchecktmp"
+            
+            # Pull the same details into a new array
+            mapfile -t srccheckpagearray < <(jq -r '.items[] | select(.type == "child") | [.uri, (.links[]|select (.rel == "delete")|.href)] | join(",")' "$srcchecktmp")
+
+            # Append this to the existing array
+            srccheckarray+=("${srccheckpagearray[@]}")
+
+            # Empty the nexturl
+            nexturl=
+            
+            # Pull the next nexturl
+            nexturl=$(jq -r '.links[] | select(.rel == "next")|.href' "$srcchecktmp")
+        done
 
         echo "NOTE: Found ${#srccheckarray[@]} child objects in the source path."
         
-        for uri in "${srccheckarray[@]}"
+        for row in "${srccheckarray[@]}"
             do
+                #Extract the URI from the row
+                IFS=',' read -r -a entry <<< "$row"
+                uri=${entry[0]}
                 url=${baseurl}${uri}
                 echo -n "$url"
                 RC=$(curl -s -o /dev/null -I -w "%{http_code}" "$url" --header "Authorization: Bearer $token")
@@ -1229,8 +1256,7 @@ if [ "$isnull" = "1" ]
                 if [ "$RC" = "404" ]
                     then
                     echo "ERROR: HTTP 404 when accessing folder member $uri."
-                    query="select(.uri == \"$uri\")"
-                    deluri=$(jq -r "$query" "$srcchecktmp" | jq -r '.links[] | select(.rel == "delete" ) | .href' )
+                    deluri=${entry[1]}
                     if [ -n "$deluri" ]
                     then
                         echo "ERROR: Need to delete the member using DELETE method on ${baseurl}${deluri}"
