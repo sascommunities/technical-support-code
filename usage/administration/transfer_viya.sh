@@ -1519,7 +1519,7 @@ function pathcheck {
             RC=$?        
         fi
     fi
-    isnull=$(jq -r '.items' "$tmpfile" | grep -c null)
+    isnull=$(jq -r '.items' "$tmpfile" | grep -c -e '^null$')
     
     rm "$tmpfile"
 }
