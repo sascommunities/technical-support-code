@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.12'
+version='get-k8s-info v1.3.15'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -343,7 +343,11 @@ else
     echo -e "USER_NS: $USER_NS" >> $logfile
     hasViya=false
     for ns in $(echo $USER_NS | tr ',' ' '); do
-        if [[ " ${viyans[*]} " =~ " ${ns} " ]]; then hasViya=true; fi
+        if [[ " ${viyans[*]} " =~ " ${ns} " ]]; then hasViya=true
+        elif ( $KUBECTLCMD -n ${ns} get cm 2>> $logfile | grep sas-deployment-metadata > /dev/null ) || [[ $($KUBECTLCMD -n ${ns} get sasdeployment 2> /dev/null | wc -l) -gt 0 ]]; then 
+            hasViya=true
+            viyans+=($ns)
+        fi
         if [[ ! " ${namespaces[*]} " =~ " ${ns} " ]]; then namespaces+=($ns); fi
     done
     if [ $hasViya == false ]; then
@@ -765,7 +769,7 @@ function nodesTimeReport {
     # Look for pods running on each node that have the 'date' command available
     for nodeIndex in ${!nodes[@]}; do
         for pod in $($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep " Running " | grep " ${nodes[$nodeIndex]} " | awk '{print $1"/"$2}'); do
-            if $KUBECTLCMD -n ${pod%%/*} exec ${pod#*/} -- date -u > /dev/null 2>&1; then
+            if $KUBECTLCMD -n ${pod%%/*} exec ${pod#*/} --request-timeout 5s -- date -u > /dev/null 2>&1; then
                 nodeTimePods[$nodeIndex]=$pod
                 break
             fi
@@ -797,13 +801,19 @@ function nodesTimeReport {
     # Print report
     for nodeIndex in ${!nodes[@]}; do
         nodeDate=''
-        nodeDate=$(cat $TEMPDIR/.get-k8s-info/nodesTimeReport/node$nodeIndex.out)
+        if [[ -s $TEMPDIR/.get-k8s-info/nodesTimeReport/node$nodeIndex.out ]]; then
+            nodeDate=$(cat $TEMPDIR/.get-k8s-info/nodesTimeReport/node$nodeIndex.out)
+        else
+            nodeDate='unavailable'
+        fi
         echo -e "    - ${nodes[$nodeIndex]}\t$nodeDate" | tee -a $logfile
         echo -e "${nodes[$nodeIndex]}\t$nodeDate" >> $TEMPDIR/reports/nodes-time-report.txt
     done
 
     if [[ -s $TEMPDIR/.get-k8s-info/nodesTimeReport/jump.out ]]; then
         jumpDate=$(cat $TEMPDIR/.get-k8s-info/nodesTimeReport/jump.out)
+    else
+        jumpDate='unavailable'
     fi
     echo -e "\nJumpbox time: $jumpDate" >> $TEMPDIR/reports/nodes-time-report.txt
 }
@@ -872,12 +882,12 @@ function waitForCas {
     fi
 }
 function createTask() {
-    echo $1\$$2 >> $TEMPDIR/.get-k8s-info/taskmanager/tasks
+    echo $1\@$2 >> $TEMPDIR/.get-k8s-info/taskmanager/tasks
 }
 function runTask() {
     task=$1
-    taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '$' -f1)
-    taskOutput=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '$' -f2)
+    taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f1)
+    taskOutput=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f2)
     echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Executing" >> $TEMPDIR/.get-k8s-info/workers/workers.log
     eval ${taskCommand} > ${taskOutput} 2> $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log
     if [[ $? -ne 0 ]]; then
@@ -1062,6 +1072,42 @@ function getNamespaceData() {
                     describeobjects+=(${espobjects[@]})
                     yamlobjects+=(${espobjects[@]})
                 fi
+
+                # Check if we should wait for cas logs
+                casDefaultControllerPod=$($KUBECTLCMD -n $namespace get pod -l casoperator.sas.com/node-type=controller,casoperator.sas.com/server=default --no-headers 2>> $logfile | awk '{print $1}')
+                if [[ (-z $casDefaultControllerPod || $($KUBECTLCMD -n $namespace get pod $casDefaultControllerPod --no-headers 2>> $logfile | awk '{print $5}' | grep -cE '^[0-9]+s$') -gt 0) ]]; then
+                    waitForCasTimeout=$[ $(date +%s) + 120 ]
+                    waitForCas $namespace $casDefaultControllerPod &
+                    waitForCasPid=$!
+                    echo $waitForCasPid:$waitForCasTimeout:$namespace >> $TEMPDIR/.get-k8s-info/waitForCas
+                fi
+
+                # backups debugtag
+                if [[ "$BACKUPS" = true ]]; then
+                    echo "    - Getting backups information" | tee -a $logfile
+                    # Information from backup PVCs
+                    for backupPod in $($KUBECTLCMD -n $namespace get pod -l 'sas.com/backup-job-type in (scheduled-backup,scheduled-backup-incremental,restore,purge-backup)' --no-headers 2>> $logfile | grep ' NotReady \| Running ' | awk '{print $1}'); do
+                        # sas-common-backup-data PVC
+                        podContainer=$($KUBECTLCMD -n $namespace get pod $backupPod -o jsonpath={.spec.containers[0].name} 2>> $logfile)
+                        if $KUBECTLCMD -n $namespace exec --request-timeout 5s $backupPod -c $podContainer -- df -h /sasviyabackup 2>> $logfile > /dev/null; then
+                            mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$backupPod
+                            createTask "$KUBECTLCMD -n $namespace exec --request-timeout 5s $backupPod -c $podContainer -- find /sasviyabackup -name status.json -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_status.json.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec --request-timeout 5s $backupPod -c $podContainer -- find /sasviyabackup -name *_pg_dump.log -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-dump.log.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec --request-timeout 5s $backupPod -c $podContainer -- find /sasviyabackup -name pg_restore_*.log -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-restore.log.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec --request-timeout 5s $backupPod -c $podContainer -- bash -c 'ls -lRa /sasviyabackup'" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_ls_sasviyabackup.txt"
+                            break
+                        fi
+                    done
+                    # sas-cas-backup-data PVC
+                    if [[ ! -z $casDefaultControllerPod ]]; then
+                        mkdir -p $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller
+                        createTask "$KUBECTLCMD -n $namespace exec --request-timeout 5s sas-cas-server-default-controller -c sas-backup-agent -- bash -c 'ls -lRa /sasviyabackup'" "$TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_ls_sasviyabackups.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec --request-timeout 5s sas-cas-server-default-controller -c sas-backup-agent -- find /sasviyabackup -name status.json -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_find_status.json.txt"
+                    fi
+                    # Past backup and restore status
+                    createTask "$KUBECTLCMD -n $namespace get jobs -l 'sas.com/backup-job-type in (scheduled-backup, scheduled-backup-incremental)' -L 'sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-backup-job-status,sas.com/sas-backup-persistence-status,sas.com/sas-backup-datasource-types,sas.com/sas-backup-include-postgres' --sort-by=.status.startTime" "$TEMPDIR/reports/backup-status_$namespace.txt"
+                    createTask "$KUBECTLCMD -n $namespace get jobs -l 'sas.com/backup-job-type=restore' -L 'sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-restore-id,sas.com/sas-restore-status,sas.com/sas-restore-tenant-status-provider'" "$TEMPDIR/reports/restore-status_$namespace.txt"
+                fi
                 
                 # If using Cert-Manager
                 if [[ "$($KUBECTLCMD -n $namespace get $($KUBECTLCMD -n $namespace get cm -o name 2>> $logfile| grep sas-certframe-user-config | tail -1) -o=jsonpath='{.data.SAS_CERTIFICATE_GENERATOR}' 2>> $logfile)" == 'cert-manager' && "${#certmgrns[@]}" -eq 0 ]]; then 
@@ -1120,42 +1166,22 @@ function getNamespaceData() {
                     echo "    - Getting rabbitmq information" | tee -a $logfile
                     for rabbitmqPod in $($KUBECTLCMD -n $namespace get pod -l 'app=sas-rabbitmq-server' --no-headers 2>> $logfile | awk '{print $1}'); do
                         mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod
-                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl report'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_report.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl status'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_status.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl cluster_status'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_cluster-status.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl environment'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_environment.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_connections pid name port host peer_port peer_host ssl ssl_protocol ssl_key_exchange ssl_cipher ssl_hash peer_cert_subject peer_cert_issuer peer_cert_validity state channels protocol auth_mechanism user vhost timeout frame_max channel_max client_properties recv_oct recv_cnt send_oct send_cnt send_pend connected_at'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list_connections.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_channels pid connection name number user vhost transactional confirm consumer_count messages_unacknowledged messages_uncommitted acks_uncommitted messages_unconfirmed prefetch_count global_prefetch_count'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list_channels.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmq-diagnostics command_line_arguments'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmq-diagnostics_command-line-arguments.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmq-diagnostics os_env'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmq-diagnostics_os-env.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_queues name durable auto_delete arguments policy operator_policy effective_policy_definition pid owner_pid exclusive exclusive_consumer_pid exclusive_consumer_tag messages_ready messages_unacknowledged messages messages_ready_ram messages_unacknowledged_ram messages_ram messages_persistent message_bytes message_bytes_ready message_bytes_unacknowledged message_bytes_ram message_bytes_persistent head_message_timestamp disk_reads disk_writes consumers consumer_utilisation consumer_capacity memory slave_pids synchronised_slave_pids state type leader members online slave_pids synchronised_slave_pids'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-queues.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_queues | grep -v 0\$ | grep sas | sort -r -n -k 2'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-queues-nonempty.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_exchanges name type durable auto_delete internal arguments policy'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-exchanges.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_bindings'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-bindings.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_permissions'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-permissions.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_policies'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-policies.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_global_parameters'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-global-parameters.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_parameters'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-parameters.txt"
                     done
-                fi
-                # Check if we should wait for cas logs
-                casDefaultControllerPod=$($KUBECTLCMD -n $namespace get pod -l casoperator.sas.com/node-type=controller,casoperator.sas.com/server=default --no-headers 2>> $logfile | awk '{print $1}')
-                if [[ (-z $casDefaultControllerPod || $($KUBECTLCMD -n $namespace get pod $casDefaultControllerPod --no-headers 2>> $logfile | awk '{print $5}' | grep -cE '^[0-9]+s$') -gt 0) ]]; then
-                    waitForCasTimeout=$[ $(date +%s) + 120 ]
-                    waitForCas $namespace $casDefaultControllerPod &
-                    waitForCasPid=$!
-                    echo $waitForCasPid:$waitForCasTimeout:$namespace >> $TEMPDIR/.get-k8s-info/waitForCas
-                fi
-                # backups debugtag
-                if [[ "$BACKUPS" = true ]]; then
-                    echo "    - Getting backups information" | tee -a $logfile
-                    # Information from backup PVCs
-                    for backupPod in $($KUBECTLCMD -n $namespace get pod -l 'sas.com/backup-job-type in (scheduled-backup,scheduled-backup-incremental,restore,purge-backup)' --no-headers 2>> $logfile | grep ' NotReady \| Running ' | awk '{print $1}'); do
-                        # sas-common-backup-data PVC
-                        podContainer=$($KUBECTLCMD -n $namespace get pod $backupPod -o jsonpath={.spec.containers[0].name} 2>> $logfile)
-                        if $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- df -h /sasviyabackup 2>> $logfile > /dev/null; then
-                            mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$backupPod
-                            createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name status.json -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_status.json.txt"
-                            createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name *_pg_dump.log -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-dump.log.txt"
-                            createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name pg_restore_*.log -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-restore.log.txt"
-                            createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- bash -c 'ls -lRa /sasviyabackup'" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_ls_sasviyabackup.txt"
-                            break
-                        fi
-                    done
-                    # sas-cas-backup-data PVC
-                    if [[ ! -z $casDefaultControllerPod ]]; then
-                        mkdir -p $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller
-                        $KUBECTLCMD -n $namespace exec sas-cas-server-default-controller -c sas-backup-agent 2>> $logfile -- bash -c 'ls -lRa /sasviyabackup' > $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_ls_sasviyabackups.txt 2>> $logfile
-                        $KUBECTLCMD -n $namespace exec sas-cas-server-default-controller -c sas-backup-agent -- find /sasviyabackup -name status.json -exec echo "{}:" \; -exec cat {} \; -exec echo -e '\n' \; > $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_find_status.json.txt 2>> $logfile
-                    fi
-                    # Past backup and restore status
-                    $KUBECTLCMD -n $namespace get jobs -l "sas.com/backup-job-type in (scheduled-backup, scheduled-backup-incremental)" -L "sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-backup-job-status,sas.com/sas-backup-persistence-status,sas.com/sas-backup-datasource-types,sas.com/sas-backup-include-postgres" --sort-by=.status.startTime > $TEMPDIR/reports/backup-status_$namespace.txt 2>> $logfile
-                    $KUBECTLCMD -n $namespace get jobs -l "sas.com/backup-job-type=restore" -L "sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-restore-id,sas.com/sas-restore-status,sas.com/sas-restore-tenant-status-provider" > $TEMPDIR/reports/restore-status_$namespace.txt 2>> $logfile
                 fi
             fi
             # Collect logs
@@ -1313,7 +1339,7 @@ function waitForTasks {
             for worker in $(seq 1 $WORKERS); do
                 taskCommand=''
                 task=$(tail -1 $TEMPDIR/.get-k8s-info/workers/worker${worker}/assignedTasks)
-                taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '$' -f1)
+                taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f1)
                 if [[ ${#taskCommand} -gt 100 ]]; then
                     echo "Worker $worker: ${taskCommand::100} ..."
                 else
@@ -1447,7 +1473,7 @@ fi
 
 # Look for Logging and Monitoring namespaces
 echo 'DEBUG: Looking for Logging namespaces' >> $logfile
-loggingns=($($KUBECTLCMD get deploy -l 'app=eventrouter' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq))
+loggingns=($($KUBECTLCMD get sts -l 'app.kubernetes.io/component=v4m-search' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq))
 if [[ ${#loggingns[@]} -gt 0 ]]; then 
     echo -e "LOGGING_NS: ${loggingns[@]}" >> $logfile
     namespaces+=(${loggingns[@]})
@@ -1457,6 +1483,7 @@ monitoringns=($($KUBECTLCMD get deploy -l 'app.kubernetes.io/name=grafana' --all
 if [[ ${#monitoringns[@]} -gt 0 ]]; then 
     echo -e "MONITORING_NS: ${monitoringns[@]}" >> $logfile
     namespaces+=(${monitoringns[@]})
+    $KUBECTLCMD -n ${monitoringns[0]} get cm v4m-metrics -o jsonpath='{.metadata.labels.app\.kubernetes\.io/version}' > $TEMPDIR/versions/${monitoringns[0]}_v4m-version.txt 2>> $logfile
 fi
 
 # get iac-dac-files
@@ -1533,9 +1560,9 @@ captureDiagramToolFiles
 getNamespaceData ${namespaces[@]}
 
 echo "  - Kubernetes and Kustomize versions" | tee -a $logfile
-$KUBECTLCMD version --short > $TEMPDIR/versions/kubernetes.txt 2>> $logfile
+$KUBECTLCMD version > $TEMPDIR/versions/kubernetes.txt 2>> $logfile
 cat $TEMPDIR/versions/kubernetes.txt >> $logfile
-kustomize version --short > $TEMPDIR/versions/kustomize.txt 2>> $logfile
+kustomize version > $TEMPDIR/versions/kustomize.txt 2>> $logfile
 cat $TEMPDIR/versions/kustomize.txt >> $logfile
 
 # Capturing nodes time information
