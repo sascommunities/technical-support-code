@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.16'
+version='get-k8s-info v1.3.18'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -78,6 +78,8 @@ function version {
 # Handle ctrl+c
 trap cleanUp SIGINT
 function cleanUp() {
+    tput cnorm
+    tput smam
     if [ -f $logfile ]; then 
         if [[ $1 -eq 1 || -z $1 ]]; then 
             if [[ -z $1 ]]; then echo -e "\nFATAL: The script was terminated unexpectedly." | tee -a $logfile; fi
@@ -254,26 +256,7 @@ if ! grep -E '^CS[0-9]{7}$' > /dev/null 2>> $logfile <<< $CASENUMBER; then
     echo "ERROR: Invalid case number. Expected format: CS1234567" | tee -a $logfile
     cleanUp 1
 fi
-# Check if an IaC Github Project was used
-if [ -z $TFVARSFILE ]; then 
-    if $KUBECTLCMD -n kube-system get cm sas-iac-buildinfo > /dev/null 2>&1; then 
-        read -p " -> A viya4-iac project was used to create the infrastructure of this environment. Specify the path of the "terraform.tfvars" file that was used (leave blank if not known): " TFVARSFILE
-        TFVARSFILE="${TFVARSFILE/#\~/$HOME}"
-    fi
-fi
-if [ ! -z $TFVARSFILE ]; then
-    if [[ $TFVARSFILE != 'unavailable' ]]; then
-        TFVARSFILE=$(realpath $TFVARSFILE 2> /dev/null)
-        if [ -d $TFVARSFILE ]; then TFVARSFILE="$TFVARSFILE/terraform.tfvars";fi
-        if [ ! -f $TFVARSFILE ]; then
-            echo "ERROR: --tfvars file '$TFVARSFILE' doesn't exist" | tee -a $logfile
-            cleanUp 1
-        fi
-    else
-        TFVARSFILE=''
-    fi
-fi
-echo TFVARSFILE: $TFVARSFILE >> $logfile
+
 # Check DEPLOYPATH
 if [ -z $DEPLOYPATH ]; then 
     read -p " -> Specify the path of the viya \$deploy directory ($(pwd)): " DEPLOYPATH
@@ -292,25 +275,6 @@ else
     echo "WARNING: --deploypath set as 'unavailable'. Please note that SAS Tech Support may still require and request information from the \$deploy directory" | tee -a $logfile
 fi
 echo DEPLOYPATH: $DEPLOYPATH >> $logfile
-
-# Check OUTPATH
-if [ -z $OUTPATH ]; then 
-    read -p " -> Specify the path where the script output file will be saved ($(pwd)): " OUTPATH
-    OUTPATH="${OUTPATH/#\~/$HOME}"
-    if [ -z $OUTPATH ]; then OUTPATH=$(pwd); fi
-fi
-OUTPATH=$(realpath $OUTPATH 2> /dev/null)
-echo OUTPATH: $OUTPATH >> $logfile
-if [ ! -d $OUTPATH ]; then 
-    echo "ERROR: Output path '$OUTPATH' doesn't exist" | tee -a $logfile
-    cleanUp 1
-else
-    touch $OUTPATH/${CASENUMBER}.tgz 2>> $logfile
-    if [ $? -ne 0 ]; then
-        echo "ERROR: Unable to write output file '$OUTPATH/${CASENUMBER}.tgz'." | tee -a $logfile
-        cleanUp 1
-    fi
-fi
 
 namespaces=('kube-system')
 # Look for Viya namespaces
@@ -356,11 +320,32 @@ else
     fi
 fi
 
+# Check if an IaC Github Project was used
+if [ -z $TFVARSFILE ]; then 
+    if $KUBECTLCMD -n kube-system get cm sas-iac-buildinfo > /dev/null 2>&1; then 
+        read -p " -> A viya4-iac project was used to create the infrastructure of this environment. Specify the path of the "terraform.tfvars" file that was used (leave blank if not known): " TFVARSFILE
+        TFVARSFILE="${TFVARSFILE/#\~/$HOME}"
+    fi
+fi
+if [ ! -z $TFVARSFILE ]; then
+    if [[ $TFVARSFILE != 'unavailable' ]]; then
+        TFVARSFILE=$(realpath $TFVARSFILE 2> /dev/null)
+        if [ -d $TFVARSFILE ]; then TFVARSFILE="$TFVARSFILE/terraform.tfvars";fi
+        if [ ! -f $TFVARSFILE ]; then
+            echo "ERROR: --tfvars file '$TFVARSFILE' doesn't exist" | tee -a $logfile
+            cleanUp 1
+        fi
+    else
+        TFVARSFILE=''
+    fi
+fi
+echo TFVARSFILE: $TFVARSFILE >> $logfile
+
 # Check if the viya4-deployment project was used
 if [ -z $ANSIBLEVARSFILE ]; then
     for ns in $(echo $USER_NS | tr ',' ' '); do
         if $KUBECTLCMD -n $ns get cm sas-deployment-buildinfo > /dev/null 2>&1; then 
-            read -p " -> The viya4-deployment project was used to deploy the environment in the $ns namespace. Specify the path of the "ansible-vars.yaml" file that was used (leave blank if not known): " ANSIBLEVARSFILE
+            read -p " -> The viya4-deployment project was used to deploy the environment in the '$ns' namespace. Specify the path of the "ansible-vars.yaml" file that was used (leave blank if not known): " ANSIBLEVARSFILE
             ANSIBLEVARSFILE="${ANSIBLEVARSFILE/#\~/$HOME}"
         fi
         if [ ! -z $ANSIBLEVARSFILE ]; then 
@@ -382,7 +367,7 @@ elif [[ $ANSIBLEVARSFILE != 'unavailable' ]]; then
         cleanUp 1
     else
         # include dac namespace
-        dacns=$(grep 'NAMESPACE: ' $ANSIBLEVARSFILE 2>> $logfile | cut -d ' ' -f2)
+        dacns=$(grep '^NAMESPACE: ' $ANSIBLEVARSFILE 2>> $logfile | cut -d ' ' -f2)
         if [[ ! -z $dacns && " ${viyans[*]} " =~ " $dacns " ]]; then
             viyans+=($dacns)
         elif [[ -z $dacns ]]; then
@@ -392,6 +377,25 @@ elif [[ $ANSIBLEVARSFILE != 'unavailable' ]]; then
     fi
 fi
 echo ANSIBLEVARSFILES: ${ANSIBLEVARSFILES[*]} >> $logfile
+
+# Check OUTPATH
+if [ -z $OUTPATH ]; then 
+    read -p " -> Specify the path where the script output file will be saved ($(pwd)): " OUTPATH
+    OUTPATH="${OUTPATH/#\~/$HOME}"
+    if [ -z $OUTPATH ]; then OUTPATH=$(pwd); fi
+fi
+OUTPATH=$(realpath $OUTPATH 2> /dev/null)
+echo OUTPATH: $OUTPATH >> $logfile
+if [ ! -d $OUTPATH ]; then 
+    echo "ERROR: Output path '$OUTPATH' doesn't exist" | tee -a $logfile
+    cleanUp 1
+else
+    touch $OUTPATH/${CASENUMBER}.tgz 2>> $logfile
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Unable to write output file '$OUTPATH/${CASENUMBER}.tgz'." | tee -a $logfile
+        cleanUp 1
+    fi
+fi
 
 function removeSensitiveData {
     for file in $@; do
@@ -1174,7 +1178,7 @@ function getNamespaceData() {
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmq-diagnostics command_line_arguments'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmq-diagnostics_command-line-arguments.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmq-diagnostics os_env'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmq-diagnostics_os-env.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_queues name durable auto_delete arguments policy operator_policy effective_policy_definition pid owner_pid exclusive exclusive_consumer_pid exclusive_consumer_tag messages_ready messages_unacknowledged messages messages_ready_ram messages_unacknowledged_ram messages_ram messages_persistent message_bytes message_bytes_ready message_bytes_unacknowledged message_bytes_ram message_bytes_persistent head_message_timestamp disk_reads disk_writes consumers consumer_utilisation consumer_capacity memory slave_pids synchronised_slave_pids state type leader members online slave_pids synchronised_slave_pids'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-queues.txt"
-                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_queues messages_ready consumers name | grep -v 0\$ | (sed -u 3q; sort -r -n -k 1)'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-queues-nonempty.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_queues messages_ready consumers name | grep -v ^0 | (sed -u 3q; sort -r -n -k 1)'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-queues-nonempty.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_exchanges name type durable auto_delete internal arguments policy'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-exchanges.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_bindings'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-bindings.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_permissions'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-permissions.txt"
@@ -1306,53 +1310,87 @@ function captureDiagramToolFiles {
     createTask "$KUBECTLCMD get statefulsets --all-namespaces -o json" "$TEMPDIR/.diagram-tool/statefulsets.txt"
     createTask "$KUBECTLCMD get storageclasses -o json" "$TEMPDIR/.diagram-tool/sc.txt"
 }
+function showProgress {
+    percent=$[ 100 * $completedTasks / $totalTasks ]
+    done=$[ 40 * $percent / 100 ]
+    todo=$[ 40 - $done ]
+
+    done_sub_bar=$(printf "%${done}s" | tr " " "#")
+    todo_sub_bar=$(printf "%${todo}s" | tr " " "-")
+
+    echo -ne "Progress: ${loading[$loadingIndex]} [$done_sub_bar$todo_sub_bar] $percent% ($completedTasks/$totalTasks) Tasks Completed"
+}
 function waitForTasks {
     touch $TEMPDIR/.get-k8s-info/taskmanager/endsignal
 
-    loading='/'
-    assignedTasks=0
+    loading=('/' '-' '\' '|')
+    loadingIndex=0
+
     completedTasks=0
     totalTasks=0
 
+    seperator='---------------------------------------------------------------------------------------------------'
+    rows="%6s  %5s  %7s    %s\n"
+
     echo -e '\nWaiting for tasks to finish:\n'
+    for n in $(seq -3 $WORKERS); do
+        echo;
+    done
     while [[ $completedTasks -lt $totalTasks || $totalTasks -eq 0 ]]; do
         newCompletedTasks=$(cat $TEMPDIR/.get-k8s-info/taskmanager/completed)
-        newAssignedTasks=$(cat $TEMPDIR/.get-k8s-info/taskmanager/assigned)
-        if [[ ! -z $newCompletedTasks && ! -z $newAssignedTasks ]]; then
+        if [[ ! -z $newCompletedTasks ]]; then
             newTotalTasks=$(cat $TEMPDIR/.get-k8s-info/taskmanager/total)
             if [[ ! -z $newTotalTasks ]]; then 
                 completedTasks=$newCompletedTasks
-                assignedTasks=$newAssignedTasks
                 totalTasks=$newTotalTasks
             fi
         fi
 
-        if [ $loading == '/' ]; then loading='-'
-        elif [ $loading == '-' ]; then loading='\'
-        elif [ $loading == '\' ]; then loading='|'
-        elif [ $loading == '|' ]; then loading='/'
-        fi
-
         if [[ -f $TEMPDIR/.get-k8s-info/taskmanager/pid ]]; then
-            echo -e "$loading Completed: $completedTasks Pending: $[ $totalTasks - $completedTasks ] Unassigned: $[ $totalTasks - $assignedTasks ] Running: $[ $assignedTasks - $completedTasks ]\n"
-
+            tput cup $[ $(tput lines) - $WORKERS - 5 ] 0
+            showProgress
+            printf "\n\n$rows" Worker Task Time Command
+            printf "%.$(tput cols)s\n" "$seperator"
+            
             for worker in $(seq 1 $WORKERS); do
-                taskCommand=''
-                task=$(tail -1 $TEMPDIR/.get-k8s-info/workers/worker${worker}/assignedTasks)
-                taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f1)
-                if [[ ${#taskCommand} -gt 100 ]]; then
-                    echo "Worker $worker: ${taskCommand::100} ..."
+                workerStatus[${worker}0]=$(tail -1 $TEMPDIR/.get-k8s-info/workers/worker${worker}/assignedTasks)
+                completedTask=$(tail -1 $TEMPDIR/.get-k8s-info/workers/worker${worker}/completedTasks)
+                if [[ $completedTask -ne ${workerStatus[${worker}0]} ]]; then
+                    taskStart=$(date -r $TEMPDIR/.get-k8s-info/workers/worker${worker}/assignedTasks +%s)
+                    workerStatus[${worker}1]=$(date -ud "@$[ $(date +%s) - $taskStart ]" +%M:%S)
+                    workerStatus[${worker}2]=$(sed "${workerStatus[${worker}0]}!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f1)
+                    if [[ ${#workerStatus[${worker}2]} -gt 100 ]]; then
+                        workerStatus[${worker}2]="${workerStatus[${worker}2]::100} ..."
+                    fi
                 else
-                    echo "Worker $worker: $taskCommand"
+                    if [[ ! -f $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid ]]; then
+                        workerStatus[${worker}2]='Finished'
+                    fi
                 fi
+                if [[ ${workerStatus[${worker}0]} != ${lastWorkerStatus[${worker}0]} ||
+                      ${workerStatus[${worker}1]} != ${lastWorkerStatus[${worker}1]} ||
+                      ${workerStatus[${worker}2]} != ${lastWorkerStatus[${worker}2]} ]]; then
+                    tput cup $[ $(tput lines) - $WORKERS + $worker -2 ] 0
+                    tput el
+                    if [[ ${workerStatus[${worker}2]} == 'Finished' ]]; then
+                        printf "$rows" "$worker" " " " " "${workerStatus[${worker}2]}"
+                    else
+                        printf "$rows" "$worker" "${workerStatus[${worker}0]}" "${workerStatus[${worker}1]}" "${workerStatus[${worker}2]}"
+                    fi
+                fi
+                lastWorkerStatus[${worker}0]=${workerStatus[${worker}0]}
+                lastWorkerStatus[${worker}1]=${workerStatus[${worker}1]}
+                lastWorkerStatus[${worker}2]=${workerStatus[${worker}2]}
             done
         else
-            echo -e "$loading Completed: $totalTasks Pending: 0 Unassigned: 0 Running: 0"
+            completedTasks=$(cat $TEMPDIR/.get-k8s-info/taskmanager/completed)
+            tput cup $[ $(tput lines) - $WORKERS - 5 ] 0
+            showProgress
+            tput ed
             break
         fi
-        sleep 0.5s
-        tput cuu $[ $WORKERS + 2 ]
-        tput ed
+        if [[ $loadingIndex -eq 3 ]]; then loadingIndex=0; else loadingIndex=$[ $loadingIndex + 1 ]; fi
+        sleep 0.1s
     done
     echo;
 
@@ -1378,7 +1416,8 @@ function waitForTasks {
         done
     fi
 }
-
+tput civis
+tput rmam
 TEMPDIR=$(mktemp -d --tmpdir=$OUTPATH -t .get-k8s-info.tmp.XXXXXXXXXX 2> /dev/null)
 mkdir -p $TEMPDIR/.get-k8s-info/workers $TEMPDIR/.get-k8s-info/taskmanager $TEMPDIR/reports $TEMPDIR/versions
 echo $BASHPID > $TEMPDIR/.get-k8s-info/pid
@@ -1595,6 +1634,7 @@ cp $logfile $TEMPDIR/.get-k8s-info
 tar -czf $OUTPATH/${CASENUMBER}.tgz --directory=$TEMPDIR .
 if [ $? -eq 0 ]; then
     if [ $SASTSDRIVE == 'true' ]; then
+        tput cnorm
         echo -e "\nDone! File '$OUTPATH/${CASENUMBER}.tgz' was successfully created."
         # use an sftp batch file since the user password is expected from stdin
         cat > $TEMPDIR/SASTSDrive.batch <<< "put $OUTPATH/${CASENUMBER}.tgz $CASENUMBER"
