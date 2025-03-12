@@ -119,9 +119,9 @@ if [ -z "$lsfver" ]
     echo "       Are the LSF services running on the grid hosts?"
     # This outputs the hosts section of the cluster file
     echo "Host section of cluster file $clusterfile:"
-    sed -rn '/Begin.+Host/, /End.+Host/p' "$clusterfile" | grep -Ev "(^[[:space:]]*#.*|^[[:space:]]*$)"
+    grep -Ev '^\s*#|^\s*$' "$clusterfile" | sed -rn '/Begin.+Host/, /End.+Host/p' "$clusterfile"
     echo "Floating clients lines from $clusterfile:"
-    grep -Ev "(^[[:space:]]*#.*|^[[:space:]]*$)" "$clusterfile" | grep -i float
+    grep -Ev '^\s*#|^\s*$' "$clusterfile" | grep -i float
     exit 1
     else
     echo "NOTE: LSF version returned: $lsfver"
@@ -131,17 +131,17 @@ fi
 echo "NOTE: Checking if we are an LSF administrator..."
 
 # Since we are supposed to be running as the sas installation account, check to see that we are an LSF administrator
-if [ "$(sed -rn '/Begin.+ClusterAdmins/, /End.+ClusterAdmins/p' "$clusterfile" | grep "$(whoami)" | cut -f1 -d' ' | tr '[:upper:]' '[:lower:]')" != "administrators" ]
+if [ "$(grep -Ev '^\s*#|^\s*$' "$clusterfile" | sed -rn '/Begin.+ClusterAdmins/, /End.+ClusterAdmins/p'  | grep "$(whoami)" | cut -f1 -d' ' | tr -d '=' | tr '[:upper:]' '[:lower:]')" != "administrators" ]
     then
         echo "ERROR: It doesn't look like we are an LSF administrator."
         echo "We are running as user: $(whoami)"
         echo "ClusterAdmins section of $clusterfile:"
-        sed -rn '/Begin.+ClusterAdmins/, /End.+ClusterAdmins/p' "$clusterfile"
+        grep -Ev '^\s*#|^\s*$' "$clusterfile" | sed -rn '/Begin.+ClusterAdmins/, /End.+ClusterAdmins/p'
         exit 1
     else
         echo "We are running as user: $(whoami)"
         echo "ClusterAdmins section of $clusterfile:"
-        sed -rn '/Begin.+ClusterAdmins/, /End.+ClusterAdmins/p' "$clusterfile"
+        grep -Ev '^\s*#|^\s*$' "$clusterfile" | sed -rn '/Begin.+ClusterAdmins/, /End.+ClusterAdmins/p'
         echo
 fi
 
