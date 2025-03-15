@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.18'
+version='get-k8s-info v1.3.19'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -174,6 +174,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     -n|--namespace|--namespaces)
       USER_NS="$2"
+      # Validate the user provided namespace
+      if ! echo $USER_NS | grep -E '^[a-z0-9][-a-z0-9]*[a-z0-9]$' > /dev/null; then
+          echo;echo "ERROR: Namespace '$USER_NS' is invalid.";echo
+          cleanUp 1
+      fi
       shift # past argument
       shift # past value
       ;;
@@ -350,7 +355,16 @@ if [ -z $ANSIBLEVARSFILE ]; then
         fi
         if [ ! -z $ANSIBLEVARSFILE ]; then 
             ANSIBLEVARSFILE=$(realpath $ANSIBLEVARSFILE 2> /dev/null)
-            if [ -d $ANSIBLEVARSFILE ]; then ANSIBLEVARSFILE="$ANSIBLEVARSFILE/ansible-vars.yaml";fi
+            if [ -d $ANSIBLEVARSFILE ]; then 
+                if [ -f "$ANSIBLEVARSFILE/ansible-vars.yaml" ]; then
+                    ANSIBLEVARSFILE="$ANSIBLEVARSFILE/ansible-vars.yaml"
+                elif [ -f "$ANSIBLEVARSFILE/ansible-vars-iac.yaml" ]; then
+                    ANSIBLEVARSFILE="$ANSIBLEVARSFILE/ansible-vars-iac.yaml"
+                else
+                    echo "ERROR: ansible-vars.yaml file not found in the '$ANSIBLEVARSFILE' directory" | tee -a $logfile
+                    cleanUp 1
+                fi
+            fi
             if [ ! -f $ANSIBLEVARSFILE ]; then
                 echo "ERROR: File '$ANSIBLEVARSFILE' doesn't exist" | tee -a $logfile
                 cleanUp 1
@@ -361,16 +375,28 @@ if [ -z $ANSIBLEVARSFILE ]; then
     done
 elif [[ $ANSIBLEVARSFILE != 'unavailable' ]]; then
     ANSIBLEVARSFILE=$(realpath $ANSIBLEVARSFILE 2> /dev/null)
-    if [ -d $ANSIBLEVARSFILE ]; then ANSIBLEVARSFILE="$ANSIBLEVARSFILE/ansible-vars.yaml";fi
-    if [ ! -f $ANSIBLEVARSFILE ]; then 
-        echo "ERROR: --ansiblevars file '$ANSIBLEVARSFILE' doesn't exist" | tee -a $logfile
+    if [ -d $ANSIBLEVARSFILE ]; then 
+        if [ -f "$ANSIBLEVARSFILE/ansible-vars.yaml" ]; then
+            ANSIBLEVARSFILE="$ANSIBLEVARSFILE/ansible-vars.yaml"
+        elif [ -f "$ANSIBLEVARSFILE/ansible-vars-iac.yaml" ]; then
+            ANSIBLEVARSFILE="$ANSIBLEVARSFILE/ansible-vars-iac.yaml"
+        else
+            echo "ERROR: ansible-vars.yaml file not found in the '$ANSIBLEVARSFILE' directory" | tee -a $logfile
+            cleanUp 1
+        fi
+    fi
+    if [ ! -f $ANSIBLEVARSFILE ]; then
+        echo "ERROR: File '$ANSIBLEVARSFILE' doesn't exist" | tee -a $logfile
         cleanUp 1
     else
         # include dac namespace
         dacns=$(grep '^NAMESPACE: ' $ANSIBLEVARSFILE 2>> $logfile | cut -d ' ' -f2)
-        if [[ ! -z $dacns && " ${viyans[*]} " =~ " $dacns " ]]; then
-            viyans+=($dacns)
-        elif [[ -z $dacns ]]; then
+        # Validate dac namespace
+        if echo $dacns | grep -E '^[a-z0-9][-a-z0-9]*[a-z0-9]$' > /dev/null; then
+            if [[ ! " ${viyans[*]} " =~ " $dacns " ]]; then
+                viyans+=($dacns)
+            fi
+        else
             dacns='none'
         fi
         ANSIBLEVARSFILES+=("$ANSIBLEVARSFILE#$dacns")
@@ -390,9 +416,10 @@ if [ ! -d $OUTPATH ]; then
     echo "ERROR: Output path '$OUTPATH' doesn't exist" | tee -a $logfile
     cleanUp 1
 else
-    touch $OUTPATH/${CASENUMBER}.tgz 2>> $logfile
+    outputFile="$OUTPATH/${CASENUMBER}_$(date +"%Y%m%d_%H%M%S").tgz"
+    touch $outputFile 2>> $logfile
     if [ $? -ne 0 ]; then
-        echo "ERROR: Unable to write output file '$OUTPATH/${CASENUMBER}.tgz'." | tee -a $logfile
+        echo "ERROR: Unable to write output file '$outputFile'." | tee -a $logfile
         cleanUp 1
     fi
 fi
@@ -773,7 +800,7 @@ function nodesTimeReport {
     # Look for pods running on each node that have the 'date' command available
     for nodeIndex in ${!nodes[@]}; do
         for pod in $($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep " Running " | grep " ${nodes[$nodeIndex]} " | awk '{print $1"/"$2}'); do
-            if $KUBECTLCMD -n ${pod%%/*} exec ${pod#*/} --request-timeout 5s -- date -u > /dev/null 2>&1; then
+            if timeout 10 $KUBECTLCMD -n ${pod%%/*} exec ${pod#*/} -- date -u > /dev/null 2>&1; then
                 nodeTimePods[$nodeIndex]=$pod
                 break
             fi
@@ -893,12 +920,21 @@ function runTask() {
     taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f1)
     taskOutput=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f2)
     echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Executing" >> $TEMPDIR/.get-k8s-info/workers/workers.log
-    eval ${taskCommand} > ${taskOutput} 2> $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log
-    if [[ $? -ne 0 ]]; then
+    eval timeout 300 ${taskCommand} > ${taskOutput} 2> $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log
+    taskRc=$?
+    if [[ $taskRc -eq 0 ]]; then
+        echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Finished" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+    else
+        if [[ $taskRc -eq 124 ]]; then
+            echo "The task was terminated by get-k8s-info due to a timeout (5 minutes)" >> $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log
+            echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Finished (Timed Out)" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+            echo $task >> $TEMPDIR/.get-k8s-info/workers/worker${worker}/timedOutTasks
+        else
+            echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Finished (With Errors)" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+        fi
         echo -e "\nTask #$task: $taskCommand > ${taskOutput}" | cat - $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log >> $TEMPDIR/.get-k8s-info/kubectl_errors.log
     fi
     echo $task >> $TEMPDIR/.get-k8s-info/workers/worker${worker}/completedTasks
-    echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Finished" >> $TEMPDIR/.get-k8s-info/workers/workers.log
 }
 function taskWorker() {
     worker=$1
@@ -909,6 +945,7 @@ function taskWorker() {
     mkdir $TEMPDIR/.get-k8s-info/workers/worker$worker
     touch $TEMPDIR/.get-k8s-info/workers/worker${worker}/assignedTasks
     touch $TEMPDIR/.get-k8s-info/workers/worker${worker}/completedTasks
+    touch $TEMPDIR/.get-k8s-info/workers/worker${worker}/timedOutTasks
     echo $BASHPID > $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid
     
     while true; do
@@ -1093,20 +1130,20 @@ function getNamespaceData() {
                     for backupPod in $($KUBECTLCMD -n $namespace get pod -l 'sas.com/backup-job-type in (scheduled-backup,scheduled-backup-incremental,restore,purge-backup)' --no-headers 2>> $logfile | grep ' NotReady \| Running ' | awk '{print $1}'); do
                         # sas-common-backup-data PVC
                         podContainer=$($KUBECTLCMD -n $namespace get pod $backupPod -o jsonpath={.spec.containers[0].name} 2>> $logfile)
-                        if $KUBECTLCMD -n $namespace exec --request-timeout 5s $backupPod -c $podContainer -- df -h /sasviyabackup 2>> $logfile > /dev/null; then
+                        if timeout 10 $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- df -h /sasviyabackup 2>> $logfile > /dev/null; then
                             mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$backupPod
-                            createTask "$KUBECTLCMD -n $namespace exec --request-timeout 5s $backupPod -c $podContainer -- find /sasviyabackup -name status.json -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_status.json.txt"
-                            createTask "$KUBECTLCMD -n $namespace exec --request-timeout 5s $backupPod -c $podContainer -- find /sasviyabackup -name *_pg_dump.log -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-dump.log.txt"
-                            createTask "$KUBECTLCMD -n $namespace exec --request-timeout 5s $backupPod -c $podContainer -- find /sasviyabackup -name pg_restore_*.log -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-restore.log.txt"
-                            createTask "$KUBECTLCMD -n $namespace exec --request-timeout 5s $backupPod -c $podContainer -- bash -c 'ls -lRa /sasviyabackup'" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_ls_sasviyabackup.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name status.json -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_status.json.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name *_pg_dump.log -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-dump.log.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name pg_restore_*.log -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-restore.log.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- bash -c 'ls -lRa /sasviyabackup'" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_ls_sasviyabackup.txt"
                             break
                         fi
                     done
                     # sas-cas-backup-data PVC
                     if [[ ! -z $casDefaultControllerPod ]]; then
                         mkdir -p $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller
-                        createTask "$KUBECTLCMD -n $namespace exec --request-timeout 5s sas-cas-server-default-controller -c sas-backup-agent -- bash -c 'ls -lRa /sasviyabackup'" "$TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_ls_sasviyabackups.txt"
-                        createTask "$KUBECTLCMD -n $namespace exec --request-timeout 5s sas-cas-server-default-controller -c sas-backup-agent -- find /sasviyabackup -name status.json -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_find_status.json.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec sas-cas-server-default-controller -c sas-backup-agent -- bash -c 'ls -lRa /sasviyabackup'" "$TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_ls_sasviyabackups.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec sas-cas-server-default-controller -c sas-backup-agent -- find /sasviyabackup -name status.json -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_find_status.json.txt"
                     fi
                     # Past backup and restore status
                     createTask "$KUBECTLCMD -n $namespace get jobs -l 'sas.com/backup-job-type in (scheduled-backup, scheduled-backup-incremental)' -L 'sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-backup-job-status,sas.com/sas-backup-persistence-status,sas.com/sas-backup-datasource-types,sas.com/sas-backup-include-postgres' --sort-by=.status.startTime" "$TEMPDIR/reports/backup-status_$namespace.txt"
@@ -1185,6 +1222,7 @@ function getNamespaceData() {
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_policies'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-policies.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_global_parameters'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-global-parameters.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_parameters'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-parameters.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_unresponsive_queues'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-unresponsive-queues.txt"
                     done
                 fi
             fi
@@ -1394,6 +1432,24 @@ function waitForTasks {
     done
     echo;
 
+    for worker in $(seq 1 $WORKERS); do
+        timedOutTasks+=($(cat $TEMPDIR/.get-k8s-info/workers/worker${worker}/timedOutTasks))
+    done
+    if [[ ${#timedOutTasks[@]} -gt 0 ]]; then
+        IFS=$'\n' timedOutTasks=($(sort -n <<<"${timedOutTasks[*]}"))
+        unset IFS
+        echo -e '\nWARNING: The following tasks were terminated by get-k8s-info due to a timeout (5 minutes):' | tee -a $logfile
+        printf "\n%5s    %s\n" Task Command | tee -a $logfile
+        echo $seperator | tee -a $logfile
+        for task in ${timedOutTasks[@]}; do
+            taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f1)
+            if [[ ${#taskCommand} -gt 100 ]]; then
+                taskCommand="${taskCommand::100} ..."
+            fi
+            printf "%5s    %s\n" "${task}" "${taskCommand}" | tee -a $logfile
+        done
+    fi
+
     if [[ -f $TEMPDIR/.get-k8s-info/waitForCas ]]; then
         for line in $(cat $TEMPDIR/.get-k8s-info/waitForCas); do
             waitForCasPid=$(cut -d ':' -f1 <<< $line)
@@ -1401,7 +1457,7 @@ function waitForTasks {
             waitForCasNamespace=$(cut -d ':' -f3 <<< $line)
             currentTime=$[ $(date +%s) - 30 ]
             if [[ $currentTime -lt $waitForCasTimeout ]]; then
-                echo -e "INFO: Waiting $[ $waitForCasTimeout - $currentTime ] seconds for background processes from namespace $waitForCasNamespace to finish"
+                echo -e "\nINFO: Waiting $[ $waitForCasTimeout - $currentTime ] seconds for background processes from namespace $waitForCasNamespace to finish"
                 sleep $[ $waitForCasTimeout - $currentTime ]
             fi
             captureCasLogsPid=$(ps -o pid= --ppid "$waitForCasPid")
@@ -1617,6 +1673,11 @@ if [ $DEPLOYPATH != 'unavailable' ]; then
     tar xf $TEMPDIR/assets/assets.tar --directory $TEMPDIR/assets 2>> $logfile
     rm -rf $TEMPDIR/assets/assets.tar 2>> $logfile
     removeSensitiveData $(find $TEMPDIR/assets -type f)
+    if [[ -d ./sas-bases ]]; then
+        find ./sas-bases -name "*.yaml" 2>> $logfile | tar -cf $TEMPDIR/assets/assets.tar -T - 2>> $logfile
+        tar xf $TEMPDIR/assets/assets.tar --directory $TEMPDIR/assets 2>> $logfile
+        rm -rf $TEMPDIR/assets/assets.tar 2>> $logfile
+    fi
 fi
 
 # Wait for pending tasks
@@ -1631,30 +1692,30 @@ done
 rm -rf $TEMPDIR/.kviya
 
 cp $logfile $TEMPDIR/.get-k8s-info
-tar -czf $OUTPATH/${CASENUMBER}.tgz --directory=$TEMPDIR .
+tar -czf $outputFile --directory=$TEMPDIR .
 if [ $? -eq 0 ]; then
     if [ $SASTSDRIVE == 'true' ]; then
         tput cnorm
-        echo -e "\nDone! File '$OUTPATH/${CASENUMBER}.tgz' was successfully created."
+        echo -e "\nDone! File '$outputFile' was successfully created."
         # use an sftp batch file since the user password is expected from stdin
-        cat > $TEMPDIR/SASTSDrive.batch <<< "put $OUTPATH/${CASENUMBER}.tgz $CASENUMBER"
+        cat > $TEMPDIR/SASTSDrive.batch <<< "put $outputFile $CASENUMBER"
         echo -e "\nINFO: Performing SASTSDrive login. Use only an email that was authorized by SAS Tech Support for the case\n"
         read -p " -> SAS Profile Email: " EMAIL
         echo ''
         sftp -oPubkeyAuthentication=no -oPasswordAuthentication=no -oNumberOfPasswordPrompts=2 -oConnectTimeout=1 -oBatchMode=no -b $TEMPDIR/SASTSDrive.batch "${EMAIL}"@sft.sas.com > /dev/null
         if [ $? -ne 0 ]; then 
-            echo -e "\nERROR: Failed to send the '$OUTPATH/${CASENUMBER}.tgz' file to SASTSDrive through sftp. Will not retry."
-            echo -e "\nSend the '$OUTPATH/${CASENUMBER}.tgz' file to SAS Tech Support using a browser (https://support.sas.com/kb/65/014.html#upload) or through the case.\n"
+            echo -e "\nERROR: Failed to send the '$outputFile' file to SASTSDrive through sftp. Will not retry."
+            echo -e "\nSend the '$outputFile' file to SAS Tech Support using a browser (https://support.sas.com/kb/65/014.html#upload) or through the case.\n"
             cleanUp 1
         else 
             echo -e "\nFile successfully sent to SASTSDrive.\n"
             cleanUp 0
         fi
     else
-        echo -e "\nDone! File '$OUTPATH/${CASENUMBER}.tgz' was successfully created. Send it to SAS Tech Support.\n"
+        echo -e "\nDone! File '$outputFile' was successfully created. Send it to SAS Tech Support.\n"
         cleanUp 0
     fi
 else
-    echo "\nERROR: Failed to save output file '$OUTPATH/${CASENUMBER}.tgz'."
+    echo "\nERROR: Failed to save output file '$outputFile'."
     cleanUp 1
 fi
