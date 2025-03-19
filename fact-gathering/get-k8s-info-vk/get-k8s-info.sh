@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.19'
+version='get-k8s-info v1.3.20'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -175,10 +175,12 @@ while [[ $# -gt 0 ]]; do
     -n|--namespace|--namespaces)
       USER_NS="$2"
       # Validate the user provided namespace
-      if ! echo $USER_NS | grep -E '^[a-z0-9][-a-z0-9]*[a-z0-9]$' > /dev/null; then
-          echo;echo "ERROR: Namespace '$USER_NS' is invalid.";echo
-          cleanUp 1
-      fi
+      for ns in $(tr ',' ' ' <<< $USER_NS); do
+        if ! echo $ns | grep -E '^[a-z0-9][-a-z0-9]*[a-z0-9]$' > /dev/null; then
+            echo;echo "ERROR: Namespace '$ns' is invalid.";echo
+            cleanUp 1
+        fi
+      done
       shift # past argument
       shift # past value
       ;;
