@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.20'
+version='get-k8s-info v1.3.21'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -74,6 +74,35 @@ function usage {
 function version {
     echo "$version"
 }
+
+if type timeout > /dev/null 2>> $logfile; then
+    timeoutCmd='timeout'
+else
+    echo "DEBUG: 'timeout' command not available. Using custom timeout function" > $logfile
+    timeoutCmd='gkiTimeout'
+
+    function gkiTimeout {
+        seconds=$1
+        shift
+        taskCmd=("$@")
+        (
+            "${taskCmd[@]}" &
+            taskPid=$!
+            trap -- '' SIGTERM
+            (
+                sleep $seconds
+                kill -9 $taskPid 2> /dev/null
+            ) &
+            timeoutPid=$!
+            wait $taskPid
+            taskRc=$?
+            if [[ $taskRc -eq 137 ]]; then taskRc=124; fi
+            sleepPid=$(ps -o pid= --ppid $timeoutPid 2> /dev/null)
+            kill -9 $sleepPid $timeoutPid 2> /dev/null
+            return $taskRc
+        )
+    }
+fi
 
 # Handle ctrl+c
 trap cleanUp SIGINT
@@ -229,7 +258,7 @@ while [[ $# -gt 0 ]]; do
       shift # past value
       ;;
     -s|--sastsdrive)
-      timeout 5 bash -c 'cat < /dev/null > /dev/tcp/sft.sas.com/22' > /dev/null 2>> $logfile
+      $timeoutCmd 5 bash -c 'cat < /dev/null > /dev/tcp/sft.sas.com/22' > /dev/null 2>> $logfile
       if [ $? -ne 0 ]; then
           echo -e "WARNING: Connection to SASTSDrive not available. The script won't try to send the .tgz file to SASTSDrive.\n" | tee -a $logfile
       else SASTSDRIVE="true"; fi
@@ -314,6 +343,22 @@ else
     echo -e "USER_NS: $USER_NS" >> $logfile
     hasViya=false
     for ns in $(echo $USER_NS | tr ',' ' '); do
+        if $KUBECTLCMD get ns > /dev/null 2>&1; then
+            validateNsWith='namespace'
+        elif [[ $isOpenShift == 'true' ]]; then
+            if $KUBECTLCMD get project > /dev/null 2>&1; then
+                validateNsWith='project'
+            fi
+        else
+            validateNsWith='none'
+            echo "WARNING: Unable to check if the provided namespaces exist or not." | tee -a $logfile
+        fi
+        if [[ $validateNsWith != 'none' ]]; then
+            if [ ! $($KUBECTLCMD get $validateNsWith --no-headers | awk '{print $1}' | grep -E "^$ns$") ]; then
+                echo -e "\nERROR: Namespace '$ns' doesn't exist" | tee -a $logfile
+                cleanUp 1
+            fi
+        fi
         if [[ " ${viyans[*]} " =~ " ${ns} " ]]; then hasViya=true
         elif ( $KUBECTLCMD -n ${ns} get cm 2>> $logfile | grep sas-deployment-metadata > /dev/null ) || [[ $($KUBECTLCMD -n ${ns} get sasdeployment 2> /dev/null | wc -l) -gt 0 ]]; then 
             hasViya=true
@@ -802,7 +847,7 @@ function nodesTimeReport {
     # Look for pods running on each node that have the 'date' command available
     for nodeIndex in ${!nodes[@]}; do
         for pod in $($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep " Running " | grep " ${nodes[$nodeIndex]} " | awk '{print $1"/"$2}'); do
-            if timeout 10 $KUBECTLCMD -n ${pod%%/*} exec ${pod#*/} -- date -u > /dev/null 2>&1; then
+            if $timeoutCmd 10 $KUBECTLCMD -n ${pod%%/*} exec ${pod#*/} -- date -u > /dev/null 2>&1; then
                 nodeTimePods[$nodeIndex]=$pod
                 break
             fi
@@ -922,7 +967,7 @@ function runTask() {
     taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f1)
     taskOutput=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f2)
     echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Executing" >> $TEMPDIR/.get-k8s-info/workers/workers.log
-    eval timeout 300 ${taskCommand} > ${taskOutput} 2> $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log
+    eval $timeoutCmd 300 ${taskCommand} > ${taskOutput} 2> $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log
     taskRc=$?
     if [[ $taskRc -eq 0 ]]; then
         echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Finished" >> $TEMPDIR/.get-k8s-info/workers/workers.log
@@ -1132,7 +1177,7 @@ function getNamespaceData() {
                     for backupPod in $($KUBECTLCMD -n $namespace get pod -l 'sas.com/backup-job-type in (scheduled-backup,scheduled-backup-incremental,restore,purge-backup)' --no-headers 2>> $logfile | grep ' NotReady \| Running ' | awk '{print $1}'); do
                         # sas-common-backup-data PVC
                         podContainer=$($KUBECTLCMD -n $namespace get pod $backupPod -o jsonpath={.spec.containers[0].name} 2>> $logfile)
-                        if timeout 10 $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- df -h /sasviyabackup 2>> $logfile > /dev/null; then
+                        if $timeoutCmd 10 $KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- df -h /sasviyabackup 2>> $logfile > /dev/null; then
                             mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$backupPod
                             createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name status.json -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_status.json.txt"
                             createTask "$KUBECTLCMD -n $namespace exec $backupPod -c $podContainer -- find /sasviyabackup -name *_pg_dump.log -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$backupPod/${podContainer}_find_pg-dump.log.txt"
