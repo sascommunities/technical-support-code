@@ -7,6 +7,14 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+# Set bash options:
+echo "NOTE: Setting bash options errexit and pipefail"
+# Any command with a non-zero exit code to cause the script to fail.
+set -o errexit
+# Any command in a pipe that returns non-zero causes that pipeline to return the same non-zero
+# triggering script failure from errexit.
+set -o pipefail
+
 # Define a "usage" function that explains the syntax.
 function usage {
     echo ""
@@ -29,6 +37,8 @@ function usage {
     echo ""
 }
 
+# Function to check if jq is installed.
+
 function jqcheck {
     echo "NOTE: Checking if jq is installed."
     if ! jq --version > /dev/null 2>&1
@@ -37,6 +47,53 @@ function jqcheck {
         exit 2
     fi
     echo "jq is installed, continuing..."
+}
+
+# Define a function to test if jq will encounter an error if it tries to parse the file
+# and fail if it does.
+function jqparsecheck {
+    if ! jq . "$1" > /dev/null 2>&1
+        then
+        echo "ERROR: jq failed to parse the file $1. Exiting."
+        exit 1
+    fi
+}
+
+# Define a function to check our token and refresh it if necessary.
+
+function authcheck {
+    # Extract the expiration epoch from the token
+    exp=$(echo "$token" | cut -d. -f2 | tr '_-' '/+' | (read input; printf "%s==" "$input") | base64 -d| jq -r '.exp')
+    # If the token is expired or will expire within 60 seconds, refresh it.
+    if [ "$(date +%s)" -ge "$exp" ] || [ "$((exp - $(date +%s)))" -lt 60 ]
+        then
+        echo "NOTE: Token is expired or will expire within 60 seconds."
+        if [ -z "$rtoken" ]
+            then
+            echo "ERROR: Refresh token is not available. Exiting."
+            exit 1
+        fi
+        echo "Refreshing."
+        authresp=$(mktemp)
+        authheaders=$(mktemp)
+        curl -k -s -L -X POST "$baseurl/SASLogon/oauth/token" -H 'Accept: application/json' -H 'Content-Type: application/x-www-form-urlencoded' -H 'Authorization: Basic c2FzLmNsaTo=' -d "grant_type=refresh_token&refresh_token=$rtoken" -D "$authheaders" > "$authresp"
+        token=$(sed "s/{.*\"access_token\":\"\([^\"]*\).*}/\1/g" "$authresp")
+        rtoken=$(sed "s/{.*\"refresh_token\":\"\([^\"]*\).*}/\1/g" "$authresp")
+        # Confirm token successfully acquired.
+        rc=$(grep -c 'HTTP.*200' "$authheaders")
+        if [ "$rc" -ne 1 ] || [ -z "$token" ]
+            then
+                echo "ERROR: Token refresh unsuccessful."
+                cat "$authheaders"
+                cat "$authresp"
+                rm "$authheaders"
+                rm "$authresp"
+                exit 1
+        fi
+        rm "$authheaders"
+        rm "$authresp"
+        echo "NOTE: Token refreshed successfully."
+    fi
 }
 
 # If no arguments are supplied, return the help page and terminate with a non-zero return code.
@@ -107,11 +164,13 @@ if [ -n "$directory" ]
     if [ ! -d "$directory" ] || [ ! -w "$directory" ]
         then
         echo "ERROR: $directory is not a writeable directory."
+        exit 1
     fi
 fi
 # Login to Viya
 echo "NOTE: Attempting to log in to $baseurl"
-headers=$(mktemp)
+authheaders=$(mktemp)
+authresp=$(mktemp)
 
 # If using authentication code, provide the url to get the code and prompt for that code to get a token
 # otherwise, prompt for user/password.
@@ -123,17 +182,24 @@ elif [ -n "$authcode" ]
     echo "Login to SAS with this URL, and enter the authentication code provided."
     echo "$baseurl/SASLogon/oauth/authorize?client_id=sas.cli&response_type=code"
     read -r -p "Enter authentication code: " code
-    token=$(curl -k -s -L -X POST "$baseurl/SASLogon/oauth/token" -H 'Accept: application/json' -H 'Content-Type: application/x-www-form-urlencoded' -H 'Authorization: Basic c2FzLmNsaTo=' -d "grant_type=authorization_code&code=$code" -D "$headers" | sed "s/{.*\"access_token\":\"\([^\"]*\).*}/\1/g")
+    curl -k -s -L -X POST "$baseurl/SASLogon/oauth/token" -H 'Accept: application/json' -H 'Content-Type: application/x-www-form-urlencoded' -H 'Authorization: Basic c2FzLmNsaTo=' -d "grant_type=authorization_code&code=$code" -D "$authheaders" > "$authresp"
+    token=$(sed "s/{.*\"access_token\":\"\([^\"]*\).*}/\1/g" "$authresp")
+    rtoken=$(sed "s/{.*\"refresh_token\":\"\([^\"]*\).*}/\1/g" "$authresp")
+    
     # Confirm token successfully acquired.
-    rc=$(grep -c 'HTTP.*200' "$headers")
+    rc=$(grep -c 'HTTP.*200' "$authheaders")
     if [ "$rc" -ne 1 ] || [ -z "$token" ]
         then
             echo "ERROR: Login unsuccessful."
-            cat "$headers"
-            rm "$headers"
+            cat "$authheaders"
+            cat "$authresp"
+            rm "$authheaders"
+            rm "$authresp"
             exit 1
     fi
     echo "NOTE: Successfully logged in."
+    rm "$authheaders"
+    rm "$authresp"
 else
     if [ -z "$user" ]
         then
@@ -143,51 +209,100 @@ else
         then
         read -r -s -p "Enter password: " pass && echo
     fi
-    token=$(curl -k -s -L -X POST "$baseurl/SASLogon/oauth/token" -H 'Accept: application/json' -H 'Content-Type: application/x-www-form-urlencoded' -H 'Authorization: Basic c2FzLmNsaTo=' -d 'grant_type=password' -d "username=$user" -d "password=$pass" -D "$headers" | sed "s/{.*\"access_token\":\"\([^\"]*\).*}/\1/g")
+    curl -k -s -L -X POST "$baseurl/SASLogon/oauth/token" -H 'Accept: application/json' -H 'Content-Type: application/x-www-form-urlencoded' -H 'Authorization: Basic c2FzLmNsaTo=' -d 'grant_type=password' -d "username=$user" -d "password=$pass" -D "$authheaders" > "$authresp"
+    token=$(sed "s/{.*\"access_token\":\"\([^\"]*\).*}/\1/g" "$authresp")
+    rtoken=$(sed "s/{.*\"refresh_token\":\"\([^\"]*\).*}/\1/g" "$authresp")
     # Confirm token successfully acquired.
-        rc=$(grep -c 'HTTP.*200' "$headers")
+        rc=$(grep -c 'HTTP.*200' "$authheaders")
         if [ "$rc" -ne 1 ] || [ -z "$token" ]
             then
                 echo "ERROR: Login unsuccessful."
-                cat "$headers"
-                rm "$headers"
+                cat "$authheaders"
+                rm "$authheaders"
+                cat "$authresp"
+                rm "$authresp"
                 exit 1
         fi
         echo "NOTE: Successfully logged in."
 fi
+rm "$authheaders"
+rm "$authresp"
 
-userresp=$(mktemp)
-if [ -z "$useracct" ]
-then
-# Pull the initial list of users
-curl -k -s -L "$baseurl/identities/users" -H "Authorization: Bearer $token" -H "Accept: application/json" > "$userresp"
-echo "NOTE: Pulling users into file $userresp."
-# Create an array of users
-mapfile -t users < <( jq -r '.items[].id' "$userresp" )
 
-# Check for a next link
-nexturl=$(jq -r '.links[] | select(.rel == "next") | .href' "$userresp")
+if [ -z "$useracct" ]; then
+    # Pull the initial list of users
 
-# Iterate through all next links to fully populate the array with user ids.
-while [ -n "$nexturl" ]
-    do
-    curl -k -s -L "${baseurl}${nexturl}" -H "Authorization: Bearer $token" -H "Accept: application/json" > "$userresp"
-    mapfile -t -O "${#users[@]}" users < <( jq -r '.items[].id' "$userresp" )
+    authcheck
+
+    userresp=$(mktemp)
+    headers=$(mktemp)
+
+    echo "NOTE: Pulling users into file $userresp."
+    curl -k -s -L "$baseurl/identities/users" -H "Authorization: Bearer $token" -H "Accept: application/json" -D "$headers" > "$userresp"
+
+    # Confirm the response was successful.
+    rc=$(grep -c 'HTTP.*200' "$headers")
+    if [ "$rc" -ne 1 ]
+        then
+        echo "ERROR: HTTP Response Code when pulling initial user list: $(grep 'HTTP.*' "$headers")."
+        cat "$headers"
+        cat "$userresp"
+        rm "$headers"
+        rm "$userresp"
+        exit 1
+    fi
+
+    # Test jq can parse the file.
+    jqparsecheck "$userresp"
+
+    # Create an array of users
+    mapfile -t users < <( jq -r '.items[].id' "$userresp" )
+
+    # Check for a next link
     nexturl=$(jq -r '.links[] | select(.rel == "next") | .href' "$userresp")
-done
 
+    # Iterate through all next links to fully populate the array with user ids.
+    while [ -n "$nexturl" ]
+        do
+        authcheck
+        curl -k -s -L "${baseurl}${nexturl}" -H "Authorization: Bearer $token" -H "Accept: application/json" -D "$headers" > "$userresp"
 
-# We now have an array, "users" that contains every user ID.
-echo "NOTE: Found ${#users[@]} users defined."
+        # Confirm the response was successful.
+        rc=$(grep -c 'HTTP.*200' "$headers")
+        if [ "$rc" -ne 1 ]
+            then
+            echo "ERROR: HTTP Response Code when pulling paged user list: $(grep 'HTTP.*' "$headers")."
+            cat "$headers"
+            cat "$userresp"
+            rm "$headers"
+            rm "$userresp"
+            exit 1
+        fi
+        # Check if jq can parse the file
+        jqparsecheck "$userresp"
 
-else
-echo "NOTE: --useracct was set to $useracct. Defining this as our only user."
-users=("$useracct")
+        mapfile -t -O "${#users[@]}" users < <( jq -r '.items[].id' "$userresp" )
+        nexturl=$(jq -r '.links[] | select(.rel == "next") | .href' "$userresp")
+    done
+
+    # We now have an array, "users" that contains every user ID.
+    echo "NOTE: Found ${#users[@]} users defined."
+
+    else
+    echo "NOTE: --useracct was set to $useracct. Defining this as our only user."
+    users=("$useracct")
 fi
 
 # For each user, check to see if a directory already exists with their name in the directory supplied. If not, pull the uid/gid and create the directory.
 for user in "${users[@]}"
     do
+    # Confirm the user is not empty.
+    if [ -z "$user" ]
+        then
+        echo "ERROR: User ID is empty. Skipping to next user."
+        continue
+    fi
+
     # If the --reset-identifier option is set, call /identities/users/user_ID/identifier with the DELETE HTTP method for each user to remove any existing ID.
     if [ "$reset" = "1" ]
         then
@@ -200,7 +315,7 @@ for user in "${users[@]}"
         then
             echo "NOTE: Identifier was not present, so no delete occurred."
         else
-            echo "ERROR: HTTP Response Code: $response. Are we logged on as a SAS Administrator? Is our token expired?"
+            echo "ERROR: Unexpected HTTP Response Code when attempting to delete existing identifier: $response."
             break
         fi
     fi
@@ -211,14 +326,41 @@ for user in "${users[@]}"
         if [ ! -d "${directory}/${user}" ] || [ "$setown" = "1" ]
             then
             # Get the identifiers for the user.
-            curl -k -s -L "$baseurl/identities/users/${user}/identifier" -H "Authorization: Bearer $token" -H "Accept: application/json" > "$userresp"
+            authcheck
+            curl -k -s -L "$baseurl/identities/users/${user}/identifier" -H "Authorization: Bearer $token" -H "Accept: application/json" -D "$headers" > "$userresp"
+ 
+            # If we get a 404, the user doesn't have an identifier defined in the identities service.
+            if [ "$(grep -c 'HTTP.*404' "$headers")" -eq 1 ]
+                then
+                echo "ERROR: User $user identifier does not exist in the identities service. Skipping to next user."
+                continue
+            fi
+ 
+            # Confirm the response was successful.
+            rc=$(grep -c 'HTTP.*200' "$headers")
+            if [ "$rc" -ne 1 ]
+                then
+                echo "ERROR: Unexpected HTTP Response Code when pulling user identifier for user ${user}: $(grep 'HTTP.*' "$headers"). Skipping to next user."
+                cat "$headers"
+                cat "$userresp"
+                rm "$headers"
+                rm "$userresp"
+                continue
+            fi
+
+            # Test jq can parse the file.
+            jqparsecheck "$userresp"
+
+            # Extract the uid and gid needed to create the directory.
             uid=$(jq -r '.uid' "$userresp")
             gid=$(jq -r '.gid' "$userresp")
 
-            # Stop 
-            if [ "$uid" = "null" ] || [ "$gid" = "null" ]
+            # Stop if we didn't get a uid or gid.
+            if [ "$uid" = "null" ] || [ "$gid" = "null" ] || [ -z "$uid" ] || [ -z "$gid" ]
             then
-                echo "ERROR: Failed to pull UID/GID values for $user. Skipping to next user."
+                echo "ERROR: Failed to pull UID/GID values for $user. Skipping to next user. " 
+                echo "This could occur if generateUids is disabled and no identifier has been "
+                echo "supplied through bulkloading or the uidNumber and gidNumber attributes in LDAP."
                 continue
             fi
 
@@ -230,7 +372,7 @@ for user in "${users[@]}"
                 then
                 echo "NOTE: Created directory ${directory}/${user} with ownership ${uid}:${gid}"
                 else
-                echo "ERROR: Install command did not return code 0. Are we running as root? Exiting."
+                echo "ERROR: Install command did not execute successfully. Are we running as root? Exiting."
                 exit 1
                 fi
             

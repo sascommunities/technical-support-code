@@ -1,0 +1,116 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  annotations:
+    sas.com/kustomize-base: base
+    sas.com/component-name: sas-cleanwork
+  labels:
+    app.kuberentes.io/component: sas-cleanwork-daemon
+    app.kuberentes.io/name: sas-cleanwork
+    sas.com/admin: namespace
+    workload.sas.com/class: compute
+  name: sas-cleanwork
+spec:
+  selector:
+    matchLabels:
+      app.kuberentes.io/component: sas-cleanwork-daemon
+  template:
+    metadata:
+      annotations:
+        sas.com/kustomize-base: base
+      labels:
+        app: sas-cleanwork
+        app.kuberentes.io/component: sas-cleanwork-daemon
+        app.kuberentes.io/name: sas-cleanwork
+        workload.sas.com/class: compute
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution: []
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: workload.sas.com/class
+                operator: In
+                values:
+                - compute
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution: []
+          requiredDuringSchedulingIgnoredDuringExecution: []
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution: []
+          requiredDuringSchedulingIgnoredDuringExecution: []
+      containers:
+      - env:
+        - name: SSL_CERT_FILE
+          value: /security/ca.crt
+        envFrom:
+        - configMapRef: 
+            name: sas-go-config
+        - secretRef:
+            name: sas-consul-client
+        image: sas-config-init
+        name: sas-cleanwork
+        resources:
+          limits: 
+            cpu: 500m
+            memory: 500Mi
+          requests:
+            cpu: 50m
+            memory: 50Mi
+        securityContext:
+          allowPrivilegeEscalation: true
+          capabilities:
+            add:
+            - CAP_SYS_ADMIN
+          privileged: true
+          readOnlyRootFilesystem: true
+          runAsNonRoot: false
+          runAsUser: 0
+        volumeMounts:
+        - name: saswork
+          mountPath: /saswork
+        - name: tmp
+          mountPath: /tmp
+        - name: security
+          mountPath: /security
+        - name: sas-cleanwork-script
+          mountPath: /sas-cleanwork-script
+        command:
+          - /bin/bash
+          - -c
+          - |
+            if [ -z "$CLEANWORK_SLEEP_TIMER_SECONDS" ] 
+            then
+            echo "ERROR: Need to set CLEANWORK_SLEEP_TIMER_SECONDS, was sas-cleanwork-customization-patch.yaml added to kustomization.yaml?"
+            exit 1
+            fi
+            while true
+              do /sas-cleanwork-script/sas-cleanwork.sh
+              echo "$(date) Sleeping for $CLEANWORK_SLEEP_TIMER_SECONDS seconds before running cleanwork again."
+              sleep $CLEANWORK_SLEEP_TIMER_SECONDS
+            done
+      imagePullSecrets: []
+      securityContext:
+        runAsNonRoot: false
+        seccompProfile: 
+          type: RuntimeDefault
+      tolerations:
+      - effect: NoSchedule
+        key: workload.sas.com/class
+        operator: Equal
+        value: compute
+      volumes:
+      - name: security
+        secret:
+          secretName: sas-consul-server-0
+      - name: sas-cleanwork-script
+        configMap:
+          name: sas-cleanwork-script
+          defaultMode: 511
+      - name: tmp
+        emptyDir: {}
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 100%
+    type: RollingUpdate

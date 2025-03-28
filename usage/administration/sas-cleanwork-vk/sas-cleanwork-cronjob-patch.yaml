@@ -1,0 +1,39 @@
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: sas-cleanwork-cj-volume-config
+patch: |-
+  - op: add
+    path: /spec/jobTemplate/spec/template/spec/volumes/-
+    value: 
+      name: saswork
+      {{ VOLUME-STORAGE-CLASS }}
+target:
+  kind: CronJob
+  name: sas-cleanwork
+---
+# Next to "value" you can define any cron syntax schedule for the cron job. '0 0 * * *' is midnight every day.
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: sas-cleanwork-schedule-cronjob
+patch: |-
+  - op: add
+    path: /spec/schedule
+    value: '0 0 * * *'
+target:
+  kind: CronJob
+  name: sas-cleanwork
+---
+# If you want the cron job to be disabled, set value to "true"
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: sas-cleanwork-enable-cronjob
+patch: |-
+  - op: add
+    path: /spec/suspend
+    value: false
+target:
+  kind: CronJob
+  name: sas-cleanwork

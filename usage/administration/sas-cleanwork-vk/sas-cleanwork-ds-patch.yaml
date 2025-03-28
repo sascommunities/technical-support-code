@@ -1,0 +1,27 @@
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: sas-cleanwork-ds-volume-config
+patch: |-
+  - op: add
+    path: /spec/template/spec/volumes/-
+    value: 
+      name: saswork
+      {{ VOLUME-STORAGE-CLASS }}
+target:
+  kind: DaemonSet
+  name: sas-cleanwork
+---
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: set-cleanwork-timer
+patch: |-
+  - op: add
+    path: /spec/template/spec/containers/0/env/-
+    value:
+      name: CLEANWORK_SLEEP_TIMER_SECONDS
+      value: "{{ SLEEP-TIME-IN-SECONDS }}"
+target:
+  kind: DaemonSet
+  name: sas-cleanwork
