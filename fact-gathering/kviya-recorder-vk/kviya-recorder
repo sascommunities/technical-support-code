@@ -5,7 +5,7 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='kviya-recorder v1.1.11'
+version='kviya-recorder v1.1.12'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -199,7 +199,8 @@ while getopts "vh?l:n:st:i:o:" opt; do
             exit 1
         fi
       ;;
-    t)  # Validate provided time
+    t)  
+        # Validate provided time
         if [ ! $(echo $OPTARG | grep -E '^[0-9]?[0-9]*\.?[0-9]+[0-9]?$') ]; then
             echo;echo "ERROR: '$OPTARG' is not a valid time interval.";echo
             exit 1
@@ -309,9 +310,21 @@ function logMon {
                                     logPid[$podIndex$containerIndex]=$!
                                     containerStatus[$podIndex$containerIndex]=1
                                 fi
-                            elif [[ containerStatus[$podIndex$containerIndex] -eq 1 && ! -d "/proc/${logPid[$podIndex$containerIndex]}" ]]; then
-                                containerStatus[$podIndex$containerIndex]=2
-                                tar -czf $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.tgz --remove-files --directory=$TEMPDIR/.kviya/logMon/logs ${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log 2> /dev/null
+                            elif [[ containerStatus[$podIndex$containerIndex] -eq 1 ]]; then
+                                if [[ ! -d "/proc/${logPid[$podIndex$containerIndex]}" ]]; then
+                                    containerStatus[$podIndex$containerIndex]=2
+                                    tar -czf $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.tgz --remove-files --directory=$TEMPDIR/.kviya/logMon/logs ${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log 2> /dev/null
+                                elif [[ $(expr $(expr $(date +%s) - $(stat $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log -c %Y)) / 60) -gt 1 ]]; then
+                                    echo "DEBUG: Log file '$TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log' wasn't updated for more than a minute." >> $TEMPDIR/.kviya/logMon/logs/kviya-recorder_logmon.log
+                                    unset lastLogLine lastCapturedLine
+                                    lastLogLine=$($KUBECTLCMD -n $ARGNAMESPACE logs ${podList[$podIndex]} $container --tail=1)
+                                    lastCapturedLine=$(tail -1 $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log)
+                                    if [[ "${lastLogLine}" != "${lastCapturedLine}" ]]; then
+                                        echo "DEBUG: Restarting 'kubectl logs -f' process as it didn't collect the most recent log messages." >> $TEMPDIR/.kviya/logMon/logs/kviya-recorder_logmon.log
+                                        kill -9 ${logPid[$podIndex$containerIndex]} 2>> $TEMPDIR/.kviya/logMon/logs/kviya-recorder_logmon.log
+                                        wasDeleted[$podIndex]=1
+                                    fi
+                                fi
                             fi
                             containerIndex=$[ $containerIndex + 1 ]
                         done
