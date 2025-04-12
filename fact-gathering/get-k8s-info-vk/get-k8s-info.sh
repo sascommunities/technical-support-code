@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.21'
+version='get-k8s-info v1.3.22'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -1216,6 +1216,7 @@ function getNamespaceData() {
                     echo "    - Running sas-bootstrap-config kv read" | tee -a $logfile
                     for consulPod in $($KUBECTLCMD -n $namespace get pod -l 'app=sas-consul-server' --no-headers 2>> $logfile | awk '{print $1}'); do
                         mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$consulPod
+                        createTask "$KUBECTLCMD -n $namespace exec $consulPod -c sas-consul-server -- bash -c 'export CONSUL_HTTP_ADDR=https://localhost:8500;consul kv get --recurse locks'" "$TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_consul_kv_get_--recurse_locks.txt"
                         $KUBECTLCMD -n $namespace exec $consulPod -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=https://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read --prefix 'config/' --recurse" > $TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_sas-bootstrap-config_kv_read.txt 2>> $logfile
                         if [ $? -eq 0 ]; then 
                             removeSensitiveData $TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_sas-bootstrap-config_kv_read.txt
@@ -1241,10 +1242,25 @@ function getNamespaceData() {
                         #Crunchy5 commands
                         for pgcluster in $($KUBECTLCMD -n $namespace get postgresclusters.postgres-operator.crunchydata.com --no-headers 2>> $logfile | awk '{print $1}'); do
                             if [[ $pgcluster =~ 'crunchy' ]]; then
-                                for crunchyPod in $($KUBECTLCMD -n $namespace get pod -l "postgres-operator.crunchydata.com/data=postgres,postgres-operator.crunchydata.com/cluster=$pgcluster" --no-headers 2>> $logfile | awk '{print $1}'); do
+                                crunchyPods=($($KUBECTLCMD -n $namespace get pod -l "postgres-operator.crunchydata.com/role=master,postgres-operator.crunchydata.com/cluster=$pgcluster" --no-headers 2>> $logfile | awk '{print $1}'))
+                                if [[ -z $crunchyPods ]]; then
+                                    crunchyPods=($($KUBECTLCMD -n $namespace get pod -l "postgres-operator.crunchydata.com/data=postgres,postgres-operator.crunchydata.com/cluster=$pgcluster" --no-headers 2>> $logfile | awk '{print $1}'))
+                                fi
+                                for crunchyPod in ${crunchyPods[@]}; do
                                     mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$crunchyPod
                                     createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- patronictl list" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_list.txt"
+                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- patronictl history" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_history.txt"
+                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- patronictl show-config" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_show-config.txt"
+                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- bash -c 'cat \$PGDATA/postgresql.conf'" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_cat_postgresql.conf.txt" 
+                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- psql -d SharedServices -c 'SELECT datname Database_Name, usename, application_name, COUNT(*) Count_By_Apps,version SSL_Version FROM pg_stat_activity a, pg_stat_ssl s where a.pid = s.pid GROUP BY datname,usename,application_name,version ORDER BY 1,4;'" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_psql_application-connections.txt"
+                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- psql -d SharedServices -c 'SELECT datname AS database_name, pg_size_pretty(pg_database_size(datname)) AS database_size FROM pg_database;'" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_psql_database-sizes.txt"
+                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- psql -d SharedServices -c \"SELECT nspname || '.' || relname AS relation, pg_size_pretty(pg_total_relation_size(C.oid)) AS Total_Size FROM pg_class C JOIN pg_namespace N ON N.oid = C.relnamespace WHERE relkind = 'r' AND nspname = 'pg_catalog' AND relname = 'pg_largeobject' ORDER BY pg_total_relation_size(C.oid) DESC;\"" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_psql_largeobject-table-size.txt"
+                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- psql -d SharedServices -c \"SELECT schemaname || '.' || relname AS relation, pg_size_pretty(pg_total_relation_size(relid)) As Total_Size, pg_size_pretty(pg_indexes_size(relid)) as Index_Size, pg_size_pretty(pg_relation_size(relid)) as Actual_Size FROM pg_catalog.pg_statio_user_tables ORDER BY pg_total_relation_size(relid) DESC;\"" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_psql_table-sizes.txt"
+                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- psql -d SharedServices -c \"DO \\\$$ DECLARE rec record; count_tables integer;BEGIN FOR rec IN SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg_toast%' AND table_schema NOT LIKE 'pg_temp%' AND table_schema NOT LIKE 'pg_toast_temp%' AND table_schema NOT LIKE 'pg_catalog%' ORDER BY table_schema, table_name LOOP EXECUTE format('SELECT COUNT(*) FROM %I.%I', rec.table_schema, rec.table_name) INTO count_tables; RAISE NOTICE '% %.%', count_tables, rec.table_schema, rec.table_name; END LOOP; END \\\$$;\" 2>&1 | cut -d ' ' -f2- | sort -n -r | grep -v '^DO$'" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_psql_table-record-counts.txt"
+                                    createTask "$KUBECTLCMD -n $namespace exec -i $crunchyPod -c database -- vacuumlo -n -h ${pgcluster}-ha -U dbmsowner -v SharedServices <<< \$($KUBECTLCMD -n $namespace get secret ${pgcluster}-pguser-dbmsowner -o jsonpath={.data.password} | base64 -d)" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_vacuumlo_dry-run.txt"
                                 done
+                                mkdir -p $TEMPDIR/kubernetes/$namespace/exec/${pgcluster}-repo-host-0
+                                createTask "$KUBECTLCMD -n $namespace exec ${pgcluster}-repo-host-0 -c pgbackrest -- pgbackrest info" "$TEMPDIR/kubernetes/$namespace/exec/${pgcluster}-repo-host-0/pgbackrest_pgbackrest_info.txt"
                             fi
                         done
                     fi
