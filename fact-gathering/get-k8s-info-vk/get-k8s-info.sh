@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.22'
+version='get-k8s-info v1.3.24'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -54,7 +54,7 @@ function usage {
     echo "  -a|--ansiblevars (Optional) Path of the ansible-vars.yaml file"
     echo "  -o|--out         (Optional) Path where the .tgz file will be created"
     echo "  --disabletags    (Optional) Disable specific debug tags. By default, all tags are enabled."
-    echo "                              Available values are: 'backups', 'config', 'postgres' and 'rabbitmq'"
+    echo "                              Available values are: 'backups', 'config', 'performance, 'postgres' and 'rabbitmq'"
     echo "  -s|--sastsdrive  (Optional) Send the .tgz file to SASTSDrive through sftp."
     echo "                              Only use this option after you were authorized by Tech Support to send files to SASTSDrive for the case."
     echo "  -w|--workers     (Optional) Number of simultaneous "kubectl" commands that the script can execute in parallel."
@@ -173,6 +173,7 @@ if grep project.openshift.io $k8sApiResources > /dev/null; then isOpenShift='tru
 else isOpenShift='false';fi
 
 # Initialize Variables
+PERFORMANCE=true
 POSTGRES=true
 RABBITMQ=true
 CONFIG=true
@@ -895,6 +896,37 @@ function nodesTimeReport {
     fi
     echo -e "\nJumpbox time: $jumpDate" >> $TEMPDIR/reports/nodes-time-report.txt
 }
+function performanceTasks {
+    nodes=($($KUBECTLCMD get node -o name 2>> $logfile | cut -d '/' -f2))
+    nodePerformancePods=()
+    nodesPerformanceCommands=('getconf -a' 'top -bn 1 -w 512 | head -5' 'free -h' lscpu lsblk lsipc)
+    nodesPerformanceFiles=('/proc/cpuinfo' '/proc/meminfo' '/proc/diskstats' '/proc/cmdline' '/proc/interrupts' '/proc/partitions')
+
+    # Look for pods running on each node that have the performance command available
+    for nodeIndex in ${!nodes[@]}; do
+        for pod in $($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep " Running " | grep " ${nodes[$nodeIndex]} " | awk '{print $1"/"$2}'); do
+            if $timeoutCmd 10 $KUBECTLCMD -n ${pod%%/*} exec ${pod#*/} -- type ${nodesPerformanceCommands[@]%% *} > /dev/null 2>&1; then
+                nodePerformancePods[$nodeIndex]=$pod
+                break
+            fi
+        done
+    done
+
+    # Collect performance details from the nodes
+    for nodeIndex in ${!nodes[@]}; do
+        nodePerformancePod=${nodePerformancePods[$nodeIndex]}
+        if [[ ! -z $nodePerformancePod ]]; then
+            mkdir -p $TEMPDIR/performance/nodes/${nodes[$nodeIndex]}/commands $TEMPDIR/performance/nodes/${nodes[$nodeIndex]}/proc
+            for nodesPerformanceCommandIndex in ${!nodesPerformanceCommands[@]}; do
+                createTask "$KUBECTLCMD -n ${nodePerformancePod%%/*} exec ${nodePerformancePod#*/} -- ${nodesPerformanceCommands[$nodesPerformanceCommandIndex]}" "$TEMPDIR/performance/nodes/${nodes[$nodeIndex]}/commands/${nodesPerformanceCommands[$nodesPerformanceCommandIndex]%% *}.txt"
+            done
+            for nodesPerformanceFile in ${nodesPerformanceFiles[@]}; do
+                createTask "$KUBECTLCMD -n ${nodePerformancePod%%/*} exec ${nodePerformancePod#*/} -- cat ${nodesPerformanceFile}" "$TEMPDIR/performance/nodes/${nodes[$nodeIndex]}${nodesPerformanceFile}"
+            done
+        fi
+    done
+}
+
 function captureCasLogs {
     namespace=$1
     casDefaultControllerPod=$2
@@ -1188,9 +1220,9 @@ function getNamespaceData() {
                     done
                     # sas-cas-backup-data PVC
                     if [[ ! -z $casDefaultControllerPod ]]; then
-                        mkdir -p $TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller
-                        createTask "$KUBECTLCMD -n $namespace exec sas-cas-server-default-controller -c sas-backup-agent -- bash -c 'ls -lRa /sasviyabackup'" "$TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_ls_sasviyabackups.txt"
-                        createTask "$KUBECTLCMD -n $namespace exec sas-cas-server-default-controller -c sas-backup-agent -- find /sasviyabackup -name status.json -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/sas-cas-server-default-controller/sas-backup-agent_find_status.json.txt"
+                        mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$casDefaultControllerPod
+                        createTask "$KUBECTLCMD -n $namespace exec $casDefaultControllerPod -c sas-backup-agent -- bash -c 'ls -lRa /sasviyabackup'" "$TEMPDIR/kubernetes/$namespace/exec/$casDefaultControllerPod/sas-backup-agent_ls_sasviyabackups.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $casDefaultControllerPod -c sas-backup-agent -- find /sasviyabackup -name status.json -exec echo '{}:' \; -exec cat {} \; -exec echo -e '\n' \;" "$TEMPDIR/kubernetes/$namespace/exec/$casDefaultControllerPod/sas-backup-agent_find_status.json.txt"
                     fi
                     # Past backup and restore status
                     createTask "$KUBECTLCMD -n $namespace get jobs -l 'sas.com/backup-job-type in (scheduled-backup, scheduled-backup-incremental)' -L 'sas.com/sas-backup-id,sas.com/backup-job-type,sas.com/sas-backup-job-status,sas.com/sas-backup-persistence-status,sas.com/sas-backup-datasource-types,sas.com/sas-backup-include-postgres' --sort-by=.status.startTime" "$TEMPDIR/reports/backup-status_$namespace.txt"
@@ -1216,8 +1248,8 @@ function getNamespaceData() {
                     echo "    - Running sas-bootstrap-config kv read" | tee -a $logfile
                     for consulPod in $($KUBECTLCMD -n $namespace get pod -l 'app=sas-consul-server' --no-headers 2>> $logfile | awk '{print $1}'); do
                         mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$consulPod
-                        createTask "$KUBECTLCMD -n $namespace exec $consulPod -c sas-consul-server -- bash -c 'export CONSUL_HTTP_ADDR=https://localhost:8500;consul kv get --recurse locks'" "$TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_consul_kv_get_--recurse_locks.txt"
-                        $KUBECTLCMD -n $namespace exec $consulPod -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=https://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read --prefix 'config/' --recurse" > $TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_sas-bootstrap-config_kv_read.txt 2>> $logfile
+                        createTask "$KUBECTLCMD -n $namespace exec $consulPod -c sas-consul-server -- bash -c 'export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;consul kv get --recurse locks'" "$TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_consul_kv_get_--recurse_locks.txt"
+                        $KUBECTLCMD -n $namespace exec $consulPod -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read --prefix 'config/' --recurse" > $TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_sas-bootstrap-config_kv_read.txt 2>> $logfile
                         if [ $? -eq 0 ]; then 
                             removeSensitiveData $TEMPDIR/kubernetes/$namespace/exec/$consulPod/sas-consul-server_sas-bootstrap-config_kv_read.txt
                             break
@@ -1287,6 +1319,54 @@ function getNamespaceData() {
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_parameters'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-parameters.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_unresponsive_queues'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-unresponsive-queues.txt"
                     done
+                fi
+                # performance debugtag
+                if [[ "$PERFORMANCE" = true ]]; then
+                    # Collect performance information related to specific pods
+                    mkdir -p $TEMPDIR/performance/pods
+                    podsPerformanceCommands=('df -hT' 'top -bn 1 -w 512' 'mount')
+                    performancePods=()
+                    
+                    casPods=($($KUBECTLCMD -n $namespace get pod -l app.kubernetes.io/managed-by=sas-cas-operator --no-headers 2>> $logfile | awk '{print $1}'))
+                    crunchyPods=($($KUBECTLCMD -n $namespace get pod -l "postgres-operator.crunchydata.com/data=postgres,postgres-operator.crunchydata.com/cluster=$pgcluster" --no-headers 2>> $logfile | awk '{print $1}'))
+                    rabbitmqPods=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-rabbitmq-server' --no-headers 2>> $logfile | awk '{print $1}'))
+                    
+                    riskPods=()
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-data-mining-risk-models' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-app' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-builder' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-core' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-objects' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app.kubernetes.io/name=sas-risk-cirrus-rcc' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-data' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-modeling-app' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-modeling-core' --no-headers 2>> $logfile | awk '{print $1}'))
+                    
+                    computePods=()
+                    runningPods=($($KUBECTLCMD -n $namespace get pods -o=jsonpath="{.items[?(@.status.phase=='Running')].metadata.name}" 2>> $logfile))
+                    podTemplates=($($KUBECTLCMD -n $namespace get podtemplates --no-headers 2>> $logfile | awk '{print $1}'))
+                    for podTemplate in ${podTemplates[@]}; do
+                        podtemplatePods=($($KUBECTLCMD -n $namespace get pods -o=jsonpath="{.items[?(@.metadata.annotations.launcher\.sas\.com/pod-template-name=='$podTemplate')].metadata.name}" 2>> $logfile))
+                        if [[ ! -z $podtemplatePods ]]; then
+                            for pod in ${podtemplatePods[@]}; do
+                                if [[ " ${runningPods[@]} " =~ " $pod " ]]; then
+                                    computePods+=($pod)
+                                    break
+                                fi
+                            done
+                        fi
+                    done
+                    
+                    performancePods+=(${casPods[@]} ${crunchyPods[@]} ${rabbitmqPods[@]} ${computePods[@]} ${riskPods[@]})
+                    
+                    if [[ ! -z $performancePods ]]; then
+                        for performancePod in ${performancePods[@]}; do
+                            mkdir -p $TEMPDIR/performance/pods/$performancePod/commands
+                            for podsPerformanceCommandIndex in ${!podsPerformanceCommands[@]}; do
+                                createTask "$KUBECTLCMD -n $namespace exec $performancePod -- ${podsPerformanceCommands[$podsPerformanceCommandIndex]}" "$TEMPDIR/performance/pods/$performancePod/commands/${podsPerformanceCommands[$podsPerformanceCommandIndex]%% *}.txt"
+                            done
+                        done
+                    fi
                 fi
             fi
             # Collect logs
@@ -1727,12 +1807,18 @@ cat $TEMPDIR/versions/kustomize.txt >> $logfile
 echo "  - Capturing nodes time information" | tee -a $logfile
 nodesTimeReport
 
+if [[ "$PERFORMANCE" = true ]]; then
+    # Capturing performance information
+    echo "  - Capturing performance information" | tee -a $logfile
+    performanceTasks
+fi
+
 # Collect deployment assets
 if [ $DEPLOYPATH != 'unavailable' ]; then
     echo "  - Collecting deployment assets" | tee -a $logfile
     mkdir $TEMPDIR/assets 2>> $logfile
     cd $DEPLOYPATH 2>> $logfile
-    find . -path ./sas-bases -prune -false -o -name "*.yaml" 2>> $logfile | grep -vE '\./.*sas-bases.*/.*' | tar -cf $TEMPDIR/assets/assets.tar -T - 2>> $logfile
+    find . -path ./sas-bases -prune -false -o -name "*.yaml" -o -name "*sas-risk-cirrus*.env" 2>> $logfile | grep -vE '\./.*sas-bases.*/.*' | tar -cf $TEMPDIR/assets/assets.tar -T - 2>> $logfile
     tar xf $TEMPDIR/assets/assets.tar --directory $TEMPDIR/assets 2>> $logfile
     rm -rf $TEMPDIR/assets/assets.tar 2>> $logfile
     removeSensitiveData $(find $TEMPDIR/assets -type f)
