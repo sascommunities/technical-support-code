@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.24'
+version='get-k8s-info v1.3.25'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -1202,6 +1202,55 @@ function getNamespaceData() {
                     echo $waitForCasPid:$waitForCasTimeout:$namespace >> $TEMPDIR/.get-k8s-info/waitForCas
                 fi
 
+                # performance debugtag
+                if [[ "$PERFORMANCE" = true ]]; then
+                    echo "    - Getting pods performance information" | tee -a $logfile
+                    # Collect performance information related to specific pods
+                    mkdir -p $TEMPDIR/performance/pods
+                    podsPerformanceCommands=('df -hT' 'top -bn 1 -w 512' 'mount')
+                    performancePods=()
+                    
+                    casPods=($($KUBECTLCMD -n $namespace get pod -l app.kubernetes.io/managed-by=sas-cas-operator --no-headers 2>> $logfile | awk '{print $1}'))
+                    crunchyPods=($($KUBECTLCMD -n $namespace get pod -l "postgres-operator.crunchydata.com/data=postgres" --no-headers 2>> $logfile | awk '{print $1}'))
+                    rabbitmqPods=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-rabbitmq-server' --no-headers 2>> $logfile | awk '{print $1}'))
+                    
+                    riskPods=()
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-data-mining-risk-models' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-app' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-builder' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-core' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-objects' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app.kubernetes.io/name=sas-risk-cirrus-rcc' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-data' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-modeling-app' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-modeling-core' --no-headers 2>> $logfile | awk '{print $1}'))
+                    
+                    computePods=()
+                    runningPods=($($KUBECTLCMD -n $namespace get pods -o=jsonpath="{.items[?(@.status.phase=='Running')].metadata.name}" 2>> $logfile))
+                    podTemplates=($($KUBECTLCMD -n $namespace get podtemplates --no-headers 2>> $logfile | awk '{print $1}'))
+                    for podTemplate in ${podTemplates[@]}; do
+                        podtemplatePods=($($KUBECTLCMD -n $namespace get pods -o=jsonpath="{.items[?(@.metadata.annotations.launcher\.sas\.com/pod-template-name=='$podTemplate')].metadata.name}" 2>> $logfile))
+                        if [[ ! -z $podtemplatePods ]]; then
+                            for pod in ${podtemplatePods[@]}; do
+                                if [[ " ${runningPods[@]} " =~ " $pod " ]]; then
+                                    computePods+=($pod)
+                                    break
+                                fi
+                            done
+                        fi
+                    done
+                    
+                    performancePods+=(${casPods[@]} ${crunchyPods[@]} ${rabbitmqPods[@]} ${computePods[@]} ${riskPods[@]})
+                    
+                    if [[ ! -z $performancePods ]]; then
+                        for performancePod in ${performancePods[@]}; do
+                            mkdir -p $TEMPDIR/performance/pods/$performancePod/commands
+                            for podsPerformanceCommandIndex in ${!podsPerformanceCommands[@]}; do
+                                createTask "$KUBECTLCMD -n $namespace exec $performancePod -- ${podsPerformanceCommands[$podsPerformanceCommandIndex]}" "$TEMPDIR/performance/pods/$performancePod/commands/${podsPerformanceCommands[$podsPerformanceCommandIndex]%% *}.txt"
+                            done
+                        done
+                    fi
+                fi
                 # backups debugtag
                 if [[ "$BACKUPS" = true ]]; then
                     echo "    - Getting backups information" | tee -a $logfile
@@ -1280,15 +1329,16 @@ function getNamespaceData() {
                                 fi
                                 for crunchyPod in ${crunchyPods[@]}; do
                                     mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$crunchyPod
+                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- psql -d SharedServices -c 'SELECT now() - pg_stat_activity.query_start AS duration,* FROM pg_stat_activity ORDER BY duration desc;'" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_psql_running-queries.txt"
                                     createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- patronictl list" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_list.txt"
                                     createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- patronictl history" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_history.txt"
                                     createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- patronictl show-config" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_patronictl_show-config.txt"
                                     createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- bash -c 'cat \$PGDATA/postgresql.conf'" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_cat_postgresql.conf.txt" 
+                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- psql -d SharedServices -c 'SELECT n_live_tup as Estimated_Rows,* FROM pg_stat_user_tables ORDER BY n_live_tup desc;'" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_psql_table-statistics.txt"
                                     createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- psql -d SharedServices -c 'SELECT datname Database_Name, usename, application_name, COUNT(*) Count_By_Apps,version SSL_Version FROM pg_stat_activity a, pg_stat_ssl s where a.pid = s.pid GROUP BY datname,usename,application_name,version ORDER BY 1,4;'" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_psql_application-connections.txt"
                                     createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- psql -d SharedServices -c 'SELECT datname AS database_name, pg_size_pretty(pg_database_size(datname)) AS database_size FROM pg_database;'" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_psql_database-sizes.txt"
                                     createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- psql -d SharedServices -c \"SELECT nspname || '.' || relname AS relation, pg_size_pretty(pg_total_relation_size(C.oid)) AS Total_Size FROM pg_class C JOIN pg_namespace N ON N.oid = C.relnamespace WHERE relkind = 'r' AND nspname = 'pg_catalog' AND relname = 'pg_largeobject' ORDER BY pg_total_relation_size(C.oid) DESC;\"" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_psql_largeobject-table-size.txt"
                                     createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- psql -d SharedServices -c \"SELECT schemaname || '.' || relname AS relation, pg_size_pretty(pg_total_relation_size(relid)) As Total_Size, pg_size_pretty(pg_indexes_size(relid)) as Index_Size, pg_size_pretty(pg_relation_size(relid)) as Actual_Size FROM pg_catalog.pg_statio_user_tables ORDER BY pg_total_relation_size(relid) DESC;\"" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_psql_table-sizes.txt"
-                                    createTask "$KUBECTLCMD -n $namespace exec $crunchyPod -c database -- psql -d SharedServices -c \"DO \\\$$ DECLARE rec record; count_tables integer;BEGIN FOR rec IN SELECT table_schema, table_name FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_schema NOT LIKE 'pg_toast%' AND table_schema NOT LIKE 'pg_temp%' AND table_schema NOT LIKE 'pg_toast_temp%' AND table_schema NOT LIKE 'pg_catalog%' ORDER BY table_schema, table_name LOOP EXECUTE format('SELECT COUNT(*) FROM %I.%I', rec.table_schema, rec.table_name) INTO count_tables; RAISE NOTICE '% %.%', count_tables, rec.table_schema, rec.table_name; END LOOP; END \\\$$;\" 2>&1 | cut -d ' ' -f2- | sort -n -r | grep -v '^DO$'" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_psql_table-record-counts.txt"
                                     createTask "$KUBECTLCMD -n $namespace exec -i $crunchyPod -c database -- vacuumlo -n -h ${pgcluster}-ha -U dbmsowner -v SharedServices <<< \$($KUBECTLCMD -n $namespace get secret ${pgcluster}-pguser-dbmsowner -o jsonpath={.data.password} | base64 -d)" "$TEMPDIR/kubernetes/$namespace/exec/$crunchyPod/database_vacuumlo_dry-run.txt"
                                 done
                                 mkdir -p $TEMPDIR/kubernetes/$namespace/exec/${pgcluster}-repo-host-0
@@ -1319,54 +1369,6 @@ function getNamespaceData() {
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_parameters'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-parameters.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_unresponsive_queues'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-unresponsive-queues.txt"
                     done
-                fi
-                # performance debugtag
-                if [[ "$PERFORMANCE" = true ]]; then
-                    # Collect performance information related to specific pods
-                    mkdir -p $TEMPDIR/performance/pods
-                    podsPerformanceCommands=('df -hT' 'top -bn 1 -w 512' 'mount')
-                    performancePods=()
-                    
-                    casPods=($($KUBECTLCMD -n $namespace get pod -l app.kubernetes.io/managed-by=sas-cas-operator --no-headers 2>> $logfile | awk '{print $1}'))
-                    crunchyPods=($($KUBECTLCMD -n $namespace get pod -l "postgres-operator.crunchydata.com/data=postgres,postgres-operator.crunchydata.com/cluster=$pgcluster" --no-headers 2>> $logfile | awk '{print $1}'))
-                    rabbitmqPods=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-rabbitmq-server' --no-headers 2>> $logfile | awk '{print $1}'))
-                    
-                    riskPods=()
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-data-mining-risk-models' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-app' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-builder' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-core' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-objects' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app.kubernetes.io/name=sas-risk-cirrus-rcc' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-data' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-modeling-app' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-modeling-core' --no-headers 2>> $logfile | awk '{print $1}'))
-                    
-                    computePods=()
-                    runningPods=($($KUBECTLCMD -n $namespace get pods -o=jsonpath="{.items[?(@.status.phase=='Running')].metadata.name}" 2>> $logfile))
-                    podTemplates=($($KUBECTLCMD -n $namespace get podtemplates --no-headers 2>> $logfile | awk '{print $1}'))
-                    for podTemplate in ${podTemplates[@]}; do
-                        podtemplatePods=($($KUBECTLCMD -n $namespace get pods -o=jsonpath="{.items[?(@.metadata.annotations.launcher\.sas\.com/pod-template-name=='$podTemplate')].metadata.name}" 2>> $logfile))
-                        if [[ ! -z $podtemplatePods ]]; then
-                            for pod in ${podtemplatePods[@]}; do
-                                if [[ " ${runningPods[@]} " =~ " $pod " ]]; then
-                                    computePods+=($pod)
-                                    break
-                                fi
-                            done
-                        fi
-                    done
-                    
-                    performancePods+=(${casPods[@]} ${crunchyPods[@]} ${rabbitmqPods[@]} ${computePods[@]} ${riskPods[@]})
-                    
-                    if [[ ! -z $performancePods ]]; then
-                        for performancePod in ${performancePods[@]}; do
-                            mkdir -p $TEMPDIR/performance/pods/$performancePod/commands
-                            for podsPerformanceCommandIndex in ${!podsPerformanceCommands[@]}; do
-                                createTask "$KUBECTLCMD -n $namespace exec $performancePod -- ${podsPerformanceCommands[$podsPerformanceCommandIndex]}" "$TEMPDIR/performance/pods/$performancePod/commands/${podsPerformanceCommands[$podsPerformanceCommandIndex]%% *}.txt"
-                            done
-                        done
-                    fi
                 fi
             fi
             # Collect logs
@@ -1794,6 +1796,12 @@ if grep orchestration.sas.com $TEMPDIR/kubernetes/clusterwide/get/customresource
 # Collect files used by the K8S Diagram Tools
 captureDiagramToolFiles
 
+if [[ "$PERFORMANCE" = true ]]; then
+    # Capturing performance information
+    echo "  - Collecting nodes performance information" | tee -a $logfile
+    performanceTasks
+fi
+
 # Collect information from selected namespaces
 getNamespaceData ${namespaces[@]}
 
@@ -1806,12 +1814,6 @@ cat $TEMPDIR/versions/kustomize.txt >> $logfile
 # Capturing nodes time information
 echo "  - Capturing nodes time information" | tee -a $logfile
 nodesTimeReport
-
-if [[ "$PERFORMANCE" = true ]]; then
-    # Capturing performance information
-    echo "  - Capturing performance information" | tee -a $logfile
-    performanceTasks
-fi
 
 # Collect deployment assets
 if [ $DEPLOYPATH != 'unavailable' ]; then
