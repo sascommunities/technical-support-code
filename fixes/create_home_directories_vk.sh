@@ -224,10 +224,9 @@ else
                 exit 1
         fi
         echo "NOTE: Successfully logged in."
+        rm "$authheaders"
+        rm "$authresp"
 fi
-rm "$authheaders"
-rm "$authresp"
-
 
 if [ -z "$useracct" ]; then
     # Pull the initial list of users
