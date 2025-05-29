@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.3.25'
+version='get-k8s-info v1.4.00'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -153,7 +153,14 @@ if [[ ! -z $latestVersion ]]; then
 fi
 
 # Check kubectl
-if type kubectl > /dev/null 2>> $logfile; then
+if type kubectl > /dev/null 2>&1 && type oc > /dev/null 2>&1; then
+    # Both clients are installed. Check if k8s is OpenShift.
+    if oc version -o yaml 2>> $logfile | grep openshift > /dev/null; then
+        KUBECTLCMD='oc'
+    else
+        KUBECTLCMD='kubectl'
+    fi
+elif type kubectl > /dev/null 2>> $logfile; then
     KUBECTLCMD='kubectl'
 elif type oc > /dev/null 2>> $logfile; then
     KUBECTLCMD='oc'
@@ -1129,6 +1136,7 @@ function getNamespaceData() {
         crunchydata4objects=(pgclusters)
         crunchydata5objects=(pgupgrades postgresclusters)
         espobjects=(espconfigs esploadbalancers esprouters espservers espupdates)
+        metricsobjects=(podmetrics)
         monitoringobjects=(alertmanagerconfigs alertmanagers podmonitors probes prometheusagents prometheuses prometheusrules scrapeconfigs servicemonitors thanosrulers)
         nginxobjects=(ingresses)
         openshiftobjects=(routes securitycontextconstraints)
@@ -1157,6 +1165,11 @@ function getNamespaceData() {
             getobjects+=(${orchestrationobjects[@]})
             describeobjects+=(${orchestrationobjects[@]})
             yamlobjects+=(${orchestrationobjects[@]})
+        fi
+        if [[ $hasMetricsServer == 'true' ]]; then
+            getobjects+=(${metricsobjects[@]})
+            describeobjects+=(${metricsobjects[@]})
+            yamlobjects+=(${metricsobjects[@]})
         fi
         
         if [ ! -d $TEMPDIR/kubernetes/$namespace ]; then
@@ -1207,12 +1220,13 @@ function getNamespaceData() {
                     echo "    - Getting pods performance information" | tee -a $logfile
                     # Collect performance information related to specific pods
                     mkdir -p $TEMPDIR/performance/pods
-                    podsPerformanceCommands=('df -hT' 'top -bn 1 -w 512' 'mount')
+                    podsPerformanceCommands=('df -hT' 'top -bn 1 -w 512' 'mount' 'ps -ef' 'sysctl -a' 'ulimit -a')
                     performancePods=()
                     
                     casPods=($($KUBECTLCMD -n $namespace get pod -l app.kubernetes.io/managed-by=sas-cas-operator --no-headers 2>> $logfile | awk '{print $1}'))
                     crunchyPods=($($KUBECTLCMD -n $namespace get pod -l "postgres-operator.crunchydata.com/data=postgres" --no-headers 2>> $logfile | awk '{print $1}'))
                     rabbitmqPods=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-rabbitmq-server' --no-headers 2>> $logfile | awk '{print $1}'))
+                    opendistroPods=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-opendistro' --no-headers 2>> $logfile | awk '{print $1}'))
                     
                     riskPods=()
                     riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-data-mining-risk-models' --no-headers 2>> $logfile | awk '{print $1}'))
@@ -1240,7 +1254,7 @@ function getNamespaceData() {
                         fi
                     done
                     
-                    performancePods+=(${casPods[@]} ${crunchyPods[@]} ${rabbitmqPods[@]} ${computePods[@]} ${riskPods[@]})
+                    performancePods+=(${casPods[@]} ${crunchyPods[@]} ${computePods[@]} ${opendistroPods[@]} ${rabbitmqPods[@]} ${riskPods[@]})
                     
                     if [[ ! -z $performancePods ]]; then
                         for performancePod in ${performancePods[@]}; do
@@ -1343,6 +1357,7 @@ function getNamespaceData() {
                                 done
                                 mkdir -p $TEMPDIR/kubernetes/$namespace/exec/${pgcluster}-repo-host-0
                                 createTask "$KUBECTLCMD -n $namespace exec ${pgcluster}-repo-host-0 -c pgbackrest -- pgbackrest info" "$TEMPDIR/kubernetes/$namespace/exec/${pgcluster}-repo-host-0/pgbackrest_pgbackrest_info.txt"
+                                createTask "$KUBECTLCMD -n $namespace exec ${pgcluster}-repo-host-0 -c pgbackrest -- pgbackrest check --stanza=db --log-level-console=debug" "$TEMPDIR/kubernetes/$namespace/exec/${pgcluster}-repo-host-0/pgbackrest_pgbackrest_check.txt"
                             fi
                         done
                     fi
@@ -1436,9 +1451,11 @@ function getNamespaceData() {
             done
             # kubectl top pods
             echo "    - kubectl top pod" | tee -a $logfile
-            if [[ $isOpenShift == 'false' ]]; then
-                mkdir -p $TEMPDIR/kubernetes/$namespace/top
+            mkdir -p $TEMPDIR/kubernetes/$namespace/top
+            if [[ $KUBECTLCMD == 'kubectl' ]]; then
                 createTask "$KUBECTLCMD -n $namespace top pod" "$TEMPDIR/kubernetes/$namespace/top/pods.txt"
+            else
+                createTask "$KUBECTLCMD -n $namespace adm top pod" "$TEMPDIR/kubernetes/$namespace/top/pods.txt"
             fi
             unset podList
         fi
@@ -1453,12 +1470,8 @@ function generateKviyaReport() {
     cp $TEMPDIR/kubernetes/clusterwide/describe/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodes-describe.out 2>> $logfile
     cp $TEMPDIR/kubernetes/$namespace/get/pods.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/getpod.out 2>> $logfile
     cp $TEMPDIR/kubernetes/$namespace/get/events.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podevents.out 2>> $logfile
-    if [[ $isOpenShift == 'false' ]]; then
-        cp $TEMPDIR/kubernetes/clusterwide/top/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodesTop.out 2>> $logfile
-        cp $TEMPDIR/kubernetes/$namespace/top/pods.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podsTop.out 2>> $logfile
-    else
-        touch $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodesTop.out $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podsTop.out
-    fi
+    cp $TEMPDIR/kubernetes/clusterwide/top/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodesTop.out 2>> $logfile
+    cp $TEMPDIR/kubernetes/$namespace/top/pods.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podsTop.out 2>> $logfile
     if [[ " ${viyans[@]} " =~ " $namespace " ]]; then
         # Generate kviya report
         echo "DEBUG: Generating kviya report for namespace $namespace" >> $logfile
@@ -1708,7 +1721,9 @@ if [ ${#sasoperatorns[@]} -gt 0 ]; then
         fi
         createTask "$KUBECTLCMD -n $SASOPERATOR_NS get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].image}'" "$TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt"
     done
-    docker image ls 2>> $logfile | grep $(docker image ls 2>> $logfile | grep '^sas-orchestration' | awk '{print $3}') > $TEMPDIR/versions/sas-orchestration-docker-image-version.txt 2>> $logfile
+    if type docker > /dev/null 2>> $logfile; then
+        docker image ls 2>> $logfile | grep $(docker image ls 2>> $logfile | grep '^sas-orchestration' | awk '{print $3}') > $TEMPDIR/versions/sas-orchestration-docker-image-version.txt 2>> $logfile
+    fi
 fi
 
 # Look for Logging and Monitoring namespaces
@@ -1742,56 +1757,57 @@ if [[ ! -z $ANSIBLEVARSFILES ]]; then
     done
 fi
 
-echo "  - Collecting cluster wide information" | tee -a $logfile
+hasCertManagerCRD='false'
+hasCrunchyDataCRD='false'
+hasEspCRD='false'
+hasMonitoringCRD='false'
+hasOrchestrationCRD='false'
+hasMetricsServer='false'
+
+mkdir -p $TEMPDIR/kubernetes/clusterwide
+mv $k8sApiResources $TEMPDIR/kubernetes/clusterwide/api-resources.txt
+
+if grep cert-manager.io $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasCertManagerCRD='true'; fi
+if grep postgres-operator.crunchydata.com $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasCrunchyDataCRD='v5'
+  elif grep pgclusters.crunchydata.com $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasCrunchyDataCRD='v4'; fi
+if grep iot.sas.com $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasEspCRD='true'; fi
+if grep monitoring.coreos.com $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasMonitoringCRD='true'; fi
+if grep orchestration.sas.com $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasOrchestrationCRD='true'; fi
+if grep metrics.k8s.io $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasMetricsServer='true'; fi
+
 clusterobjects=(clusterrolebindings clusterroles customresourcedefinitions namespaces nodes persistentvolumes storageclasses)
-if $KUBECTLCMD get crd | grep clusterissuers.cert-manager.io > /dev/null 2>&1; then clusterobjects+=(clusterissuers); fi
+if [[ $hasCertManagerCRD == 'true' ]]; then clusterobjects+=(clusterissuers); fi
+if [[ $hasMetricsServer == 'true' ]]; then clusterobjects+=(nodemetrics); fi
 if [[ $isOpenShift == 'true' ]]; then clusterobjects+=(projects); fi
+
+echo "  - Collecting cluster wide information" | tee -a $logfile
+mkdir -p $TEMPDIR/kubernetes/clusterwide/get $TEMPDIR/kubernetes/clusterwide/describe $TEMPDIR/kubernetes/clusterwide/yaml $TEMPDIR/kubernetes/clusterwide/top
 
 # get cluster objects
 echo "    - kubectl get" | tee -a $logfile
-mkdir -p $TEMPDIR/kubernetes/clusterwide/get
-mv $k8sApiResources $TEMPDIR/kubernetes/clusterwide/api-resources.txt
 for object in ${clusterobjects[@]}; do
     echo "      - $object" | tee -a $logfile
-    if [[ $object == 'customresourcedefinitions' ]]; then
-        $KUBECTLCMD get $object -o wide > $TEMPDIR/kubernetes/clusterwide/get/$object.txt 2>> $logfile
-    else
-        createTask "$KUBECTLCMD get $object -o wide" "$TEMPDIR/kubernetes/clusterwide/get/$object.txt"
-    fi
+    createTask "$KUBECTLCMD get $object -o wide" "$TEMPDIR/kubernetes/clusterwide/get/$object.txt"
 done
 # describe cluster objects
 echo "    - kubectl describe" | tee -a $logfile
-mkdir -p $TEMPDIR/kubernetes/clusterwide/describe
 for object in ${clusterobjects[@]}; do
     echo "      - $object" | tee -a $logfile
     createTask "$KUBECTLCMD describe $object" "$TEMPDIR/kubernetes/clusterwide/describe/$object.txt"  
 done
 # get yaml cluster objects
 echo "    - kubectl get -o yaml" | tee -a $logfile
-mkdir -p $TEMPDIR/kubernetes/clusterwide/yaml
 for object in ${clusterobjects[@]}; do
     echo "      - $object" | tee -a $logfile
     createTask "$KUBECTLCMD get $object -o yaml" "$TEMPDIR/kubernetes/clusterwide/yaml/$object.yaml"
 done
 # kubectl top nodes
 echo "    - kubectl top nodes" | tee -a $logfile
-if [[ $isOpenShift == 'false' ]]; then
-    mkdir -p $TEMPDIR/kubernetes/clusterwide/top
+if [[ $KUBECTLCMD == 'kubectl' ]]; then
     createTask "$KUBECTLCMD top node" "$TEMPDIR/kubernetes/clusterwide/top/nodes.txt"
+else
+    createTask "$KUBECTLCMD adm top node" "$TEMPDIR/kubernetes/clusterwide/top/nodes.txt"
 fi
-
-hasCertManagerCRD='false'
-hasCrunchyDataCRD='false'
-hasEspCRD='false'
-hasMonitoringCRD='false'
-hasOrchestrationCRD='false'
-
-if grep certificates.cert-manager.io $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasCertManagerCRD='true'; fi
-if grep postgresclusters.postgres-operator.crunchydata.com $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasCrunchyDataCRD='v5'
-  elif grep pgclusters $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasCrunchyDataCRD='v4'; fi
-if grep iot.sas.com $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasEspCRD='true'; fi
-if grep monitoring.coreos.com $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasMonitoringCRD='true'; fi
-if grep orchestration.sas.com $TEMPDIR/kubernetes/clusterwide/get/customresourcedefinitions.txt > /dev/null 2>&1; then hasOrchestrationCRD='true'; fi
 
 # Collect files used by the K8S Diagram Tools
 captureDiagramToolFiles
@@ -1806,10 +1822,12 @@ fi
 getNamespaceData ${namespaces[@]}
 
 echo "  - Kubernetes and Kustomize versions" | tee -a $logfile
-$KUBECTLCMD version > $TEMPDIR/versions/kubernetes.txt 2>> $logfile
+$KUBECTLCMD version -o yaml > $TEMPDIR/versions/kubernetes.txt 2>> $logfile
 cat $TEMPDIR/versions/kubernetes.txt >> $logfile
-kustomize version > $TEMPDIR/versions/kustomize.txt 2>> $logfile
-cat $TEMPDIR/versions/kustomize.txt >> $logfile
+if type kustomize > /dev/null 2>> $logfile; then
+    kustomize version -o yaml > $TEMPDIR/versions/kustomize.txt 2>> $logfile
+    cat $TEMPDIR/versions/kustomize.txt >> $logfile
+fi
 
 # Capturing nodes time information
 echo "  - Capturing nodes time information" | tee -a $logfile
