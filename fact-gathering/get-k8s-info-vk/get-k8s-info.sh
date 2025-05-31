@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.4.00'
+version='get-k8s-info v1.4.01'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -140,14 +140,35 @@ function cleanUp() {
 latestVersion=$(curl -s https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/get-k8s-info-vk/get-k8s-info.sh 2>> $logfile | grep '^version=' | cut -d "'" -f2)
 if [[ ! -z $latestVersion ]]; then
     if [[ $(cut -d 'v' -f2 <<< $latestVersion | tr -d '.') -gt $(version | cut -d 'v' -f2 | tr -d '.') ]]; then
-        echo "WARNING: A new version is available! ($latestVersion)" | tee -a $logfile
-        read -p "WARNING: It is highly recommended to use the latest version. Do you want to update this script ($(version))? (y/n) " k
-        echo "DEBUG: Wants to update? $k" >> $logfile
-        if [ "$k" == 'y' ] || [ "$k" == 'Y' ] ; then
-            updatedScript=$(mktemp)
-            curl -s -o $updatedScript https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/get-k8s-info-vk/get-k8s-info.sh >> $logfile 2>&1
-            scriptPath=$(dirname $(realpath -s $0))
-            if cp $updatedScript $scriptPath/$script > /dev/null 2>> $logfile; then echo -e "INFO: Script updated successfully. Restarting...\n";rm -f $updatedScript;$scriptPath/$script ${@};exit $?;else echo -e "ERROR: Script update failed!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile;cleanUp 1;fi
+        echo -e "\nWARNING: A new version is available! ($latestVersion). It is highly recommended to use the latest version." | tee -a $logfile
+        scriptPath=$(dirname $(realpath -s $0))
+        if [[ -w ${scriptPath}/${script} ]]; then
+            echo;
+            read -p "Do you want to update this script ($(version))? (y/n) " k
+            echo "DEBUG: Wants to update? $k" >> $logfile
+            if [ "$k" == 'y' ] || [ "$k" == 'Y' ] ; then
+                updatedScript=$(mktemp)
+                curl -s -o $updatedScript https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/get-k8s-info-vk/get-k8s-info.sh >> $logfile 2>&1
+                if [[ $? -eq 0 ]]; then
+                    scriptPath=$(dirname $(realpath -s $0))
+                    if cp $updatedScript $scriptPath/$script > /dev/null 2>> $logfile; then echo -e "INFO: Script updated successfully. Restarting...\n";rm -f $updatedScript;$scriptPath/$script ${@};exit $?;else echo -e "ERROR: Script update failed!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile;cleanUp 1;fi
+                else
+                    echo -e "ERROR: Error while downloading the script!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile
+                    cleanUp 1
+                fi
+            else
+                echo;
+            fi
+        else
+            echo -e "WARNING: The current user doesn't have write permission to modify the script file '$scriptPath/$script'." | tee -a $logfile
+            echo -e "\nINFO: Update the script manually from:\n  https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk \n" | tee -a $logfile
+            read -p "Would you like to proceed with the outdated version of the script ($(version)) this time? (y/n) " k
+            echo "DEBUG: Wants to continue outdated? $k" >> $logfile
+            if [ "$k" != 'y' ] && [ "$k" != 'Y' ] ; then
+                cleanUp 1
+            else
+                echo;
+            fi
         fi
     fi
 fi
@@ -178,6 +199,7 @@ fi
 # Check if k8s is OpenShift
 if grep project.openshift.io $k8sApiResources > /dev/null; then isOpenShift='true'
 else isOpenShift='false';fi
+echo "DEBUG: Is OpenShift? $isOpenShift" >> $logfile
 
 # Initialize Variables
 PERFORMANCE=true
@@ -586,6 +608,130 @@ function removeSensitiveData {
     done
 }
 # begin kviya functions
+function environmentDetails {
+    # Set namespace when executing through get-k8s-info
+    if [[ ! -z $1 ]]; then
+        ARGNAMESPACE=$1
+    fi
+    # What Platform?
+    if [[ $($KUBECTLCMD get node -l kubernetes.azure.com/cluster -o name | wc -l) -gt 0 ]]; then
+        platform='AKS (Microsoft Azure)'
+    elif [[ $($KUBECTLCMD get node -l topology.k8s.aws/zone-id -o name | wc -l) -gt 0 ]]; then
+        platform='EKS (Amazon AWS)'
+    elif [[ $($KUBECTLCMD get node -l topology.gke.io/zone -o name | wc -l) -gt 0 ]]; then
+        platform='GKE (Google Cloud)'
+    elif [[ $($KUBECTLCMD get node -l node.openshift.io/os_id -o name | wc -l) -gt 0 ]]; then
+        ocpPlatform=$($KUBECTLCMD get cm -n kube-system cluster-config-v1 -o yaml 2> /dev/null | grep -A1 '^    platform' | tail -1 | cut -d ':' -f1)
+        if [[ $ocpPlatform == 'azure' ]]; then
+            platform='Red Hat OpenShift (Azure)'
+        elif [[ $ocpPlatform == 'aws' ]]; then
+            platform='Red Hat OpenShift (AWS)'
+        elif [[ $ocpPlatform == 'openstack' ]]; then
+            platform='Red Hat OpenShift (OpenStack)'
+        elif [[ $ocpPlatform == 'vsphere' ]]; then
+            platform='Red Hat OpenShift (vSphere)'
+        elif [[ $ocpPlatform == 'ovirt' ]]; then
+            platform='Red Hat OpenShift (oVirt)'
+        elif [[ $ocpPlatform == 'baremetal' ]]; then
+            platform='Red Hat OpenShift (Bare-metal)'
+        else
+            platform='Red Hat OpenShift'
+        fi
+    else
+        platform='Bare-metal / Unknown Cloud Platform'
+    fi
+
+    # What Kubernetes Version?
+    serverVersion=$($KUBECTLCMD version -o yaml 2>/dev/null | grep serverVersion -A9 | grep gitVersion | cut -d ' ' -f4 | cut -d '+' -f1)
+    ocpVersion=$($KUBECTLCMD version -o yaml 2>/dev/null | grep openshiftVersion | cut -d ' ' -f2)
+    clientVersion=$($KUBECTLCMD version -o yaml 2>/dev/null | grep clientVersion -A9 | grep gitVersion | cut -d ' ' -f4 | cut -d '+' -f1 | cut -d '-' -f1)
+
+    # Viya Details
+    # Version
+    deploymentCm=($($KUBECTLCMD get cm -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' sas-deployment-metadata-' | sort -k1 -t ' ' -r | awk '{print $2}'))
+    viyaCadence=$($KUBECTLCMD -n $ARGNAMESPACE get cm ${deploymentCm[0]} -o jsonpath='{.data.SAS_CADENCE_DISPLAY_NAME}' 2> /dev/null)
+    viyaRelease=$($KUBECTLCMD -n $ARGNAMESPACE get cm ${deploymentCm[0]} -o jsonpath='{.data.SAS_CADENCE_RELEASE}' 2> /dev/null)
+    if [[ ${#deploymentCm[@]} -gt 1 ]]; then
+        viyaVersion="$viyaCadence (Release $viyaRelease) WARNING: Multiple sas-deployment-metadata ConfigMap exist. The information was captured from ${deploymentCm[0]}"
+    else
+        viyaVersion="$viyaCadence (Release $viyaRelease)"
+    fi
+    # Deployment Method
+    if $KUBECTLCMD -n $ARGNAMESPACE get cm sas-deployment-buildinfo > /dev/null 2>&1; then
+        deploymentMethod='dac'
+    fi
+    if [[ $($KUBECTLCMD -n $ARGNAMESPACE get sasdeployment -o name 2> /dev/null | wc -l) -gt 0 ]]; then
+        if [[ $deploymentMethod == 'dac' ]]; then
+            deploymentMethod='DaC Github Project (SAS Deployment Operator)'
+        else
+            deploymentMethod='SAS Deployment Operator'
+        fi
+    else
+        if [[ $deploymentMethod == 'dac' ]]; then
+            deploymentMethod='DaC Github Project (sas-orchestration)'
+        else
+            deploymentMethod='Manual / sas-orchestration'
+        fi
+    fi
+    # Ingress
+    ingressCm=($($KUBECTLCMD get cm -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' ingress-input-' | sort -k1 -t ' ' -r | awk '{print $2}'))
+    viyaIngress=$($KUBECTLCMD -n $ARGNAMESPACE get cm ${ingressCm[0]} -o jsonpath='{.data.INGRESS_HOST}' 2> /dev/null)
+    if [[ ${#ingressCm[@]} -gt 1 ]]; then
+        viyaIngress="$viyaIngress (WARNING: Multiple ingress-input ConfigMap exist. The information was captured from ${ingressCm[0]})"
+    fi
+    # Order
+    lifecycleSecret=($($KUBECTLCMD get secret -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' sas-lifecycle-image-' | sort -k1 -t ' ' -r | awk '{print $2}'))
+    viyaOrder=$($KUBECTLCMD -n $ARGNAMESPACE get secret ${lifecycleSecret[0]} -o jsonpath='{.data.username}' 2> /dev/null | base64 -d)
+    if [[ ${#lifecycleSecret[@]} -gt 1 ]]; then
+        viyaOrder="$viyaOrder (WARNING: Multiple sas-lifecycle-image Secret exist. The information was captured from ${lifecycleSecret[0]})"
+    fi
+    # Site Number
+    licenseSecret=($($KUBECTLCMD get secret -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' sas-license-' | sort -k1 -t ' ' -r | awk '{print $2}'))
+    viyaSiteNum=$($KUBECTLCMD -n $ARGNAMESPACE get secret ${licenseSecret[0]} -o jsonpath='{.data.SAS_LICENSE}' 2> /dev/null | base64 -d 2> /dev/null | cut -d '.' -f2 | base64 -d 2> /dev/null | tr ',' '\n' | grep '^"siteNumber":"' | cut -d '"' -f4)
+    if [[ ${#licenseSecret[@]} -gt 1 ]]; then
+        viyaSiteNum="$viyaSiteNum (WARNING: Multiple sas-license Secret exist. The information was captured from ${licenseSecret[0]})"
+    fi
+    # License Expiration
+    viyaExpiration=$($KUBECTLCMD -n $ARGNAMESPACE get secret ${licenseSecret[0]} -o jsonpath='{.data.SAS_LICENSE}' 2> /dev/null | base64 -d 2> /dev/null | cut -d '.' -f2 | base64 -d 2> /dev/null | tr ' ' '\n' | grep '^EXPIRE=' | cut -d "'" -f2)
+    if [[ ${#licenseSecret[@]} -gt 1 ]]; then
+        viyaExpiration="$viyaExpiration (WARNING: Multiple sas-license Secret exist. The information was captured from ${licenseSecret[0]})"
+    fi
+    # PostgreSQL
+    viyaPostgreSQL=$($KUBECTLCMD -n $ARGNAMESPACE get dataserver sas-platform-postgres -o jsonpath={.spec.registrations[0].host} 2> /dev/null)
+    if [[ $viyaPostgreSQL == 'sas-crunchy-platform-postgres-primary' ]]; then
+        viyaPostgreSQL='Internal Crunchy Data'
+    else
+        viyaPostgreSQL="$viyaPostgreSQL (External)"
+    fi
+    # Certificate Generator
+    certframeCm=($($KUBECTLCMD get cm -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' sas-certframe-user-config-' | sort -k1 -t ' ' -r | awk '{print $2}'))
+    viyaCertGenerator=$($KUBECTLCMD -n $ARGNAMESPACE get cm ${certframeCm[0]} -o jsonpath='{.data.SAS_CERTIFICATE_GENERATOR}' 2> /dev/null)
+    if [[ ${#certframeCm[@]} -gt 1 ]]; then
+        viyaCertGenerator="$viyaCertGenerator (WARNING: Multiple sas-certframe-user-config ConfigMap exist. The information was captured from ${certframeCm[0]})"
+    fi
+
+    # Print Report
+    echo -e "\nKubernetes Cluster"
+    echo -e "------------------"
+    printf "%-24s %-s\n" 'Cloud Platform:' "$platform"
+    if [[ -z $ocpVersion ]]; then
+        printf "%-24s %-s\n" 'Kubernetes Server:' "$serverVersion"
+    else
+        printf "%-24s %-s\n" 'Kubernetes Server:' "$serverVersion (OpenShift $ocpVersion)"
+    fi
+    printf "%-24s %-s\n" 'Kubernetes Client:' "$clientVersion"
+    echo -e "\nViya Environment"
+    echo -e "----------------"
+    printf "%-24s %-s\n" 'Namespace:' "$ARGNAMESPACE"
+    printf "%-24s %-s\n" 'Deployment Method:' "$deploymentMethod"
+    printf "%-24s %-s\n" 'Version:' "$viyaVersion"
+    printf "%-24s %-s\n" 'Order:' "$viyaOrder"
+    printf "%-24s %-s\n" 'Site Number:' "$viyaSiteNum"
+    printf "%-24s %-s\n" 'License Expires:' "$viyaExpiration"
+    printf "%-24s %-s\n" 'PostgreSQL Database:' "$viyaPostgreSQL"
+    printf "%-24s %-s\n" 'Certificate Generator:' "$viyaCertGenerator"
+    printf "%-24s %-s\n" 'Ingress Host:' "$viyaIngress"
+}
 function nodeMon {
     ## Node Monitoring
 
@@ -841,7 +987,7 @@ function kviyaReport {
     mkdir -p $TEMPDIR/.kviya/work $TEMPDIR/reports
     cp -r $TEMPDIR/kubernetes/$namespace/.kviya/$(ls $TEMPDIR/kubernetes/$namespace/.kviya | grep -Ei '[0-9]{4}D[0-9]{2}D[0-9]{2}_[0-9]{2}T[0-9]{2}T[0-9]{2}$')/* $TEMPDIR/.kviya/work
     nodeMon; podMon
-    cat $TEMPDIR/.kviya/work/nodeMon.out $TEMPDIR/.kviya/work/podMon.out > $TEMPDIR/reports/kviya-report_$namespace.txt
+    cat $TEMPDIR/.kviya/work/environmentDetails.out $TEMPDIR/.kviya/work/nodeMon.out $TEMPDIR/.kviya/work/podMon.out > $TEMPDIR/reports/kviya-report_$namespace.txt
     rm -rf $TEMPDIR/.kviya/work
 }
 function nodesTimeReport {
@@ -1473,6 +1619,13 @@ function generateKviyaReport() {
     cp $TEMPDIR/kubernetes/clusterwide/top/nodes.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/nodesTop.out 2>> $logfile
     cp $TEMPDIR/kubernetes/$namespace/top/pods.txt $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/podsTop.out 2>> $logfile
     if [[ " ${viyans[@]} " =~ " $namespace " ]]; then
+        # Capture environment details
+        environmentDetails $namespace > $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/environmentDetails.out
+        if [[ ! -f $TEMPDIR/.get-k8s-info/sendToCase.out ]]; then
+            cp $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/environmentDetails.out $TEMPDIR/.get-k8s-info/sendToCase.out
+        else
+            grep -A20 '^Viya Environment$' $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/environmentDetails.out >> $TEMPDIR/.get-k8s-info/sendToCase.out
+        fi
         # Generate kviya report
         echo "DEBUG: Generating kviya report for namespace $namespace" >> $logfile
         kviyaReport $namespace
@@ -1858,6 +2011,12 @@ for namespace in ${namespaces[@]}; do
         generateKviyaReport $namespace
     fi
 done
+if [[ -f $TEMPDIR/.get-k8s-info/sendToCase.out ]]; then
+    echo -e "\n\nIf you have not already done so, please provide the following information to SAS Technical Support when opening or updating the Case:\n" | tee -a $logfile
+    cat $TEMPDIR/.get-k8s-info/sendToCase.out | tee -a $logfile
+    echo '' | tee -a $logfile
+    rm $TEMPDIR/.get-k8s-info/sendToCase.out
+fi
 rm -rf $TEMPDIR/.kviya
 
 cp $logfile $TEMPDIR/.get-k8s-info
