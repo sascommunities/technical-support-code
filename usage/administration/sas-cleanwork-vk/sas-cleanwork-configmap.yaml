@@ -1,0 +1,7 @@
+apiVersion: builtin
+kind: ConfigMapGenerator
+metadata:
+  name: sas-cleanwork-script
+behavior: create
+files:
+  - site-config/sas-cleanwork/sas-cleanwork.sh
