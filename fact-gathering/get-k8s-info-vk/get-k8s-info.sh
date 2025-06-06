@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.4.01'
+version='get-k8s-info v1.4.03'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -640,7 +640,10 @@ function environmentDetails {
     else
         platform='Bare-metal / Unknown Cloud Platform'
     fi
-
+    # What Region(s)?
+    platformRegions=$($KUBECTLCMD get node -o jsonpath={'.items[*].metadata.labels.topology\.kubernetes\.io/region'} 2> /dev/null | tr ' ' '\n' | sort -u | tr '\n' ' ')
+    # What Zone(s)?
+    platformZones=$($KUBECTLCMD get node -o jsonpath={'.items[*].metadata.labels.topology\.kubernetes\.io/zone'} 2> /dev/null | tr ' ' '\n' | sort -u | tr '\n' ' ')
     # What Kubernetes Version?
     serverVersion=$($KUBECTLCMD version -o yaml 2>/dev/null | grep serverVersion -A9 | grep gitVersion | cut -d ' ' -f4 | cut -d '+' -f1)
     ocpVersion=$($KUBECTLCMD version -o yaml 2>/dev/null | grep openshiftVersion | cut -d ' ' -f2)
@@ -679,9 +682,25 @@ function environmentDetails {
     if [[ ${#ingressCm[@]} -gt 1 ]]; then
         viyaIngress="$viyaIngress (WARNING: Multiple ingress-input ConfigMap exist. The information was captured from ${ingressCm[0]})"
     fi
+    tlsMode=$($KUBECTLCMD -n $ARGNAMESPACE get deploy sas-logon-app -o jsonpath='{.metadata.annotations.sas\.com/tls-mode}' 2> /dev/null)
+    if [[ $? -eq 0 && -z $tlsMode ]]; then tlsMode='No TLS'; fi
+    # Ingress Certificate
+    ingressCertificateSecret=($($KUBECTLCMD get secret -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' sas-ingress-certificate' | sort -k1 -t ' ' -r | awk '{print $2}'))
+    if [[ ! -z $ingressCertificateSecret[@] ]]; then
+        if openssl x509 -text -noout <<< $($KUBECTLCMD -n $ARGNAMESPACE get secret ${ingressCertificateSecret[0]} -o jsonpath='{.data.tls\.crt}' 2> /dev/null | base64 -d 2> /dev/null) | grep 'Issuer: ' | grep sas-viya-root-ca-certificate > /dev/null ; then
+            ingressCertificate='Generated'
+        else
+            ingressCertificate='Customer Provided'
+        fi
+    else
+        ingressCertificate=''
+    fi
+    if [[ ${#ingressCertificateSecret[@]} -gt 1 ]]; then
+        ingressCertificate="$ingressCertificate (WARNING: Multiple sas-ingress-certificate Secret exist. The information was captured from ${ingressCertificateSecret[0]})"
+    fi
     # Order
     lifecycleSecret=($($KUBECTLCMD get secret -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' sas-lifecycle-image-' | sort -k1 -t ' ' -r | awk '{print $2}'))
-    viyaOrder=$($KUBECTLCMD -n $ARGNAMESPACE get secret ${lifecycleSecret[0]} -o jsonpath='{.data.username}' 2> /dev/null | base64 -d)
+    viyaOrder=$($KUBECTLCMD -n $ARGNAMESPACE get secret ${lifecycleSecret[0]} -o jsonpath='{.data.username}' 2> /dev/null | base64 -d 2> /dev/null)
     if [[ ${#lifecycleSecret[@]} -gt 1 ]]; then
         viyaOrder="$viyaOrder (WARNING: Multiple sas-lifecycle-image Secret exist. The information was captured from ${lifecycleSecret[0]})"
     fi
@@ -703,34 +722,111 @@ function environmentDetails {
     else
         viyaPostgreSQL="$viyaPostgreSQL (External)"
     fi
+    # CAS
+    casMode=$($KUBECTLCMD -n $ARGNAMESPACE get casdeployment default -o jsonpath='{.spec.workers}' 2> /dev/null)
+    if [[ $casMode -eq 0 ]]; then
+        casMode='SMP'
+    else
+        casMode="MPP ($casMode Workers)"
+    fi
+    casCacheDirs=($($KUBECTLCMD -n $ARGNAMESPACE get casdeployment default -o jsonpath='{.spec.controllerTemplate.spec.containers[0].env[?(@.name=="CASENV_CAS_DISK_CACHE")].value}' 2> /dev/null | tr ':' '\n'))
+    casCacheVolumeMounts=()
+    if [[ -z $casCacheDirs ]]; then
+	    casCacheVolumeMounts=($($KUBECTLCMD -n $ARGNAMESPACE get casdeployment default -o jsonpath='{.spec.controllerTemplate.spec.containers[0].volumeMounts[?(@.mountPath=="/cas/cache")].name}' 2> /dev/null))
+    else
+        for casCacheDir in ${casCacheDirs[@]}; do
+            casCacheVolumeMounts+=($($KUBECTLCMD -n $ARGNAMESPACE get casdeployment default -o jsonpath="{.spec.controllerTemplate.spec.containers[0].volumeMounts[?(@.mountPath=='$casCacheDir')].name}" 2> /dev/null))
+        done
+    fi
+    casCacheVolumeTypes=()
+    for casCacheVolumeMount in ${casCacheVolumeMounts[@]}; do
+        casCacheVolumeTypes+=($($KUBECTLCMD -n $ARGNAMESPACE get casdeployment default -o jsonpath="{.spec.controllerTemplate.spec.volumes[?(@.name=='$casCacheVolumeMount')]}" 2> /dev/null | tr ',' '\n' | grep -v '"name":"' | head -1 | cut -d '"' -f2))
+    done
+    casCacheVolumeTypes="$(tr ' ' '\n' <<< ${casCacheVolumeTypes[@]} | sort -u | tr '\n' ' ')"
+    # Work
+    sharedConfigCm=($($KUBECTLCMD get cm -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' sas-shared-config-' | sort -k1 -t ' ' -r | awk '{print $2}'))
+    allowAdminScripts=$($KUBECTLCMD -n $ARGNAMESPACE get cm ${sharedConfigCm[0]} -o jsonpath='{.data.SAS_ALLOW_ADMIN_SCRIPTS}' 2> /dev/null)
+    if [[ $allowAdminScripts == 'true' ]]; then
+        # Look for SAS Work customizations
+        batchWork=$($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.batch.server/configuration_options/contents'" 2> /dev/null | grep -i '^-work ' | cut -d ' ' -f2)
+        computeWork=$($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server-0 -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.compute.server/configuration_options/contents'" 2> /dev/null | grep -i '^-work ' | cut -d ' ' -f2)
+        connectWork=$($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server-0 -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.connect.server/configuration_options/contents'" 2> /dev/null | grep -i '^-work ' | cut -d ' ' -f2)
+    fi
+    if [[ -z $batchWork ]]; then
+        batchWork='/opt/sas/viya/config/var'
+    elif [[ ${batchWork: -1} == '/' ]]; then
+        batchWork=${batchWork::-1}
+    fi
+    if [[ -z $computeWork ]]; then
+        computeWork='/opt/sas/viya/config/var'
+    elif [[ ${computeWork: -1} == '/' ]]; then
+        computeWork=${computeWork::-1}
+    fi
+    if [[ -z $connectWork ]]; then
+        connectWork='/opt/sas/viya/config/var'
+    elif [[ ${connectWork: -1} == '/' ]]; then
+        connectWork=${connectWork::-1}
+    fi
+    batchWorkVolumeMount=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-batch-pod-template -o jsonpath="{.template.spec.containers[0].volumeMounts[?(@.mountPath=='$batchWork')].name}" 2> /dev/null)
+    computeWorkVolumeMount=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-compute-job-config -o jsonpath="{.template.spec.containers[0].volumeMounts[?(@.mountPath=='$computeWork')].name}" 2> /dev/null)
+    connectWorkVolumeMount=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-connect-pod-template -o jsonpath="{.template.spec.containers[0].volumeMounts[?(@.mountPath=='$connectWork')].name}" 2> /dev/null)
+
+    batchWorkVolumeType=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-batch-pod-template -o jsonpath="{.template.spec.volumes[?(@.name=='$batchWorkVolumeMount')]}" 2> /dev/null | tr ',' '\n' | grep -v '"name":"' | head -1 | cut -d '"' -f2)
+    computeWorkVolumeType=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-compute-job-config  -o jsonpath="{.template.spec.volumes[?(@.name=='$computeWorkVolumeMount')]}" 2> /dev/null | tr ',' '\n' | grep -v '"name":"' | head -1 | cut -d '"' -f2)
+    connectWorkVolumeType=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-connect-pod-template -o jsonpath="{.template.spec.volumes[?(@.name=='$connectWorkVolumeMount')]}" 2> /dev/null | tr ',' '\n' | grep -v '"name":"' | head -1 | cut -d '"' -f2)
     # Certificate Generator
     certframeCm=($($KUBECTLCMD get cm -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' sas-certframe-user-config-' | sort -k1 -t ' ' -r | awk '{print $2}'))
     viyaCertGenerator=$($KUBECTLCMD -n $ARGNAMESPACE get cm ${certframeCm[0]} -o jsonpath='{.data.SAS_CERTIFICATE_GENERATOR}' 2> /dev/null)
     if [[ ${#certframeCm[@]} -gt 1 ]]; then
         viyaCertGenerator="$viyaCertGenerator (WARNING: Multiple sas-certframe-user-config ConfigMap exist. The information was captured from ${certframeCm[0]})"
     fi
-
+    #Storage Classes
+    scVarLen=(0 0)
+    scNames=($($KUBECTLCMD -n $ARGNAMESPACE get pvc -o jsonpath='{.items[*].spec.storageClassName}' 2> /dev/null | tr ' ' '\n' | sort -u))
+    for scIndex in ${!scNames[@]}; do
+        if [ $[ ${#scNames[$scIndex]} + 2 ] -gt ${scVarLen[0]} ]; then
+            scVarLen[0]=$[ ${#scNames[$scIndex]} + 2 ]
+        fi
+        scProvisioner[$scIndex]=$($KUBECTLCMD get sc ${scNames[$scIndex]} -o jsonpath='{.provisioner}')
+        if [ $[ ${#scProvisioner[$scIndex]} + 2 ] -gt ${scVarLen[1]} ]; then
+            scVarLen[1]=$[ ${#scProvisioner[$scIndex]} + 2 ]
+        fi
+        scParameters[$scIndex]=$($KUBECTLCMD get sc ${scNames[$scIndex]} -o jsonpath='{.parameters}')
+    done
     # Print Report
     echo -e "\nKubernetes Cluster"
     echo -e "------------------"
-    printf "%-24s %-s\n" 'Cloud Platform:' "$platform"
+    printf "%-25s %-s\n" 'Cloud Platform:' "$platform"
+    printf "%-25s %-s\n" 'Region(s):' "$platformRegions"
+    printf "%-25s %-s\n" 'Zone(s):' "$platformZones"
     if [[ -z $ocpVersion ]]; then
-        printf "%-24s %-s\n" 'Kubernetes Server:' "$serverVersion"
+        printf "%-25s %-s\n" 'Kubernetes Server:' "$serverVersion"
     else
-        printf "%-24s %-s\n" 'Kubernetes Server:' "$serverVersion (OpenShift $ocpVersion)"
+        printf "%-25s %-s\n" 'Kubernetes Server:' "$serverVersion (OpenShift $ocpVersion)"
     fi
-    printf "%-24s %-s\n" 'Kubernetes Client:' "$clientVersion"
+    printf "%-25s %-s\n" 'Kubernetes Client:' "$clientVersion"
     echo -e "\nViya Environment"
     echo -e "----------------"
-    printf "%-24s %-s\n" 'Namespace:' "$ARGNAMESPACE"
-    printf "%-24s %-s\n" 'Deployment Method:' "$deploymentMethod"
-    printf "%-24s %-s\n" 'Version:' "$viyaVersion"
-    printf "%-24s %-s\n" 'Order:' "$viyaOrder"
-    printf "%-24s %-s\n" 'Site Number:' "$viyaSiteNum"
-    printf "%-24s %-s\n" 'License Expires:' "$viyaExpiration"
-    printf "%-24s %-s\n" 'PostgreSQL Database:' "$viyaPostgreSQL"
-    printf "%-24s %-s\n" 'Certificate Generator:' "$viyaCertGenerator"
-    printf "%-24s %-s\n" 'Ingress Host:' "$viyaIngress"
+    printf "%-25s %-s\n" 'Namespace:' "$ARGNAMESPACE"
+    printf "%-25s %-s\n" 'Deployment Method:' "$deploymentMethod"
+    printf "%-25s %-s\n" 'Version:' "$viyaVersion"
+    printf "%-25s %-s\n" 'Order:' "$viyaOrder"
+    printf "%-25s %-s\n" 'Site Number:' "$viyaSiteNum"
+    printf "%-25s %-s\n" 'License Expires:' "$viyaExpiration"
+    printf "%-25s %-s\n" 'CAS Mode:' "$casMode"
+    printf "%-25s %-s\n" 'CAS Disk Cache:' "$casCacheVolumeTypes"
+    printf "%-25s %-s\n" 'SAS Work:' "sas-batch: $batchWorkVolumeType   sas-compute: $computeWorkVolumeType   sas-connect: $connectWorkVolumeType"
+    printf "%-25s %-s\n" 'PostgreSQL Database:' "$viyaPostgreSQL"
+    printf "%-25s %-s\n" 'TLS Mode:' "$tlsMode"
+    printf "%-25s %-s\n" 'Certificate Generator:' "$viyaCertGenerator"
+    printf "%-25s %-s\n" 'Ingress Host:' "$viyaIngress"
+    printf "%-25s %-s\n" 'Ingress Certificate:' "$ingressCertificate"
+    echo -e "Storage Classes in Use:"
+    printf "\n  %-${scVarLen[0]}s %-${scVarLen[1]}s %-s\n" 'NAME' 'PROVISIONER' 'PARAMETERS'
+    printf "  %-${scVarLen[0]}s %-${scVarLen[1]}s %-s\n" '----' '-----------' '----------'
+    for scIndex in ${!scNames[@]}; do
+        printf "  %-${scVarLen[0]}s %-${scVarLen[1]}s %-s\n" "${scNames[$scIndex]}" "${scProvisioner[$scIndex]}" "${scParameters[$scIndex]}"
+    done
 }
 function nodeMon {
     ## Node Monitoring
@@ -1624,7 +1720,7 @@ function generateKviyaReport() {
         if [[ ! -f $TEMPDIR/.get-k8s-info/sendToCase.out ]]; then
             cp $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/environmentDetails.out $TEMPDIR/.get-k8s-info/sendToCase.out
         else
-            grep -A20 '^Viya Environment$' $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/environmentDetails.out >> $TEMPDIR/.get-k8s-info/sendToCase.out
+            grep -A30 '^Viya Environment$' $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime/environmentDetails.out >> $TEMPDIR/.get-k8s-info/sendToCase.out
         fi
         # Generate kviya report
         echo "DEBUG: Generating kviya report for namespace $namespace" >> $logfile
