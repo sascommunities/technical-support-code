@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.4.03'
+version='get-k8s-info v1.4.05'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -53,12 +53,13 @@ function usage {
     echo "  -i|--tfvars      (Optional) Path of the terraform.tfvars file"
     echo "  -a|--ansiblevars (Optional) Path of the ansible-vars.yaml file"
     echo "  -o|--out         (Optional) Path where the .tgz file will be created"
-    echo "  --disabletags    (Optional) Disable specific debug tags. By default, all tags are enabled."
+    echo "  -d|--disabletags (Optional) Disable specific debug tags. By default, all tags are enabled."
     echo "                              Available values are: 'backups', 'config', 'performance, 'postgres' and 'rabbitmq'"
     echo "  -s|--sastsdrive  (Optional) Send the .tgz file to SASTSDrive through sftp."
     echo "                              Only use this option after you were authorized by Tech Support to send files to SASTSDrive for the case."
     echo "  -w|--workers     (Optional) Number of simultaneous "kubectl" commands that the script can execute in parallel."
     echo "                              If not specified, 5 workers are used by default."
+    echo "  -u|--no-update   (Optional) Disable automatic update checks."
     echo;
     echo "Examples:"
     echo;
@@ -136,72 +137,8 @@ function cleanUp() {
     exit $1
 }
 
-# Check for updates
-latestVersion=$(curl -s https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/get-k8s-info-vk/get-k8s-info.sh 2>> $logfile | grep '^version=' | cut -d "'" -f2)
-if [[ ! -z $latestVersion ]]; then
-    if [[ $(cut -d 'v' -f2 <<< $latestVersion | tr -d '.') -gt $(version | cut -d 'v' -f2 | tr -d '.') ]]; then
-        echo -e "\nWARNING: A new version is available! ($latestVersion). It is highly recommended to use the latest version." | tee -a $logfile
-        scriptPath=$(dirname $(realpath -s $0))
-        if [[ -w ${scriptPath}/${script} ]]; then
-            echo;
-            read -p "Do you want to update this script ($(version))? (y/n) " k
-            echo "DEBUG: Wants to update? $k" >> $logfile
-            if [ "$k" == 'y' ] || [ "$k" == 'Y' ] ; then
-                updatedScript=$(mktemp)
-                curl -s -o $updatedScript https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/get-k8s-info-vk/get-k8s-info.sh >> $logfile 2>&1
-                if [[ $? -eq 0 ]]; then
-                    scriptPath=$(dirname $(realpath -s $0))
-                    if cp $updatedScript $scriptPath/$script > /dev/null 2>> $logfile; then echo -e "INFO: Script updated successfully. Restarting...\n";rm -f $updatedScript;$scriptPath/$script ${@};exit $?;else echo -e "ERROR: Script update failed!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile;cleanUp 1;fi
-                else
-                    echo -e "ERROR: Error while downloading the script!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile
-                    cleanUp 1
-                fi
-            else
-                echo;
-            fi
-        else
-            echo -e "WARNING: The current user doesn't have write permission to modify the script file '$scriptPath/$script'." | tee -a $logfile
-            echo -e "\nINFO: Update the script manually from:\n  https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk \n" | tee -a $logfile
-            read -p "Would you like to proceed with the outdated version of the script ($(version)) this time? (y/n) " k
-            echo "DEBUG: Wants to continue outdated? $k" >> $logfile
-            if [ "$k" != 'y' ] && [ "$k" != 'Y' ] ; then
-                cleanUp 1
-            else
-                echo;
-            fi
-        fi
-    fi
-fi
-
-# Check kubectl
-if type kubectl > /dev/null 2>&1 && type oc > /dev/null 2>&1; then
-    # Both clients are installed. Check if k8s is OpenShift.
-    if oc version -o yaml 2>> $logfile | grep openshift > /dev/null; then
-        KUBECTLCMD='oc'
-    else
-        KUBECTLCMD='kubectl'
-    fi
-elif type kubectl > /dev/null 2>> $logfile; then
-    KUBECTLCMD='kubectl'
-elif type oc > /dev/null 2>> $logfile; then
-    KUBECTLCMD='oc'
-else
-    echo;echo "ERROR: Neither 'kubectl' or 'oc' are installed in PATH." | tee -a $logfile
-    cleanUp 1
-fi
-k8sApiResources=$(mktemp)
-if ! $KUBECTLCMD api-resources > $k8sApiResources 2>> $logfile; then
-    $KUBECTLCMD api-resources > /dev/null
-    echo -e "\nERROR: Error while executing '$KUBECTLCMD' commands. Make sure you're able to use '$KUBECTLCMD' against the kubernetes cluster before running this script." | tee -a $logfile
-    cleanUp 1
-fi
-
-# Check if k8s is OpenShift
-if grep project.openshift.io $k8sApiResources > /dev/null; then isOpenShift='true'
-else isOpenShift='false';fi
-echo "DEBUG: Is OpenShift? $isOpenShift" >> $logfile
-
 # Initialize Variables
+UPDATE=true
 PERFORMANCE=true
 POSTGRES=true
 RABBITMQ=true
@@ -248,17 +185,13 @@ while [[ $# -gt 0 ]]; do
       shift # past argument
       shift # past value
       ;;
-    -d)
-      usage
-      echo -e "\nERROR: The '-d' option is deprecated. All debug tags are already enabled by default. In the future, '-d' will be used to DISABLE specific debug tags." | tee -a $logfile
-      cleanUp 1
-      ;;
-    --disabletag|--disabletags)
+    -d|--disabletag|--disabletags)
       TAGS=$(echo "$2" | tr '[:upper:]' '[:lower:]')
       if [[ $TAGS =~ 'postgres' ]]; then POSTGRES=false;fi
       if [[ $TAGS =~ 'rabbitmq' ]]; then RABBITMQ=false;fi
       if [[ $TAGS =~ 'config' || $TAGS =~ 'consul' ]]; then CONFIG=false;fi
       if [[ $TAGS =~ 'backup' ]]; then BACKUPS=false;fi
+      if [[ $TAGS =~ 'performance' ]]; then PERFORMANCE=false;fi
       shift # past argument
       shift # past value
       ;;
@@ -294,6 +227,10 @@ while [[ $# -gt 0 ]]; do
       else SASTSDRIVE="true"; fi
       shift # past argument
       ;;
+    -u|--no-update)
+      UPDATE='false'
+      shift # past argument
+      ;;
     -*|--*)
       usage
       echo -e "\nERROR: Unknown option $1" | tee -a $logfile
@@ -307,6 +244,76 @@ while [[ $# -gt 0 ]]; do
 done
 
 set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
+if [[ $UPDATE == 'true' ]]; then
+    # Check for updates
+    latestVersion=$(curl -s https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/get-k8s-info-vk/get-k8s-info.sh 2>> $logfile | grep '^version=' | cut -d "'" -f2)
+    if [[ ! -z $latestVersion ]]; then
+        if [[ $(cut -d 'v' -f2 <<< $latestVersion | tr -d '.') -gt $(version | cut -d 'v' -f2 | tr -d '.') ]]; then
+            echo -e "\nWARNING: A new version is available! ($latestVersion). It is highly recommended to use the latest version." | tee -a $logfile
+            scriptPath=$(dirname $(realpath -s $0))
+            if [[ -w ${scriptPath}/${script} ]]; then
+                echo;
+                read -p "Do you want to update this script ($(version))? (y/n) " k
+                echo "DEBUG: Wants to update? $k" >> $logfile
+                if [ "$k" == 'y' ] || [ "$k" == 'Y' ] ; then
+                    updatedScript=$(mktemp)
+                    curl -s -o $updatedScript https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/get-k8s-info-vk/get-k8s-info.sh >> $logfile 2>&1
+                    if [[ $? -eq 0 ]]; then
+                        scriptPath=$(dirname $(realpath -s $0))
+                        if cp $updatedScript $scriptPath/$script > /dev/null 2>> $logfile; then echo -e "INFO: Script updated successfully. Restarting...\n";rm -f $updatedScript;$scriptPath/$script ${@};exit $?;else echo -e "ERROR: Script update failed!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile;cleanUp 1;fi
+                    else
+                        echo -e "ERROR: Error while downloading the script!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile
+                        cleanUp 1
+                    fi
+                else
+                    echo;
+                fi
+            else
+                echo -e "WARNING: The current user doesn't have write permission to modify the script file '$scriptPath/$script'." | tee -a $logfile
+                echo -e "\nINFO: Update the script manually from:\n  https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk \n" | tee -a $logfile
+                read -p "Would you like to proceed with the outdated version of the script ($(version)) this time? (y/n) " k
+                echo "DEBUG: Wants to continue outdated? $k" >> $logfile
+                if [ "$k" != 'y' ] && [ "$k" != 'Y' ] ; then
+                    cleanUp 1
+                else
+                    echo;
+                fi
+            fi
+        fi
+    fi
+else
+    echo "INFO: This script will not check for updates. Please verify that you're using the latest available version from:" | tee -a $logfile
+    echo -e "\n  https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk \n" | tee -a $logfile
+fi
+
+# Check kubectl
+if type kubectl > /dev/null 2>&1 && type oc > /dev/null 2>&1; then
+    # Both clients are installed. Check if k8s is OpenShift.
+    if oc version -o yaml 2>> $logfile | grep openshift > /dev/null; then
+        KUBECTLCMD='oc'
+    else
+        KUBECTLCMD='kubectl'
+    fi
+elif type kubectl > /dev/null 2>> $logfile; then
+    KUBECTLCMD='kubectl'
+elif type oc > /dev/null 2>> $logfile; then
+    KUBECTLCMD='oc'
+else
+    echo;echo "ERROR: Neither 'kubectl' or 'oc' are installed in PATH." | tee -a $logfile
+    cleanUp 1
+fi
+k8sApiResources=$(mktemp)
+if ! $KUBECTLCMD api-resources > $k8sApiResources 2>> $logfile; then
+    $KUBECTLCMD api-resources > /dev/null
+    echo -e "\nERROR: Error while executing '$KUBECTLCMD' commands. Make sure you're able to use '$KUBECTLCMD' against the kubernetes cluster before running this script." | tee -a $logfile
+    cleanUp 1
+fi
+
+# Check if k8s is OpenShift
+if grep project.openshift.io $k8sApiResources > /dev/null; then isOpenShift='true'
+else isOpenShift='false';fi
+echo "DEBUG: Is OpenShift? $isOpenShift" >> $logfile
 
 # Check CASENUMBER
 if [ -z $CASENUMBER ]; then 
@@ -506,105 +513,108 @@ function removeSensitiveData {
         echo "        - Removing sensitive data from ${file#*/*/*/}" | tee -a $logfile
         isSensitive='false'
         userContent='false'
-        # If file contains Secrets
-        if [ $(grep -c '^kind: Secret$' $file) -gt 0 ]; then
-            secretStartLines=($(grep -n '^---$\|^kind: Secret$' $file | grep 'kind: Secret' -B1 | grep -v Secret | cut -d ':' -f1))
-            secretEndLines=($(grep -n '^---$\|^kind: Secret$' $file | grep 'kind: Secret' -A1 | grep -v Secret | cut -d ':' -f1))
-            sed -n 1,$[ ${secretStartLines[0]} -1 ]p $file > $file.parsed 2>> $logfile
-            printf '%s\n' "---" >> $file.parsed 2>> $logfile
-            i=0
-            while [ $i -lt ${#secretStartLines[@]} ]
-            do
-                while IFS="" read -r p || [ -n "$p" ]
+        # If file isn't empty
+        if [ -s "$file" ]; then
+            # If file contains Secrets
+            if [ $(grep -c '^kind: Secret$' $file) -gt 0 ]; then
+                secretStartLines=($(grep -n '^---$\|^kind: Secret$' $file | grep 'kind: Secret' -B1 | grep -v Secret | cut -d ':' -f1))
+                secretEndLines=($(grep -n '^---$\|^kind: Secret$' $file | grep 'kind: Secret' -A1 | grep -v Secret | cut -d ':' -f1))
+                sed -n 1,$[ ${secretStartLines[0]} -1 ]p $file > $file.parsed 2>> $logfile
+                printf '%s\n' "---" >> $file.parsed 2>> $logfile
+                i=0
+                while [ $i -lt ${#secretStartLines[@]} ]
                 do
-                    if [[ $isSensitive == 'true' ]]; then
-                        if [[ ${p::2} == '  ' ]]; then
-                            if [[ ${p:2:1} != ' ' ]]; then
-                                printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                    while IFS="" read -r p || [ -n "$p" ]
+                    do
+                        if [[ $isSensitive == 'true' ]]; then
+                            if [[ ${p::2} == '  ' ]]; then
+                                if [[ ${p:2:1} != ' ' ]]; then
+                                    printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                                fi
+                            else
+                                isSensitive='false'
+                                if [ "${p}" != '---' ]; then printf '%s\n' "${p}" >> $file.parsed 2>> $logfile; fi
                             fi
                         else
-                            isSensitive='false'
                             if [ "${p}" != '---' ]; then printf '%s\n' "${p}" >> $file.parsed 2>> $logfile; fi
+                            if grep -q '^data:\|^stringData:' <<< "$p"; then isSensitive='true'; fi
                         fi
-                    else
-                        if [ "${p}" != '---' ]; then printf '%s\n' "${p}" >> $file.parsed 2>> $logfile; fi
-                        if grep -q '^data:\|^stringData:' <<< "$p"; then isSensitive='true'; fi
-                    fi
-                done < <(sed -n ${secretStartLines[i]},${secretEndLines[i]}p $file 2>> $logfile)
-                i=$[ $i + 1 ]
-                if [ $i -lt ${#secretStartLines[@]} ]; then printf '%s\n' "---" >> $file.parsed 2>> $logfile; fi
-            done
-            sed -n ${secretEndLines[-1]},\$p $file >> $file.parsed 2>> $logfile
-        else
-            while IFS="" read -r p || [ -n "$p" ]
-            do
-                if [ ${file##*/} == 'sas-consul-server_sas-bootstrap-config_kv_read.txt' ]; then
-                    # New key
-                    if [[ "${p}" =~ 'config/' || "${p}" =~ 'configurationservice/' ]]; then
-                        isSensitive='false'
-                        if [[ "${p}" =~ '-----BEGIN' || "${p}" =~ 'password=' || "${p}" =~ '"password":"' ]]; then
-                            isSensitive='true'
-                            printf '%s=%s\n' "${p%%=*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
-                        elif [[ "${p}" =~ 'pwd=' ]] ;then
-                            printf '%s%s%s\n' "${p%%pwd*}" 'pwd={{ sensitive data removed }};' "$(cut -d ';' -f2- <<< ${p##*pwd=})" >> $file.parsed 2>> $logfile
+                    done < <(sed -n ${secretStartLines[i]},${secretEndLines[i]}p $file 2>> $logfile)
+                    i=$[ $i + 1 ]
+                    if [ $i -lt ${#secretStartLines[@]} ]; then printf '%s\n' "---" >> $file.parsed 2>> $logfile; fi
+                done
+                sed -n ${secretEndLines[-1]},\$p $file >> $file.parsed 2>> $logfile
+            else
+                while IFS="" read -r p || [ -n "$p" ]
+                do
+                    if [ ${file##*/} == 'sas-consul-server_sas-bootstrap-config_kv_read.txt' ]; then
+                        # New key
+                        if [[ "${p}" =~ 'config/' || "${p}" =~ 'configurationservice/' ]]; then
+                            isSensitive='false'
+                            if [[ "${p}" =~ '-----BEGIN' || "${p}" =~ 'password=' || "${p}" =~ '"password":"' ]]; then
+                                isSensitive='true'
+                                printf '%s=%s\n' "${p%%=*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                            elif [[ "${p}" =~ 'pwd=' ]] ;then
+                                printf '%s%s%s\n' "${p%%pwd*}" 'pwd={{ sensitive data removed }};' "$(cut -d ';' -f2- <<< ${p##*pwd=})" >> $file.parsed 2>> $logfile
+                            else
+                                printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                            fi
+                        elif [[ "${p::6}" != 'config' ]]; then
+                            # Multi-line value
+                            isSensitive='false'
+                            p_lower=$(tr '[:upper:]' '[:lower:]' <<< ${p})
+                            if [[ "${p_lower}" =~ 'password' || "${p_lower}" =~ 'pass' || "${p_lower}" =~ 'pwd' || "${p_lower}" =~ 'secret' || "${p_lower}" =~ 'token' ]]; then
+                                printf '%s\n' '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                            else
+                                printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                            fi
+                        elif [ $isSensitive == 'false' ]; then
+                            printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                        fi
+                    elif [ ${file##*/} == 'terraform.tfvars' ]; then
+                        if [[ "${p}" =~ 'secret' || "${p}" =~ 'password' ]]; then
+                            printf '%s = %s\n' "${p%%=*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
                         else
                             printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
                         fi
-                    elif [[ "${p::6}" != 'config' ]]; then
-                        # Multi-line value
-                        isSensitive='false'
-                        p_lower=$(tr '[:upper:]' '[:lower:]' <<< ${p})
-                        if [[ "${p_lower}" =~ 'password' || "${p_lower}" =~ 'pass' || "${p_lower}" =~ 'pwd' || "${p_lower}" =~ 'secret' || "${p_lower}" =~ 'token' ]]; then
-                            printf '%s\n' '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
-                        else
-                            printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
-                        fi
-                    elif [ $isSensitive == 'false' ]; then
-                        printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
-                    fi
-                elif [ ${file##*/} == 'terraform.tfvars' ]; then
-                    if [[ "${p}" =~ 'secret' || "${p}" =~ 'password' ]]; then
-                        printf '%s = %s\n' "${p%%=*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
-                    else
-                        printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
-                    fi
-                elif [[ ${file##*/} =~ 'ansible-vars.yaml' ]]; then
-                    if [[ "${p}" =~ 'SECRET' || "${p}" =~ 'PASSWORD' || "${p}" =~ 'password:' ]]; then
-                        printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
-                    else
-                        printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
-                    fi
-                #elif [ ${file##*.} == 'yaml' ]; then
-                else
-                    if [[ ( $userContent == 'false' ) && ( "${p}" =~ ':' || "${p}" == '---' ) ]]; then
-                        isSensitive='false'
-                        # Check for Certificates or HardCoded Passwords
-                        if [[ "${p}" =~ '-----BEGIN ' || $p =~ 'ssword: ' ]]; then
-                            isSensitive='true'
+                    elif [[ ${file##*/} =~ 'ansible-vars.yaml' ]]; then
+                        if [[ "${p}" =~ 'SECRET' || "${p}" =~ 'PASSWORD' || "${p}" =~ 'password:' ]]; then
                             printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
                         else
                             printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
                         fi
-                        if [[ "${p}" == '  User Content:' || "${p}" == '  userContent:' ]]; then
-                            userContent='true'
-                            printf '%s\n' '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
-                        fi
-                    # Print only if not sensitive and not sasdeployment "User content"
-                    elif [ $isSensitive == 'false' ]; then
-                        if [ $userContent == 'true' ]; then 
-                            if [[ "${p}" == 'Status:' || "${p}" == 'status:' ]]; then
-                                userContent='false'
+                    #elif [ ${file##*.} == 'yaml' ]; then
+                    else
+                        if [[ ( $userContent == 'false' ) && ( "${p}" =~ ':' || "${p}" == '---' ) ]]; then
+                            isSensitive='false'
+                            # Check for Certificates or HardCoded Passwords
+                            if [[ "${p}" =~ '-----BEGIN ' || $p =~ 'ssword: ' ]]; then
+                                isSensitive='true'
+                                printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                            else
                                 printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
                             fi
-                        else
-                            printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                            if [[ "${p}" == '  User Content:' || "${p}" == '  userContent:' ]]; then
+                                userContent='true'
+                                printf '%s\n' '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                            fi
+                        # Print only if not sensitive and not sasdeployment "User content"
+                        elif [ $isSensitive == 'false' ]; then
+                            if [ $userContent == 'true' ]; then 
+                                if [[ "${p}" == 'Status:' || "${p}" == 'status:' ]]; then
+                                    userContent='false'
+                                    printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                                fi
+                            else
+                                printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                            fi
                         fi
                     fi
-                fi
-            done < $file
+                done < $file
+            fi
+            rm -f $file 2>> $logfile
+            mv $file.parsed $file 2>> $logfile
         fi
-        rm -f $file 2>> $logfile
-        mv $file.parsed $file 2>> $logfile
     done
 }
 # begin kviya functions
@@ -1620,6 +1630,7 @@ function getNamespaceData() {
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_queues messages_ready consumers name | grep -v ^0 | (sed -u 3q; sort -r -n -k 1)'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-queues-nonempty.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_exchanges name type durable auto_delete internal arguments policy'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-exchanges.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_bindings'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-bindings.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_consumers'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list_consumers.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_permissions'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-permissions.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_policies'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-policies.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_global_parameters'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-global-parameters.txt"
@@ -2087,14 +2098,12 @@ if [ $DEPLOYPATH != 'unavailable' ]; then
     echo "  - Collecting deployment assets" | tee -a $logfile
     mkdir $TEMPDIR/assets 2>> $logfile
     cd $DEPLOYPATH 2>> $logfile
-    find . -path ./sas-bases -prune -false -o -name "*.yaml" -o -name "*sas-risk-cirrus*.env" 2>> $logfile | grep -vE '\./.*sas-bases.*/.*' | tar -cf $TEMPDIR/assets/assets.tar -T - 2>> $logfile
+    find . -path ./sas-bases -prune -false -o \( -name "*.yaml" -o -path "*sas-risk*" -type f -name "*.env" \) 2>> $logfile | grep -vE '\./.*sas-bases.*/.*' | tar -cf $TEMPDIR/assets/assets.tar -T - 2>> $logfile
     tar xf $TEMPDIR/assets/assets.tar --directory $TEMPDIR/assets 2>> $logfile
     rm -rf $TEMPDIR/assets/assets.tar 2>> $logfile
     removeSensitiveData $(find $TEMPDIR/assets -type f)
     if [[ -d ./sas-bases ]]; then
-        find ./sas-bases -name "*.yaml" 2>> $logfile | tar -cf $TEMPDIR/assets/assets.tar -T - 2>> $logfile
-        tar xf $TEMPDIR/assets/assets.tar --directory $TEMPDIR/assets 2>> $logfile
-        rm -rf $TEMPDIR/assets/assets.tar 2>> $logfile
+        cp -R ./sas-bases $TEMPDIR/assets/sas-bases 2>> $logfile
     fi
 fi
 
