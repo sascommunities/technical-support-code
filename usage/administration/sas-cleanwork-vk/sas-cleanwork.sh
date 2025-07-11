@@ -160,7 +160,7 @@ launchtmp=$(mktemp)
 # Pull an array of top-level SAS_work directories. -maxdepth only checks in the path, -type only returns directories.
 
 echo "NOTE: Checking for top-level WORK directories."
-mapfile -t sids < <(find /saswork -maxdepth 1 -type d -name "SAS_work*" -print)
+mapfile -t sids < <(find /saswork -maxdepth 1 -type d \( -name "SAS_work*" -o -name "SAS_util*" \) -print)
 echo "NOTE: Found ${#sids[@]} top-level WORK directories."
 
 # Run the above defined function on each folder.
