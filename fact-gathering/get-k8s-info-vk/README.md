@@ -1,38 +1,38 @@
-# get-k8s-info.sh Script
+# get-k8s-info.sh Script 
 
-The get-k8s-info.sh script collects information from several components related to a Viya 4 deployment in Kubernetes. The information collected 
-may include:
+The get-k8s-info.sh script collects diagnostic and configuration data from various components of a Viya 4 deployment in Kubernetes. This includes:
 
-- Versions from softwares in use by the deployment
-- List and describe output from objects created in the SAS deployment namespace and other related namespaces (including kube-system)
-- YAML definition from objects
-- Describe and top output from nodes in the cluster
-- Logs from pods
-- key-value pairs from Consul
-- Deployment assets that were used to deploy the environment
-  
-When sensitive data is found among the information collected, the script redacts the data before compacting the final .tgz file.
+- Software versions used in the deployment
+- Output from kubectl get and kubectl describe for objects in the SAS deployment namespace and related namespaces (e.g., kube-system)
+- YAML definition of Kubernetes objects
+- Node descriptions and performance metrics (kubectl top)
+- Pod logs
+- Key-value pairs from Consul
+- Deployment assets used to deploy the environment
+
+## User Responsibility for Final Sensitive Data Check
+
+The script scans the collected information for sensitive data and redacts it before packaging the final .tgz file. However, final validation of the contents should be performed manually by the user.
 
 ## Prerequisites
 
-- The tool should be run on the machine/jumpbox from where the environment was originally deployed, with access to the deployment files and the Kubernetes 
-command-line interface, `kubectl`, to access the Kubernetes cluster.
+- Run the script on the machine or jumpbox used for the original deployment
+- Ensure access to deployment files and the Kubernetes cluster via `kubectl`
 - Bash Shell
 
 ## Usage
 
-**Note**: Some information may be omitted or unavailable depending on the permissions granted for the provided
-`KUBECONFIG`.
+**Note**: Some data may be unavailable depending on the permissions granted by the provided `KUBECONFIG`.
 
 ### Interactive Mode Example
 
-The following example runs the script without providing any option, which causes the script to request all required information interactively.
+Run the script without options to enter interactive mode:
 
 ```
 ./get-k8s-info.sh
 ```
 
-The script will request the following information interactively:
+You’ll be prompted to provide:
 
 ```
 # Case Number:
@@ -45,7 +45,7 @@ The script will request the following information interactively:
 -> Specify the path where the script output file will be saved (<current directory>):
 ```
 
-**Note**: The \<current directory\> can be specified by just pressing ENTER.
+**Note**: Press ENTER to accept the default `<current directory>`
 
 In case the IaC or DaC were used to deploy the environment, the script may also ask for the following:
 
@@ -97,12 +97,13 @@ Namespaces with a Viya deployment:
  -> Select the namespace where the information should be collected from: 
 ```
 
-* --disabletags  
+* -d | --disabletags  
 
     Used to disable specific actions from the script based on a debug tag provided. Available debug tags are:  
 
     * 'backups': Capture information from backup pvcs and generate reports with status from past backups and restores.  
-    * 'config': Dump all key-value pairs currently defined in Consul.  
+    * 'config': Dump all key-value pairs currently defined in Consul.
+    * 'performance': Collects performance-related data from Kubernetes nodes and designated pods.
     * 'postgres': Collects the 'patronictl list' command output.
     * 'rabbitmq': Collects specific rabbitmq information by running the 'rabbitmqctl report' command on each pod.
 
@@ -122,15 +123,15 @@ Namespaces with a Viya deployment:
 
 * -w | --workers  
 
-    Used to specify how many workers the script will use to execute 'kubectl' commands in parallel. If not specified, 5 workers are used by default."
+    Used to specify how many workers the script will use to execute 'kubectl' commands in parallel. If not specified, 5 workers are used by default.
 
 * -s | --sastsdrive  
 
     Used to make the script try to send the final .tgz file to the track SASTSDrive workspace. Only use this option after a TSDrive workspace was already created and the customer authorized by Tech Support to send files to SASTSDrive for the track. It should not be used by customers whose domain have been enabled SSO with SAS, as the authentication won't work. If the script fails to send the .tgz file to SASTSDrive, the customer will still be able to collect the file from the --out directory to send it manually.
 
-```
-./get-k8s-info.sh --sastsdrive
-```
+* -u | --no-update  
+
+    Used to disable automatic update checks.
 
 ### Automatic Debugging and Default Behavior
 
@@ -142,7 +143,7 @@ The script has some built-in debugging steps which are executed automatically:
 * Time sync information: A report with the current date and time from each k8s node is generated.
 * Redaction of Sensitive Data: For files that can contain sensitive data (usually inside deployment assets, consul config dump or YAML object definitions), the script parses those files and redacts certificate, private keys, secrets, passwords and tokens with the string '{{ sensitive data removed }}'.
 
-### Help with the Command
+### Help
 
 The `-h` or `--help` option can be used to view usage information and list all options available for the script.
 
@@ -150,8 +151,8 @@ The `-h` or `--help` option can be used to view usage information and list all o
 ./get-k8s-info.sh --help
 ```
 
-## Script Output
+## Output
 
-The script generates a .tgz file containing all information and files in the --out directory upon completion:
+Upon completion, the script creates a .tgz file in the specified output directory:
 
-* \<out\>/\<casenumber\>.tgz
+* \<out\>/\<casenumber\>\_\<date\>\_\<time\>.tgz

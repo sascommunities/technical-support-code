@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.4.05'
+version='get-k8s-info v1.5.00'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -423,6 +423,9 @@ if [ ! -z $TFVARSFILE ]; then
         if [ ! -f $TFVARSFILE ]; then
             echo "ERROR: --tfvars file '$TFVARSFILE' doesn't exist" | tee -a $logfile
             cleanUp 1
+        elif [ $(grep -c '"outputs": {' $TFVARSFILE) -gt 0 ]; then
+            echo "ERROR: The '$TFVARSFILE' file specified appears to be a .tfstate file. Please provide the correct path to a .tfvars file instead." | tee -a $logfile
+            cleanUp 1
         fi
     else
         TFVARSFILE=''
@@ -507,7 +510,6 @@ else
         cleanUp 1
     fi
 fi
-
 function removeSensitiveData {
     for file in $@; do
         echo "        - Removing sensitive data from ${file#*/*/*/}" | tee -a $logfile
@@ -515,103 +517,169 @@ function removeSensitiveData {
         userContent='false'
         # If file isn't empty
         if [ -s "$file" ]; then
-            # If file contains Secrets
-            if [ $(grep -c '^kind: Secret$' $file) -gt 0 ]; then
-                secretStartLines=($(grep -n '^---$\|^kind: Secret$' $file | grep 'kind: Secret' -B1 | grep -v Secret | cut -d ':' -f1))
-                secretEndLines=($(grep -n '^---$\|^kind: Secret$' $file | grep 'kind: Secret' -A1 | grep -v Secret | cut -d ':' -f1))
-                sed -n 1,$[ ${secretStartLines[0]} -1 ]p $file > $file.parsed 2>> $logfile
-                printf '%s\n' "---" >> $file.parsed 2>> $logfile
-                i=0
-                while [ $i -lt ${#secretStartLines[@]} ]
-                do
-                    while IFS="" read -r p || [ -n "$p" ]
+            if grep -E \.get-k8s-info.tmp\..{10}/assets/ <<< $file > /dev/null 2>&1; then
+                # If file contains Secrets
+                if [ $(grep -c '^kind: Secret$' $file) -gt 0 ]; then
+                    if [[ $(head -1 $file) != '---' ]]; then
+                        sed -i '1i\---' $file
+                    fi
+                    if [[ $(tail -1 $file) != '---' ]]; then
+                        sed -i '$ a\---' $file
+                    fi
+                    secretStartLines=($(grep -n '^---$\|^kind: Secret$' $file | grep 'kind: Secret' -B1 | grep -v Secret | cut -d ':' -f1))
+                    secretEndLines=($(grep -n '^---$\|^kind: Secret$' $file | grep 'kind: Secret' -A1 | grep -v Secret | cut -d ':' -f1))
+                    if [[ $[ ${secretStartLines[0]} -1 ] -ne 0 ]]; then
+                        sed -n 1,$[ ${secretStartLines[0]} -1 ]p $file > $file.parsed 2>> $logfile
+                    fi
+                    i=0
+                    while [ $i -lt ${#secretStartLines[@]} ]
                     do
-                        if [[ $isSensitive == 'true' ]]; then
-                            if [[ ${p::2} == '  ' ]]; then
-                                if [[ ${p:2:1} != ' ' ]]; then
-                                    printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                        isSensitive='false'
+                        printf '%s\n' "---" >> $file.parsed 2>> $logfile
+                        while IFS="" read -r p || [ -n "$p" ]
+                        do
+                            if [[ $isSensitive == 'true' ]]; then
+                                if [[ ${p::2} == '  ' ]]; then
+                                    if [[ ${p:2:1} != ' ' ]]; then
+                                        printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                                    fi
+                                else
+                                    isSensitive='false'
+                                    if [ "${p}" != '---' ]; then printf '%s\n' "${p}" >> $file.parsed 2>> $logfile; fi
                                 fi
                             else
-                                isSensitive='false'
                                 if [ "${p}" != '---' ]; then printf '%s\n' "${p}" >> $file.parsed 2>> $logfile; fi
+                                if grep -q '^data:\|^stringData:' <<< "$p"; then isSensitive='true'; fi
                             fi
-                        else
-                            if [ "${p}" != '---' ]; then printf '%s\n' "${p}" >> $file.parsed 2>> $logfile; fi
-                            if grep -q '^data:\|^stringData:' <<< "$p"; then isSensitive='true'; fi
-                        fi
-                    done < <(sed -n ${secretStartLines[i]},${secretEndLines[i]}p $file 2>> $logfile)
-                    i=$[ $i + 1 ]
-                    if [ $i -lt ${#secretStartLines[@]} ]; then printf '%s\n' "---" >> $file.parsed 2>> $logfile; fi
-                done
-                sed -n ${secretEndLines[-1]},\$p $file >> $file.parsed 2>> $logfile
-            else
-                while IFS="" read -r p || [ -n "$p" ]
-                do
-                    if [ ${file##*/} == 'sas-consul-server_sas-bootstrap-config_kv_read.txt' ]; then
-                        # New key
-                        if [[ "${p}" =~ 'config/' || "${p}" =~ 'configurationservice/' ]]; then
-                            isSensitive='false'
-                            if [[ "${p}" =~ '-----BEGIN' || "${p}" =~ 'password=' || "${p}" =~ '"password":"' ]]; then
-                                isSensitive='true'
-                                printf '%s=%s\n' "${p%%=*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
-                            elif [[ "${p}" =~ 'pwd=' ]] ;then
-                                printf '%s%s%s\n' "${p%%pwd*}" 'pwd={{ sensitive data removed }};' "$(cut -d ';' -f2- <<< ${p##*pwd=})" >> $file.parsed 2>> $logfile
-                            else
-                                printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
-                            fi
-                        elif [[ "${p::6}" != 'config' ]]; then
-                            # Multi-line value
-                            isSensitive='false'
-                            p_lower=$(tr '[:upper:]' '[:lower:]' <<< ${p})
-                            if [[ "${p_lower}" =~ 'password' || "${p_lower}" =~ 'pass' || "${p_lower}" =~ 'pwd' || "${p_lower}" =~ 'secret' || "${p_lower}" =~ 'token' ]]; then
-                                printf '%s\n' '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
-                            else
-                                printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
-                            fi
-                        elif [ $isSensitive == 'false' ]; then
-                            printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
-                        fi
-                    elif [ ${file##*/} == 'terraform.tfvars' ]; then
-                        if [[ "${p}" =~ 'secret' || "${p}" =~ 'password' ]]; then
-                            printf '%s = %s\n' "${p%%=*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
-                        else
-                            printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
-                        fi
-                    elif [[ ${file##*/} =~ 'ansible-vars.yaml' ]]; then
-                        if [[ "${p}" =~ 'SECRET' || "${p}" =~ 'PASSWORD' || "${p}" =~ 'password:' ]]; then
-                            printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
-                        else
-                            printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
-                        fi
-                    #elif [ ${file##*.} == 'yaml' ]; then
-                    else
-                        if [[ ( $userContent == 'false' ) && ( "${p}" =~ ':' || "${p}" == '---' ) ]]; then
-                            isSensitive='false'
-                            # Check for Certificates or HardCoded Passwords
-                            if [[ "${p}" =~ '-----BEGIN ' || $p =~ 'ssword: ' ]]; then
-                                isSensitive='true'
-                                printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
-                            else
-                                printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
-                            fi
-                            if [[ "${p}" == '  User Content:' || "${p}" == '  userContent:' ]]; then
-                                userContent='true'
-                                printf '%s\n' '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
-                            fi
-                        # Print only if not sensitive and not sasdeployment "User content"
-                        elif [ $isSensitive == 'false' ]; then
-                            if [ $userContent == 'true' ]; then 
-                                if [[ "${p}" == 'Status:' || "${p}" == 'status:' ]]; then
-                                    userContent='false'
+                        done < <(sed -n $[ ${secretStartLines[i]} + 1 ],$[ ${secretEndLines[i]} - 1 ]p $file 2>> $logfile)
+                        i=$[ $i + 1 ]
+                    done
+                    printf '%s\n' "---" >> $file.parsed 2>> $logfile
+                    sed -n $[ ${secretEndLines[-1]} + 1 ],\$p $file >> $file.parsed 2>> $logfile
+                    mv $file.parsed $file 2>> $logfile
+                fi
+                # If file contains SecretGenerators
+                if [ $(grep -c '^kind: SecretGenerator$' $file) -gt 0 ]; then
+                    if [[ $(head -1 $file) != '---' ]]; then
+                        sed -i '1i\---' $file
+                    fi
+                    if [[ $(tail -1 $file) != '---' ]]; then
+                        sed -i '$ a\---' $file
+                    fi
+                    secretGenStartLines=($(grep -n '^---$\|^kind: SecretGenerator$' $file | grep 'kind: SecretGenerator' -B1 | grep -v SecretGenerator | cut -d ':' -f1))
+                    secretGenEndLines=($(grep -n '^---$\|^kind: SecretGenerator$' $file | grep 'kind: SecretGenerator' -A1 | grep -v SecretGenerator | cut -d ':' -f1))
+                    if [[ $[ ${secretGenStartLines[0]} -1 ] -ne 0 ]]; then
+                        sed -n 1,$[ ${secretGenStartLines[0]} -1 ]p $file > $file.parsed 2>> $logfile
+                    fi
+                    i=0
+                    while [ $i -lt ${#secretGenStartLines[@]} ]
+                    do
+                        isSensitive='false'
+                        isCertificate='false'
+                        printf '%s\n' "---" >> $file.parsed 2>> $logfile
+                        while IFS="" read -r p || [ -n "$p" ]
+                        do
+                            if [[ $isSensitive == 'true' ]]; then
+                                if [[ "${p}" != '- |' ]]; then
+                                    if [[ "${p}" =~ '=' && $isCertificate == 'false' ]]; then
+                                        printf '%s=%s\n' "${p%%=*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                                        if [[ "${p}" =~ '-----BEGIN' ]]; then
+                                            isCertificate='true'
+                                        fi
+                                    elif [[ "${p}" =~ '-----END' ]]; then
+                                        isCertificate='false'
+                                    elif [[ "${p:1:1}" != ' ' ]]; then
+                                        isSensitive='false'
+                                        printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                                    fi
+                                else
                                     printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
                                 fi
                             else
                                 printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                                if grep -q '^literals:' <<< "$p"; then isSensitive='true'; fi
                             fi
+                        done < <(sed -n $[ ${secretGenStartLines[i]}+1 ],$[ ${secretGenEndLines[i]}-1 ]p $file 2>> $logfile)
+                        i=$[ $i + 1 ]
+                    done
+                    printf '%s\n' "---" >> $file.parsed 2>> $logfile
+                    sed -n $[ ${secretGenEndLines[-1]} + 1 ],\$p $file >> $file.parsed 2>> $logfile
+                    mv $file.parsed $file 2>> $logfile
+                fi
+            fi
+            while IFS="" read -r p || [ -n "$p" ]
+            do
+                if [ ${file##*/} == 'sas-consul-server_sas-bootstrap-config_kv_read.txt' ]; then
+                    # New key
+                    if [[ "${p}" =~ 'config/' || "${p}" =~ 'configurationservice/' ]]; then
+                        isSensitive='false'
+                        isCertificate='false'
+                        if [[ "${p}" =~ '-----BEGIN' || "${p}" =~ 'password=' || "${p}" =~ 'Secret=' || "${p}" =~ '"password":"' ]]; then
+                            isSensitive='true'
+                            if [[ "${p}" =~ '-----BEGIN' ]]; then
+                                isCertificate='true'
+                            fi
+                            printf '%s=%s\n' "${p%%=*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                        elif [[ "${p}" =~ 'pwd=' ]] ;then
+                            printf '%s%s%s\n' "${p%%pwd*}" 'pwd={{ sensitive data removed }};' "$(cut -d ';' -f2- <<< ${p##*pwd=})" >> $file.parsed 2>> $logfile
+                        else
+                            printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                        fi
+                    elif [[ "${p::6}" != 'config' ]]; then
+                        # Multi-line value
+                        isSensitive='false'
+                        p_lower=$(tr '[:upper:]' '[:lower:]' <<< ${p})
+                        if [[ "${p_lower}" =~ 'password' || "${p_lower}" =~ 'pass' || "${p_lower}" =~ 'pwd' || "${p_lower}" =~ 'secret' || "${p_lower}" =~ 'token' ]]; then
+                            printf '%s\n' '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                        elif [ $isCertificate == 'true' ]; then
+                            if [[ "${p}" =~ '-----END' ]]; then
+                                $isCertificate == 'false'
+                            fi
+                        else
+                            printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                        fi
+                    elif [ $isSensitive == 'false' ]; then
+                        printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                    fi
+                elif [ ${file##*/} == 'terraform.tfvars' ]; then
+                    if [[ "${p}" =~ 'secret' || "${p}" =~ 'password' ]]; then
+                        printf '%s = %s\n' "${p%%=*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                    else
+                        printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                    fi
+                elif [[ ${file##*/} =~ 'ansible-vars.yaml' ]]; then
+                    if [[ "${p}" =~ 'SECRET' || "${p}" =~ 'PASSWORD' || "${p}" =~ 'password:' ]]; then
+                        printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                    else
+                        printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                    fi
+                else # All other files, including YAML
+                    if [[ ( $userContent == 'false' ) && ( "${p}" =~ ':' || "${p}" == '---' ) ]]; then
+                        isSensitive='false'
+                        # Check for Certificates or HardCoded Passwords
+                        if [[ "${p}" =~ '-----BEGIN ' || $p =~ 'ssword: ' ]]; then
+                            isSensitive='true'
+                            printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                        else
+                            printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                        fi
+                        if [[ "${p}" == '  User Content:' || "${p}" == '  userContent:' || "${p}" == '    userContent:' ]]; then
+                            userContent='true'
+                            printf '%s\n' '    {{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                        fi
+                    # Print only if not sensitive and not "User content"
+                    elif [ $isSensitive == 'false' ]; then
+                        if [ $userContent == 'true' ]; then 
+                            if [[ "${p}" == 'Status:' || "${p}" == 'status:' || "${p}" == '  status:' ]]; then
+                                userContent='false'
+                                printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                            fi
+                        else
+                            printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
                         fi
                     fi
-                done < $file
-            fi
+                fi
+            done < $file
             rm -f $file 2>> $logfile
             mv $file.parsed $file 2>> $logfile
         fi
