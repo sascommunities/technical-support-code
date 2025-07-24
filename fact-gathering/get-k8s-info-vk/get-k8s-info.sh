@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.5.00'
+version='get-k8s-info v1.5.01'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -604,6 +604,48 @@ function removeSensitiveData {
                     done
                     printf '%s\n' "---" >> $file.parsed 2>> $logfile
                     sed -n $[ ${secretGenEndLines[-1]} + 1 ],\$p $file >> $file.parsed 2>> $logfile
+                    mv $file.parsed $file 2>> $logfile
+                fi
+                # If file contains PatchTransformers
+                if [ $(grep -c '^kind: PatchTransformer$' $file) -gt 0 ]; then
+                    if [[ $(head -1 $file) != '---' ]]; then
+                        sed -i '1i\---' $file
+                    fi
+                    if [[ $(tail -1 $file) != '---' ]]; then
+                        sed -i '$ a\---' $file
+                    fi
+                    patchStartLines=($(grep -n '^---$\|^kind: PatchTransformer$' $file | grep 'kind: PatchTransformer' -B1 | grep -v PatchTransformer | cut -d ':' -f1))
+                    patchEndLines=($(grep -n '^---$\|^kind: PatchTransformer$' $file | grep 'kind: PatchTransformer' -A1 | grep -v PatchTransformer | cut -d ':' -f1))
+                    if [[ $[ ${patchStartLines[0]} -1 ] -ne 0 ]]; then
+                        sed -n 1,$[ ${patchStartLines[0]} -1 ]p $file > $file.parsed 2>> $logfile
+                    fi
+                    i=0
+                    while [ $i -lt ${#patchStartLines[@]} ]
+                    do
+                        isSensitive='false'
+                        inTarget='false'
+                        printf '%s\n' "---" >> $file.parsed 2>> $logfile
+                        while IFS="" read -r p || [ -n "$p" ]
+                        do
+                            if [[ "${p}" == 'target:' ]]; then
+                                inTarget='true'
+                            fi
+                            if [[ $inTarget == 'true' && "${p}" == '  kind: Secret' ]]; then
+                                isSensitive='true'
+                            fi
+                        done < <(sed -n $[ ${patchStartLines[i]}+1 ],$[ ${patchEndLines[i]}-1 ]p $file 2>> $logfile)
+                        while IFS="" read -r p || [ -n "$p" ]
+                        do
+                            if [[ $isSensitive == 'true' && "${p}" =~ 'value:' ]]; then
+                                printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                            else
+                                printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                            fi
+                        done < <(sed -n $[ ${patchStartLines[i]}+1 ],$[ ${patchEndLines[i]}-1 ]p $file 2>> $logfile)
+                        i=$[ $i + 1 ]
+                    done
+                    printf '%s\n' "---" >> $file.parsed 2>> $logfile
+                    sed -n $[ ${patchEndLines[-1]} + 1 ],\$p $file >> $file.parsed 2>> $logfile
                     mv $file.parsed $file 2>> $logfile
                 fi
             fi
