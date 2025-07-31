@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.5.01'
+version='get-k8s-info v1.5.02'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -556,7 +556,7 @@ function removeSensitiveData {
                     done
                     printf '%s\n' "---" >> $file.parsed 2>> $logfile
                     sed -n $[ ${secretEndLines[-1]} + 1 ],\$p $file >> $file.parsed 2>> $logfile
-                    mv $file.parsed $file 2>> $logfile
+                    mv -f $file.parsed $file 2>> $logfile
                 fi
                 # If file contains SecretGenerators
                 if [ $(grep -c '^kind: SecretGenerator$' $file) -gt 0 ]; then
@@ -604,7 +604,7 @@ function removeSensitiveData {
                     done
                     printf '%s\n' "---" >> $file.parsed 2>> $logfile
                     sed -n $[ ${secretGenEndLines[-1]} + 1 ],\$p $file >> $file.parsed 2>> $logfile
-                    mv $file.parsed $file 2>> $logfile
+                    mv -f $file.parsed $file 2>> $logfile
                 fi
                 # If file contains PatchTransformers
                 if [ $(grep -c '^kind: PatchTransformer$' $file) -gt 0 ]; then
@@ -646,7 +646,7 @@ function removeSensitiveData {
                     done
                     printf '%s\n' "---" >> $file.parsed 2>> $logfile
                     sed -n $[ ${patchEndLines[-1]} + 1 ],\$p $file >> $file.parsed 2>> $logfile
-                    mv $file.parsed $file 2>> $logfile
+                    mv -f $file.parsed $file 2>> $logfile
                 fi
             fi
             while IFS="" read -r p || [ -n "$p" ]
@@ -723,7 +723,7 @@ function removeSensitiveData {
                 fi
             done < $file
             rm -f $file 2>> $logfile
-            mv $file.parsed $file 2>> $logfile
+            mv -f $file.parsed $file 2>> $logfile
         fi
     done
 }
