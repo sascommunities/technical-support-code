@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.5.02'
+version='get-k8s-info v1.5.10'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -54,7 +54,7 @@ function usage {
     echo "  -a|--ansiblevars (Optional) Path of the ansible-vars.yaml file"
     echo "  -o|--out         (Optional) Path where the .tgz file will be created"
     echo "  -d|--disabletags (Optional) Disable specific debug tags. By default, all tags are enabled."
-    echo "                              Available values are: 'backups', 'config', 'performance, 'postgres' and 'rabbitmq'"
+    echo "                              Available values are: 'backups', 'config', 'opensearch', 'performance, 'postgres' and 'rabbitmq'"
     echo "  -s|--sastsdrive  (Optional) Send the .tgz file to SASTSDrive through sftp."
     echo "                              Only use this option after you were authorized by Tech Support to send files to SASTSDrive for the case."
     echo "  -w|--workers     (Optional) Number of simultaneous "kubectl" commands that the script can execute in parallel."
@@ -139,6 +139,7 @@ function cleanUp() {
 
 # Initialize Variables
 UPDATE=true
+OPENSEARCH=true
 PERFORMANCE=true
 POSTGRES=true
 RABBITMQ=true
@@ -192,6 +193,7 @@ while [[ $# -gt 0 ]]; do
       if [[ $TAGS =~ 'config' || $TAGS =~ 'consul' ]]; then CONFIG=false;fi
       if [[ $TAGS =~ 'backup' ]]; then BACKUPS=false;fi
       if [[ $TAGS =~ 'performance' ]]; then PERFORMANCE=false;fi
+      if [[ $TAGS =~ 'opensearch' ]]; then OPENSEARCH=false;fi
       shift # past argument
       shift # past value
       ;;
@@ -695,6 +697,12 @@ function removeSensitiveData {
                     else
                         printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
                     fi
+                elif [[ ${file##*/} == 'tasks' || ${file##*/} == 'kubectl_errors.log' ]]; then
+                    if [[ "${p}" =~ 'Authorization: ' ]]; then
+                        printf "%s'Authorization: %s'%s\n" "${p%%\'*}" '{{ sensitive data removed }}' "${p##*\'}" >> $file.parsed 2>> $logfile
+                    else
+                        printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                    fi
                 else # All other files, including YAML
                     if [[ ( $userContent == 'false' ) && ( "${p}" =~ ':' || "${p}" == '---' ) ]]; then
                         isSensitive='false'
@@ -708,11 +716,20 @@ function removeSensitiveData {
                         if [[ "${p}" == '  User Content:' || "${p}" == '  userContent:' || "${p}" == '    userContent:' ]]; then
                             userContent='true'
                             printf '%s\n' '    {{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                        elif [[ "${p}" == '                "userContent": {' ]]; then
+                            userContent='true'
+                            printf '%s\n' '                    "files": "{{ sensitive data removed }}"' >> $file.parsed 2>> $logfile
                         fi
                     # Print only if not sensitive and not "User content"
                     elif [ $isSensitive == 'false' ]; then
                         if [ $userContent == 'true' ]; then 
                             if [[ "${p}" == 'Status:' || "${p}" == 'status:' || "${p}" == '  status:' ]]; then
+                                userContent='false'
+                                printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                            elif [[ "${p}" == '            "status": {' ]]; then
+                                printf '%s\n' '                    }' >> $file.parsed 2>> $logfile
+                                printf '%s\n' '                }' >> $file.parsed 2>> $logfile
+                                printf '%s\n' '            },' >> $file.parsed 2>> $logfile
                                 userContent='false'
                                 printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
                             fi
@@ -1508,35 +1525,41 @@ function getNamespaceData() {
         getobjects=(configmaps cronjobs daemonsets deployments endpoints events horizontalpodautoscalers jobs persistentvolumeclaims poddisruptionbudgets pods podtemplates replicasets rolebindings roles secrets serviceaccounts services statefulsets)
         describeobjects=(configmaps cronjobs daemonsets deployments endpoints horizontalpodautoscalers jobs persistentvolumeclaims poddisruptionbudgets pods podtemplates replicasets rolebindings roles secrets serviceaccounts services statefulsets)
         yamlobjects=(configmaps cronjobs daemonsets deployments endpoints horizontalpodautoscalers jobs persistentvolumeclaims poddisruptionbudgets pods podtemplates replicasets rolebindings roles serviceaccounts services statefulsets)
+        jsonobjects=(configmaps cronjobs daemonsets deployments endpoints events horizontalpodautoscalers jobs persistentvolumeclaims poddisruptionbudgets pods podtemplates replicasets rolebindings roles serviceaccounts services statefulsets)
 
         if [[ $hasMonitoringCRD == 'true' ]]; then
             getobjects+=(${monitoringobjects[@]})
             describeobjects+=(${monitoringobjects[@]})
             yamlobjects+=(${monitoringobjects[@]})
+            jsonobjects+=(${monitoringobjects[@]})
         fi
         if [[ $isOpenShift == 'true' ]]; then
             getobjects+=(${openshiftobjects[@]})
             describeobjects+=(${openshiftobjects[@]})
             yamlobjects+=(${openshiftobjects[@]})
+            jsonobjects+=(${openshiftobjects[@]})
         else
             getobjects+=(${nginxobjects[@]})
             describeobjects+=(${nginxobjects[@]})
             yamlobjects+=(${nginxobjects[@]})
+            jsonobjects+=(${nginxobjects[@]})
         fi
         if [[ $hasOrchestrationCRD == 'true' ]]; then
             getobjects+=(${orchestrationobjects[@]})
             describeobjects+=(${orchestrationobjects[@]})
             yamlobjects+=(${orchestrationobjects[@]})
+            jsonobjects+=(${orchestrationobjects[@]})
         fi
         if [[ $hasMetricsServer == 'true' ]]; then
             getobjects+=(${metricsobjects[@]})
             describeobjects+=(${metricsobjects[@]})
             yamlobjects+=(${metricsobjects[@]})
+            jsonobjects+=(${metricsobjects[@]})
         fi
         
         if [ ! -d $TEMPDIR/kubernetes/$namespace ]; then
             echo "  - Collecting information from the '$namespace' namespace" | tee -a $logfile
-            mkdir -p $TEMPDIR/kubernetes/$namespace/describe $TEMPDIR/kubernetes/$namespace/get $TEMPDIR/kubernetes/$namespace/yaml
+            mkdir -p $TEMPDIR/kubernetes/$namespace/describe $TEMPDIR/kubernetes/$namespace/get $TEMPDIR/kubernetes/$namespace/yaml $TEMPDIR/kubernetes/$namespace/json
 
             # If this namespace contains a Viya deployment
             if [[ " ${viyans[*]} " =~ " ${namespace} " ]]; then
@@ -1545,27 +1568,32 @@ function getNamespaceData() {
                 getobjects+=(${viyaobjects[@]})
                 describeobjects+=(${viyaobjects[@]})
                 yamlobjects+=(${viyaobjects[@]})
+                jsonobjects+=(${viyaobjects[@]})
 
                 if [[ $hasCertManagerCRD == 'true' ]]; then
                     getobjects+=(${certmanagerobjects[@]})
                     describeobjects+=(${certmanagerobjects[@]})
                     yamlobjects+=(${certmanagerobjects[@]})
+                    jsonobjects+=(${certmanagerobjects[@]})
                 fi
                 if [[ $hasCrunchyDataCRD != 'false' ]]; then
                     if [[ $hasCrunchyDataCRD == 'v5' ]]; then
                         getobjects+=(${crunchydata5objects[@]})
                         describeobjects+=(${crunchydata5objects[@]})
                         yamlobjects+=(${crunchydata5objects[@]})
+                        jsonobjects+=(${crunchydata5objects[@]})
                     else
                         getobjects+=(${crunchydata4objects[@]})
                         describeobjects+=(${crunchydata4objects[@]})
                         yamlobjects+=(${crunchydata4objects[@]})
+                        jsonobjects+=(${crunchydata4objects[@]})
                     fi
                 fi
                 if [[ $hasEspCRD == 'true' ]]; then
                     getobjects+=(${espobjects[@]})
                     describeobjects+=(${espobjects[@]})
                     yamlobjects+=(${espobjects[@]})
+                    jsonobjects+=(${espobjects[@]})
                 fi
 
                 # Check if we should wait for cas logs
@@ -1682,8 +1710,8 @@ function getNamespaceData() {
                     done
                 fi
                 # postgres debugtag
-                if [[ "$POSTGRES" = true ]]; then
-                    echo "    - Getting postgres information" | tee -a $logfile
+                if [[ "$POSTGRES" = true && "$hasCrunchyDataCRD" != 'false' ]]; then
+                    echo "    - Getting Crunchy Data PostgreSQL information" | tee -a $logfile
                     if [ $hasCrunchyDataCRD == 'v4' ]; then
                         #Crunchy4 commands
                         for pgcluster in $($KUBECTLCMD -n $namespace get pgclusters --no-headers 2>> $logfile | awk '{print $1}'); do
@@ -1726,7 +1754,7 @@ function getNamespaceData() {
                 fi
                 # rabbitmq debugtag
                 if [[ "$RABBITMQ" = true ]]; then
-                    echo "    - Getting rabbitmq information" | tee -a $logfile
+                    echo "    - Getting RabbitMQ information" | tee -a $logfile
                     for rabbitmqPod in $($KUBECTLCMD -n $namespace get pod -l 'app=sas-rabbitmq-server' --no-headers 2>> $logfile | awk '{print $1}'); do
                         mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl status'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_status.txt"
@@ -1747,6 +1775,26 @@ function getNamespaceData() {
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_parameters'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-parameters.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_unresponsive_queues'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-unresponsive-queues.txt"
                     done
+                fi
+                # opensearch debugtag
+                if [[ "$OPENSEARCH" = true ]]; then
+                    echo "    - Getting OpenSearch information" | tee -a $logfile
+                    opendistroToken=$(echo -n $($KUBECTLCMD -n $namespace get secret sas-opendistro-sasadmin-secret -o jsonpath='{.data.username}' 2>> $logfile | base64 -d 2>> $logfile):$($KUBECTLCMD -n $namespace get secret sas-opendistro-sasadmin-secret -o jsonpath='{.data.password}' 2>> $logfile | base64 -d 2>> $logfile) | base64 2>> $logfile)
+                    opendistroClientCm=($($KUBECTLCMD get cm -n $namespace -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2>> $logfile | grep ' sas-opendistro-client-config-' | sort -k1 -t ' ' -r | awk '{print $2}'))
+                    if [[ ! -z $opendistroClientCm ]]; then
+                        if [[ $($KUBECTLCMD -n $namespace get cm ${opendistroClientCm[0]} -o jsonpath='{.data.OPENSEARCH_CLIENT_SSL_ENABLED}' 2>> $logfile) == 'true' ]]; then
+                            opendistroProtocol='https'
+                        else
+                            opendistroProtocol='http'
+                        fi
+
+                        for opendistroPod in $($KUBECTLCMD -n $namespace get pod -l 'sas.com/master-role=true' --no-headers 2>> $logfile | awk '{print $1}'); do
+                            mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$opendistroPod
+                            createTask "$KUBECTLCMD -n $namespace exec $opendistroPod -c sas-opendistro -- curl -sk --url $opendistroProtocol://localhost:9200/_cluster/health?pretty=true --header 'Authorization: Basic $opendistroToken'" "$TEMPDIR/kubernetes/$namespace/exec/$opendistroPod/sas-opendistro_cluster_health.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec $opendistroPod -c sas-opendistro -- curl -sk --url $opendistroProtocol://localhost:9200/_cat/indices?s=index --header 'Authorization: Basic $opendistroToken'" "$TEMPDIR/kubernetes/$namespace/exec/$opendistroPod/sas-opendistro_cat_indices.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec $opendistroPod -c sas-opendistro -- curl -sk --url $opendistroProtocol://localhost:9200/_cat/shards  --header 'Authorization: Basic $opendistroToken'" "$TEMPDIR/kubernetes/$namespace/exec/$opendistroPod/sas-opendistro_cat_shards.txt"
+                        done
+                    fi
                 fi
             fi
             # Collect logs
@@ -1780,10 +1828,7 @@ function getNamespaceData() {
             echo "    - kubectl describe" | tee -a $logfile
             for object in ${describeobjects[@]}; do
                 echo "      - $object" | tee -a $logfile
-                if [ $object == 'replicasets' ]; then 
-                    # describe only active replicasets
-                    createTask "$KUBECTLCMD -n $namespace describe $object $($KUBECTLCMD -n $namespace get $object --no-headers 2>> $logfile | awk '{if ($2 > 0)print $1}' | tr '\n' ' ')" "$TEMPDIR/kubernetes/$namespace/describe/$object.txt"
-                elif [[ $object == 'sasdeployments' && $isViyaNs == 'true' ]]; then 
+                if [[ $object == 'sasdeployments' && $isViyaNs == 'true' ]]; then 
                     $KUBECTLCMD -n $namespace describe $object > $TEMPDIR/kubernetes/$namespace/describe/$object.txt 2>&1
                     if [[ $? -ne 0 ]]; then 
                         cat $TEMPDIR/kubernetes/$namespace/describe/$object.txt >> $logfile
@@ -1798,9 +1843,7 @@ function getNamespaceData() {
             echo "    - kubectl get -o yaml" | tee -a $logfile
             for object in ${yamlobjects[@]}; do
                 echo "      - $object" | tee -a $logfile
-                if [ $object == 'replicasets' ]; then
-                    createTask "$KUBECTLCMD -n $namespace get $object $($KUBECTLCMD -n $namespace get $object --no-headers 2>> $logfile | awk '{if ($2 > 0)print $1}' | tr '\n' ' ') -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
-                elif [[ $object == 'sasdeployments' && $isViyaNs == 'true' ]]; then
+                if [[ $object == 'sasdeployments' && $isViyaNs == 'true' ]]; then
                     $KUBECTLCMD -n $namespace get $object -o yaml > $TEMPDIR/kubernetes/$namespace/yaml/$object.yaml 2>&1
                     if [[ $? -ne 0 ]]; then 
                         cat $TEMPDIR/kubernetes/$namespace/yaml/$object.yaml >> $logfile
@@ -1810,6 +1853,22 @@ function getNamespaceData() {
                     fi
                 else
                     createTask "$KUBECTLCMD -n $namespace get $object -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
+                fi
+            done
+            # json objects
+            echo "    - kubectl get -o json" | tee -a $logfile
+            for object in ${jsonobjects[@]}; do
+                echo "      - $object" | tee -a $logfile
+                if [[ $object == 'sasdeployments' && $isViyaNs == 'true' ]]; then
+                    $KUBECTLCMD -n $namespace get $object -o json > $TEMPDIR/kubernetes/$namespace/json/$object.json 2>&1
+                    if [[ $? -ne 0 ]]; then 
+                        cat $TEMPDIR/kubernetes/$namespace/json/$object.json >> $logfile
+                        echo -n '' > $TEMPDIR/kubernetes/$namespace/json/$object.json
+                    else
+                        removeSensitiveData $TEMPDIR/kubernetes/$namespace/json/$object.json
+                    fi
+                else
+                    createTask "$KUBECTLCMD -n $namespace get $object -o json" "$TEMPDIR/kubernetes/$namespace/json/$object.json"
                 fi
             done
             # kubectl top pods
@@ -1849,32 +1908,6 @@ function generateKviyaReport() {
     fi
     tar -czf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime.tgz --directory=$TEMPDIR/kubernetes/$namespace/.kviya $saveTime 2>> $logfile
     rm -rf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime 2>> $logfile
-}
-function captureDiagramToolFiles {
-    echo 'DEBUG: Capturing JSON files used by the K8S Diagram Tool' >> $logfile
-    mkdir -p $TEMPDIR/.diagram-tool
-    date -u +"%Y-%m-%dT%H:%M:%SZ" > $TEMPDIR/.diagram-tool/date.txt 2>> $logfile
-    createTask "$KUBECTLCMD get configmaps --all-namespaces -o json" "$TEMPDIR/.diagram-tool/configmaps.txt"
-    createTask "$KUBECTLCMD get customresourcedefinitions -o json" "$TEMPDIR/.diagram-tool/crd.txt"
-    createTask "$KUBECTLCMD get daemonsets --all-namespaces -o json" "$TEMPDIR/.diagram-tool/daemonsets.txt"
-    createTask "$KUBECTLCMD get deployments --all-namespaces -o json" "$TEMPDIR/.diagram-tool/deployments.txt"
-    createTask "$KUBECTLCMD get endpoints --all-namespaces -o json" "$TEMPDIR/.diagram-tool/endpoints.txt"
-    createTask "$KUBECTLCMD get events --all-namespaces -o json" "$TEMPDIR/.diagram-tool/events.txt"
-    createTask "$KUBECTLCMD get ingresses --all-namespaces -o json" "$TEMPDIR/.diagram-tool/ingress.txt"
-    createTask "$KUBECTLCMD get jobs --all-namespaces -o json" "$TEMPDIR/.diagram-tool/jobs.txt"
-    if [[ $isOpenShift == 'false' ]]; then
-        createTask "$KUBECTLCMD get namespaces -o json" "$TEMPDIR/.diagram-tool/namespaces.txt"
-    else
-        createTask "$KUBECTLCMD get projects -o json" "$TEMPDIR/.diagram-tool/namespaces.txt"
-    fi
-    createTask "$KUBECTLCMD get nodes -o json" "$TEMPDIR/.diagram-tool/nodes.txt"
-    createTask "$KUBECTLCMD get persistentvolumeclaims --all-namespaces -o json" "$TEMPDIR/.diagram-tool/pvcs.txt"
-    createTask "$KUBECTLCMD get persistentvolumes -o json" "$TEMPDIR/.diagram-tool/pvs.txt"
-    createTask "$KUBECTLCMD get pods --all-namespaces -o json" "$TEMPDIR/.diagram-tool/pods.txt"
-    createTask "$KUBECTLCMD get replicasets --all-namespaces -o json" "$TEMPDIR/.diagram-tool/replicasets.txt"
-    createTask "$KUBECTLCMD get services --all-namespaces -o json" "$TEMPDIR/.diagram-tool/services.txt"
-    createTask "$KUBECTLCMD get statefulsets --all-namespaces -o json" "$TEMPDIR/.diagram-tool/statefulsets.txt"
-    createTask "$KUBECTLCMD get storageclasses -o json" "$TEMPDIR/.diagram-tool/sc.txt"
 }
 function showProgress {
     percent=$[ 100 * $completedTasks / $totalTasks ]
@@ -1959,6 +1992,9 @@ function waitForTasks {
         sleep 0.1s
     done
     echo;
+    # Remove sensitive data from get-k8s-info files
+    removeSensitiveData $TEMPDIR/.get-k8s-info/kubectl_errors.log
+    removeSensitiveData $TEMPDIR/.get-k8s-info/taskmanager/tasks
 
     for worker in $(seq 1 $WORKERS); do
         timedOutTasks+=($(cat $TEMPDIR/.get-k8s-info/workers/worker${worker}/timedOutTasks))
@@ -2151,7 +2187,7 @@ if [[ $hasMetricsServer == 'true' ]]; then clusterobjects+=(nodemetrics); fi
 if [[ $isOpenShift == 'true' ]]; then clusterobjects+=(projects); fi
 
 echo "  - Collecting cluster wide information" | tee -a $logfile
-mkdir -p $TEMPDIR/kubernetes/clusterwide/get $TEMPDIR/kubernetes/clusterwide/describe $TEMPDIR/kubernetes/clusterwide/yaml $TEMPDIR/kubernetes/clusterwide/top
+mkdir -p $TEMPDIR/kubernetes/clusterwide/get $TEMPDIR/kubernetes/clusterwide/describe $TEMPDIR/kubernetes/clusterwide/json $TEMPDIR/kubernetes/clusterwide/yaml $TEMPDIR/kubernetes/clusterwide/top
 
 # get cluster objects
 echo "    - kubectl get" | tee -a $logfile
@@ -2171,6 +2207,12 @@ for object in ${clusterobjects[@]}; do
     echo "      - $object" | tee -a $logfile
     createTask "$KUBECTLCMD get $object -o yaml" "$TEMPDIR/kubernetes/clusterwide/yaml/$object.yaml"
 done
+# get json cluster objects
+echo "    - kubectl get -o json" | tee -a $logfile
+for object in ${clusterobjects[@]}; do
+    echo "      - $object" | tee -a $logfile
+    createTask "$KUBECTLCMD get $object -o json" "$TEMPDIR/kubernetes/clusterwide/json/$object.json"
+done
 # kubectl top nodes
 echo "    - kubectl top nodes" | tee -a $logfile
 if [[ $KUBECTLCMD == 'kubectl' ]]; then
@@ -2178,9 +2220,6 @@ if [[ $KUBECTLCMD == 'kubectl' ]]; then
 else
     createTask "$KUBECTLCMD adm top node" "$TEMPDIR/kubernetes/clusterwide/top/nodes.txt"
 fi
-
-# Collect files used by the K8S Diagram Tools
-captureDiagramToolFiles
 
 if [[ "$PERFORMANCE" = true ]]; then
     # Capturing performance information
