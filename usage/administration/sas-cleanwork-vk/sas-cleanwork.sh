@@ -188,6 +188,11 @@ if [[ -d "/saswork/tmp" ]]; then
             if [[ -z "${sid##*\*}" ]]; then
                 echo "NOTE: No contents found in /saswork/tmp/${dir}/default/."
             else
+                # Skip if the directory was created in the last 10 minutes
+                if [[ $(find "${sid}" -maxdepth 0 -type d -mmin -10) ]]; then
+                    echo "NOTE: Directory ${sid} was created less than 10 minutes ago. Skipping."
+                    continue
+                fi
                 # First, see if our directory is just a GUID by pulling the ID from the directory:
                 pid=$(echo "${sid}" | sed -E 's/^.*([0-9a-z]{8}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{12}).*/\1/')
                 # Then testing if this is same as the full directory name.
