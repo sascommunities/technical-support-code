@@ -227,14 +227,27 @@ if [[ -d "/saswork/tmp" ]]; then
                     # Run wdirclean to evaluate the WORK path and remove it if necessary.
                     wdirclean
                     # this sets "del" = "yes" if we deleted something, so we can check this and delete the log and run directories if they exist.
+                    ## Batch Server
                     # Check for Batch log files and delete them if they exist (named SASBatchScriptDebug.uid##.timestamp.podname.log)
                     if [[ "$del" = "yes" ]] && [[ "$dir" = "batch" ]] && [[ -n $(ls -A "/saswork/log/batch/default/SASBatchScriptDebug.*${sid##*_}.log" 2> /dev/null) ]]; then 
                         echo "NOTE: Found orphaned batch server log files for ${sid##*_}. Deleting."
                         rm -f "/saswork/log/batch/default/SASBatchScriptDebug.*${sid##*_}.log"; fi
-                    # Check for Batch run directories and delete them if they exist (named *{podname})
+                    # There are two possible formats for the batch server's run directories depending on how the batch server was launched:
+                    # /saswork/run/batch/default/uid{uid}/{filesetname} or /saswork/run/batch/default/uid{uid}/job.{tempName}
+                    # {tempName} is used when there is no fileset associated with the batch job, and would typically occur when using runsaslm instead of submitpgm.
+                    # {tempName} includes the pod name, so we can use this to identify the correct directory to delete.
+                    # {filesetname} does not include the pod name, which makes things more complicated.
+                    # Check for Batch run directories and delete them if they exist (named *{podname}) -- this is the tempName format.
                     if [[ "$del" = "yes" ]] && [[ "$dir" = "batch" ]] &&  [[ -n $(ls -A "/saswork/run/batch/default/*/*${sid##*_}" 2> /dev/null) ]]; then
                         echo "NOTE: Found orphaned batch server run directories for ${sid##*_}. Deleting."
                         rm -rf "/saswork/run/batch/default/*/*${sid##*_}"; fi
+                    # Check for Batch run directories in the filesetname format -- this is more complex as we don't have the pod name to match against.
+                    # The path /saswork/run/batch/default/*/*/SASBatchScriptDebug.log will have a line HOSTNAME={podname} which we can use to identify the correct directory to delete.
+                    if [[ "$del" = "yes" ]] && [[ "$dir" = "batch" ]] && ( grep -q "${sid##*_}" /saswork/run/batch/default/*/*/SASBatchScriptDebug.log 2> /dev/null ); then
+                        echo "NOTE: Found orphaned batch server run directories for ${sid##*_}. Deleting."
+                        # Use grep -l to get the list of files containing the pod name, then use dirname to get the parent directory of the log file, which is the directory we want to delete.
+                        grep -l "${sid##*_}" /saswork/run/batch/default/*/*/SASBatchScriptDebug.log 2> /dev/null | xargs -I {} dirname {} | xargs rm -rf; fi
+                    ## Connect Server
                     # Check for Connect Server run directories and delete them if they exist
                     if [[ "$del" = "yes" ]] && [[ "$dir" = "connectserver" ]] && [[ -n $(ls -A "/saswork/run/connectserver/default/*${sid##*_}*" 2> /dev/null) ]]; then 
                     echo "NOTE: Found orphaned connect server run directories for ${sid##*_}. Deleting."
@@ -247,4 +260,15 @@ if [[ -d "/saswork/tmp" ]]; then
     done
 fi
 
+# When a Batch Job is submitted with restart commands, it puts WORK into /saswork/run/batch/default/uid{uid}/{filesetname}/WORK/SAS_workXXXXXXXXXXXXX_{pod_name}
+# We need to deal with this as well.
+echo "NOTE: Checking for WORK directories under /saswork/run/batch/default."
+mapfile -t sids < <(find /saswork/run/batch/default -maxdepth 4 -type d \( -name "SAS_work*" -o -name "SAS_util*" \) -print)
+echo "NOTE: Found ${#sids[@]} WORK directories."
+
+# Run the above defined function on each folder.
+for sid in "${sids[@]}"; do
+    wdirclean
+    del="no"
+done
 rm "$launchtmp"
