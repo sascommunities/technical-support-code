@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  annotations:
+    sas.com/kustomize-base: base
+    sas.com/component-name: saswork-nodestrap
+  labels:
+    app.kubernetes.io/component: saswork-nodestrap-ds
+    app.kuberenetes.io/name: saswork-nodestrap
+    sas.com/admin: namespace
+  name: saswork-nodestrap
+spec:
+  selector:
+    matchLabels:
+      app.kuberentes.io/component: saswork-nodestrap-ds
+  template:
+    metadata:
+      annotations:
+        sas.com/kustomize-base: base
+      labels:
+        app: saswork-nodestrap
+        app.kuberentes.io/component: saswork-nodestrap-ds
+        app.kuberentes.io/name: saswork-nodestrap
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution: []
+          requiredDuringSchedulingIgnoredDuringExecution: []
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution: []
+          requiredDuringSchedulingIgnoredDuringExecution: []
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution: []
+          requiredDuringSchedulingIgnoredDuringExecution: []
+      containers:
+      - image: "google/pause"
+        name: pause
+        resources:
+          limits:
+            cpu: 50m
+            memory: 50Mi
+          requests:
+            cpu: 50m
+            memory: 50Mi
+      initContainers:
+      - name: saswork-nodestrap
+        image: sas-config-init
+        resources:
+          limits:
+            cpu: 500m
+            memory: 500Mi
+          requests:
+            cpu: 50m
+            memory: 50Mi
+        securityContext:
+          privileged: true
+          runAsUser: 0
+          runAsNonRoot: false
+        volumeMounts:
+        - name: saswork-nodestrap-script
+          mountPath: /saswork-nodestrap-script
+        - name: node-local-script-dir
+          mountPath: /node-local-script-dir
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -e
+            set -x
+            
+            cp /saswork-nodestrap-script/saswork-nodestrap.sh /node-local-script-dir/
+            
+            # On node: make script executable & run it
+            /usr/bin/nsenter -m/proc/1/ns/mnt -- chmod u+x /mnt/saswork-nodestrap.sh
+            /usr/bin/nsenter -m/proc/1/ns/mnt /mnt/saswork-nodestrap.sh
+      hostPID: true
+      imagePullSecrets: []
+      priorityClassName: system-node-critical
+      tolerations:
+      - effect: NoSchedule
+        key: workload.sas.com/class
+        operator: Equal
+        value: compute
+      - effect: NoSchedule
+        key: workload.sas.com/class
+        operator: Equal
+        value: cas
+      - effect: NoSchedule
+        key: workload.sas.com/class
+        operator: Equal
+        value: cascontroller
+      - effect: NoSchedule
+        key: workload.sas.com/class
+        operator: Equal
+        value: casworker
+      volumes:
+      - name: saswork-nodestrap-script
+        configMap:
+          name: saswork-nodestrap-script
+      - name: node-local-script-dir
+        hostPath:
+          path: /mnt
+  updateStrategy:
+    rollingUpdate:
+      maxUnavailable: 100%
+    type: RollingUpdate

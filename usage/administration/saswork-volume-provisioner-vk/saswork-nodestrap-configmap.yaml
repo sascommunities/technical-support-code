@@ -1,0 +1,7 @@
+apiVersion: builtin
+kind: ConfigMapGenerator
+metadata:
+  name: saswork-nodestrap-script
+behavior: create
+files:
+  - site-config/saswork-provisioner/saswork-nodestrap.sh

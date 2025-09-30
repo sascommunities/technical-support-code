@@ -1,0 +1,34 @@
+# # this defines the volume and volumemount for CAS DISK CACHE location
+---
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: cas-cache-hostpath
+patch: |-
+  - op: add
+    path: /spec/controllerTemplate/spec/volumes/-
+    value:
+      name: cas-cache-volume
+      persistentVolumeClaim:
+        claimName: saswork-pvc
+  - op: add
+    path: /spec/controllerTemplate/spec/containers/0/volumeMounts/-
+    value:
+      name: cas-cache-volume
+      mountPath: /cas/cache-volume
+  - op: add
+    path: /spec/controllerTemplate/spec/containers/0/env/-
+    value:
+      name: CASENV_CAS_DISK_CACHE
+      value: "/cas/cache-volume"
+target:
+  version: v1alpha1
+  group: viya.sas.com
+  kind: CASDeployment
+  # # Target filtering: chose/uncomment one of these option:
+  # #    To target only the default CAS server (cas-shared-default) :
+  labelSelector: "sas.com/cas-server-default"
+  # #    To target only a single CAS server (e.g. MyCAS) other than default:
+  # name: {{MyCAS}}
+  # #    To target all CAS Servers
+  # name: .*

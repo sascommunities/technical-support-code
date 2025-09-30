@@ -1,0 +1,32 @@
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: delete-viya-volume
+patch: |-
+  apiVersion: v1
+  kind: PodTemplate
+  metadata:
+    name: change-viya-volume-storage-class
+  template:
+    spec:
+      volumes:
+        - $patch: delete
+          name: viya
+target:
+  kind: PodTemplate
+  labelSelector: "sas.com/pod-container-image=sas-programming-environment"
+---
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: add-viya-volume
+patch: |-
+  - op: add
+    path: /template/spec/volumes/-
+    value:
+      name: viya
+      persistentVolumeClaim:
+        claimName: saswork-pvc
+target:
+  kind: PodTemplate
+  labelSelector: "sas.com/pod-container-image=sas-programming-environment"

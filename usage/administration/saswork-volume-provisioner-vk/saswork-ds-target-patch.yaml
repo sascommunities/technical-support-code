@@ -1,0 +1,18 @@
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: nodestrap-target-patch
+patch: |-
+  - op: add
+    path: /spec/template/spec/affinity/nodeAffinity/requiredDuringSchedulingIgnoredDuringExecution
+    value:
+      nodeSelectorTerms:
+        - matchExpressions:
+          - key: workload.sas.com/class
+            operator: In
+            values: 
+              - compute
+              - cas
+target:
+  name: saswork-nodestrap
+  kind: DaemonSet

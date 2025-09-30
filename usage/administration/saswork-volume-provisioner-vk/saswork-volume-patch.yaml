@@ -1,0 +1,41 @@
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: saswork-pv-target-patch
+patch: |-
+  - op: add
+    path: /spec/nodeAffinity/required/nodeSelectorTerms/-
+    value:
+      matchExpressions:
+      - key: workload.sas.com/class
+        operator: In
+        values: 
+          - compute
+          - cas
+target:
+  name: saswork-pv
+  kind: PersistentVolume
+---
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: saswork-pv-capacity-patch
+patch: |-
+  - op: add
+    path: /spec/capacity/storage
+    value: {{ VOLUME_SIZE }}
+target:
+  name: saswork-pv
+  kind: PersistentVolume
+---
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: saswork-pvc-size-patch
+patch: |-
+  - op: add
+    path: /spec/resources/requests/storage
+    value: {{ VOLUME_SIZE }}
+target:
+  name: saswork-pvc
+  kind: PersistentVolumeClaim
