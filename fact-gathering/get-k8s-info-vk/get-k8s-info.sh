@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.5.10'
+version='get-k8s-info v1.5.12'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -283,6 +283,10 @@ if [[ $UPDATE == 'true' ]]; then
                 fi
             fi
         fi
+    else
+        echo -e "\nINFO: Unable to check for the latest version of the script on GitHub. It is strongly recommended to use the most up-to-date version." | tee -a $logfile
+        echo -e "\n  Before proceeding, please verify that this ($version) is the latest available version from:" | tee -a $logfile
+        echo -e "    https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk \n" | tee -a $logfile
     fi
 else
     echo "INFO: This script will not check for updates. Please verify that you're using the latest available version from:" | tee -a $logfile
@@ -415,6 +419,7 @@ fi
 if [ -z $TFVARSFILE ]; then 
     if $KUBECTLCMD -n kube-system get cm sas-iac-buildinfo > /dev/null 2>&1; then 
         read -p " -> A viya4-iac project was used to create the infrastructure of this environment. Specify the path of the "terraform.tfvars" file that was used (leave blank if not known): " TFVARSFILE
+        echo "DEBUG: The IaC was used. User provided: $TFVARSFILE" >> $logfile
         TFVARSFILE="${TFVARSFILE/#\~/$HOME}"
     fi
 fi
@@ -440,6 +445,7 @@ if [ -z $ANSIBLEVARSFILE ]; then
     for ns in $(echo $USER_NS | tr ',' ' '); do
         if $KUBECTLCMD -n $ns get cm sas-deployment-buildinfo > /dev/null 2>&1; then 
             read -p " -> The viya4-deployment project was used to deploy the environment in the '$ns' namespace. Specify the path of the "ansible-vars.yaml" file that was used (leave blank if not known): " ANSIBLEVARSFILE
+            echo "DEBUG: The DaC was used. User provided: $ANSIBLEVARSFILE" >> $logfile
             ANSIBLEVARSFILE="${ANSIBLEVARSFILE/#\~/$HOME}"
         fi
         if [ ! -z $ANSIBLEVARSFILE ]; then 
@@ -519,6 +525,7 @@ function removeSensitiveData {
         userContent='false'
         # If file isn't empty
         if [ -s "$file" ]; then
+            # If file is part of the deployment assets
             if grep -E \.get-k8s-info.tmp\..{10}/assets/ <<< $file > /dev/null 2>&1; then
                 # If file contains Secrets
                 if [ $(grep -c '^kind: Secret$' $file) -gt 0 ]; then
@@ -537,11 +544,12 @@ function removeSensitiveData {
                     while [ $i -lt ${#secretStartLines[@]} ]
                     do
                         isSensitive='false'
+                        secretName=''
                         printf '%s\n' "---" >> $file.parsed 2>> $logfile
                         while IFS="" read -r p || [ -n "$p" ]
                         do
                             if [[ $isSensitive == 'true' ]]; then
-                                if [[ ${p::2} == '  ' ]]; then
+                                if [[ ${p::2} == '  ' && ! ${p} =~ 'SAS_LICENSE' && ${secretName} != 'sas-viya' ]]; then
                                     if [[ ${p:2:1} != ' ' ]]; then
                                         printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
                                     fi
@@ -551,6 +559,7 @@ function removeSensitiveData {
                                 fi
                             else
                                 if [ "${p}" != '---' ]; then printf '%s\n' "${p}" >> $file.parsed 2>> $logfile; fi
+                                if grep -q '^  name: ' <<< "$p"; then secretName="${p##*: }"; fi
                                 if grep -q '^data:\|^stringData:' <<< "$p"; then isSensitive='true'; fi
                             fi
                         done < <(sed -n $[ ${secretStartLines[i]} + 1 ],$[ ${secretEndLines[i]} - 1 ]p $file 2>> $logfile)
@@ -583,14 +592,14 @@ function removeSensitiveData {
                         do
                             if [[ $isSensitive == 'true' ]]; then
                                 if [[ "${p}" != '- |' ]]; then
-                                    if [[ "${p}" =~ '=' && $isCertificate == 'false' ]]; then
+                                    if [[ "${p}" =~ '=' && $isCertificate == 'false' && ! "${p}" =~ 'SAS_LICENSE' ]]; then
                                         printf '%s=%s\n' "${p%%=*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
                                         if [[ "${p}" =~ '-----BEGIN' ]]; then
                                             isCertificate='true'
                                         fi
                                     elif [[ "${p}" =~ '-----END' ]]; then
                                         isCertificate='false'
-                                    elif [[ "${p:1:1}" != ' ' ]]; then
+                                    elif [[ "${p:1:1}" != ' ' || "${p}" =~ 'SAS_LICENSE' ]]; then
                                         isSensitive='false'
                                         printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
                                     fi
@@ -707,7 +716,7 @@ function removeSensitiveData {
                     if [[ ( $userContent == 'false' ) && ( "${p}" =~ ':' || "${p}" == '---' ) ]]; then
                         isSensitive='false'
                         # Check for Certificates or HardCoded Passwords
-                        if [[ "${p}" =~ '-----BEGIN ' || $p =~ 'ssword: ' ]]; then
+                        if [[ "${p}" =~ '-----BEGIN '  || "${p}" =~ 'PASSWORD'  || "${p}" =~ 'SECRET' || $p =~ 'ssword: ' ]]; then
                             isSensitive='true'
                             printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
                         else
@@ -777,6 +786,10 @@ function environmentDetails {
     else
         platform='Bare-metal / Unknown Cloud Platform'
     fi
+    # Was the IaC used?
+    if $KUBECTLCMD -n kube-system get cm sas-iac-buildinfo > /dev/null 2>&1; then
+        platform="$platform - Infrastructure as Code (IaC)"
+    fi
     # What Region(s)?
     platformRegions=$($KUBECTLCMD get node -o jsonpath={'.items[*].metadata.labels.topology\.kubernetes\.io/region'} 2> /dev/null | tr ' ' '\n' | sort -u | tr '\n' ' ')
     # What Zone(s)?
@@ -805,6 +818,27 @@ function environmentDetails {
             deploymentMethod='DaC Github Project (SAS Deployment Operator)'
         else
             deploymentMethod='SAS Deployment Operator'
+        fi
+        if [[ -z $sasoperatorns ]]; then
+            sasoperatorns=($($KUBECTLCMD get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq))
+        fi
+        if [[ ! -z $sasoperatorns ]]; then
+            # Look for Cluster-Wide operators
+            for namespace in ${sasoperatorns[@]}; do
+                if [[ $($KUBECTLCMD -n $namespace get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].env[1].valueFrom}' 2> /dev/null) == '' ]]; then
+                    operatorMode="Cluster-Wide (namespace: $namespace)"
+                    break
+                fi
+            done
+            if [[ -z $operatorMode ]]; then
+                # Look for an operator in current namespace
+                if [[ " ${sasoperatorns[@]} " =~ " $ARGNAMESPACE " ]]; then
+                    operatorMode="Namespace"
+                fi
+            fi
+        fi
+        if [[ -z $operatorMode ]]; then
+            operatorMode='ERROR: SAS Deployment Operator Not Found!'
         fi
     else
         if [[ $deploymentMethod == 'dac' ]]; then
@@ -887,6 +921,9 @@ function environmentDetails {
         # Look for SAS Work customizations
         batchWork=$($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.batch.server/configuration_options/contents'" 2> /dev/null | grep -i '^-work ' | cut -d ' ' -f2)
         computeWork=$($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server-0 -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.compute.server/configuration_options/contents'" 2> /dev/null | grep -i '^-work ' | cut -d ' ' -f2)
+        if [[ -z $computeWork ]]; then
+            computeWork=($($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server-0 -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.compute.server/startup_commands/contents'" 2> /dev/null | grep -v '^[[:space:]]*#' | grep -i 'COMPUTESERVER_TMP_PATH=' | cut -d '=' -f2 | sed 's/[ #].*//'))
+        fi
         connectWork=$($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server-0 -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.connect.server/configuration_options/contents'" 2> /dev/null | grep -i '^-work ' | cut -d ' ' -f2)
     fi
     if [[ -z $batchWork ]]; then
@@ -896,8 +933,10 @@ function environmentDetails {
     fi
     if [[ -z $computeWork ]]; then
         computeWork='/opt/sas/viya/config/var'
-    elif [[ ${computeWork: -1} == '/' ]]; then
-        computeWork=${computeWork::-1}
+    elif [[ ${computeWork[-1]: -1} == '/' ]]; then
+        computeWork=${computeWork[-1]::-1}
+    else
+        computeWork=${computeWork[-1]}
     fi
     if [[ -z $connectWork ]]; then
         connectWork='/opt/sas/viya/config/var'
@@ -946,6 +985,9 @@ function environmentDetails {
     echo -e "----------------"
     printf "%-25s %-s\n" 'Namespace:' "$ARGNAMESPACE"
     printf "%-25s %-s\n" 'Deployment Method:' "$deploymentMethod"
+    if [[ $deploymentMethod =~ 'SAS Deployment Operator' ]]; then
+        printf "%-25s %-s\n" 'Operator Mode:' "$operatorMode"
+    fi
     printf "%-25s %-s\n" 'Version:' "$viyaVersion"
     printf "%-25s %-s\n" 'Order:' "$viyaOrder"
     printf "%-25s %-s\n" 'Site Number:' "$viyaSiteNum"
@@ -1282,15 +1324,176 @@ function nodesTimeReport {
     fi
     echo -e "\nJumpbox time: $jumpDate" >> $TEMPDIR/reports/nodes-time-report.txt
 }
+function deviceThroughputReports {
+    for node in $(ls $TEMPDIR/performance/nodes); do
+        # Collect device info using lsblk
+        declare -A sector_size
+        declare -A device_type
+        declare -A parent_device
+        declare -A size_map
+        declare -A mount_point
+
+        # Minimum widths based on headers
+        min_dev_len=6
+        min_type_len=4
+        min_parent_len=6
+        min_size_len=4
+        min_mount_len=11
+
+        max_dev_len=$min_dev_len
+        max_type_len=$min_type_len
+        max_parent_len=$min_parent_len
+        max_size_len=$min_size_len
+        max_mount_len=$min_mount_len
+
+        lsblkFile="$TEMPDIR/performance/nodes/$node/commands/lsblk.txt"
+
+        # Read the header line
+        read -r header < "$lsblkFile"
+
+        # Find character position of "PKNAME"
+        pk_pos=$(awk -v str="PKNAME" 'BEGIN{print index("'"$header"'", str)}')
+
+        # Print the header as-is
+        echo "$header" > $TEMPDIR/.get-k8s-info/processed_lsblk.txt
+
+        # Process the rest of the lines
+        tail -n +2 "$lsblkFile" | while IFS= read -r line; do
+            char="${line:$((pk_pos - 1)):1}"  # Bash uses 0-based indexing
+
+            if [[ -z "$char" || "$char" == " " ]]; then
+                # Replace the character at pk_pos with '-'
+                line="${line:0:$((pk_pos - 1))}-${line:$pk_pos}"
+            fi
+
+            echo "$line" >> $TEMPDIR/.get-k8s-info/processed_lsblk.txt
+        done
+
+        while read name type size parent size mount; do
+            sector_size["$name"]=$size
+            device_type["$name"]=$type
+            parent_device["$name"]=$parent
+            size_map["$name"]=$size
+            mount_point["$name"]=$mount
+
+            (( ${#name} > max_dev_len )) && max_dev_len=${#name}
+            (( ${#type} > max_type_len )) && max_type_len=${#type}
+            (( ${#parent} > max_parent_len )) && max_parent_len=${#parent}
+            (( ${#size} > max_size_len )) && max_size_len=${#size}
+            (( ${#mount} > max_mount_len )) && max_mount_len=${#mount}
+        done < $TEMPDIR/.get-k8s-info/processed_lsblk.txt
+
+        # Sort device names
+        sorted_devs=($(printf "%s\n" "${!sector_size[@]}" | sort))
+
+        # Build flat maps for awk
+        sector_map=""
+        type_map=""
+        parent_map=""
+        size_map_str=""
+        mount_map=""
+
+        for dev in "${sorted_devs[@]}"; do
+            sector_map+="$dev=${sector_size[$dev]} "
+            type_map+="$dev=${device_type[$dev]} "
+            parent_map+="$dev=${parent_device[$dev]} "
+            size_map_str+="$dev=${size_map[$dev]} "
+            mount_map+="$dev=${mount_point[$dev]} "
+        done
+
+        # Run awk to parse /proc/diskstats and print formatted output
+        awk -v sector_map="$sector_map" \
+            -v type_map="$type_map" \
+            -v parent_map="$parent_map" \
+            -v mount_map="$mount_map" \
+            -v size_map="$size_map_str" \
+            -v dev_width="$max_dev_len" \
+            -v type_width="$max_type_len" \
+            -v parent_width="$max_parent_len" \
+            -v size_width="$max_size_len" \
+            -v mount_width="$max_mount_len" '
+        BEGIN {
+            split(sector_map, entries, " ")
+            for (i in entries) {
+                split(entries[i], kv, "=")
+                ss[kv[1]] = kv[2]
+            }
+
+            split(type_map, entries, " ")
+            for (i in entries) {
+                split(entries[i], kv, "=")
+                dt[kv[1]] = kv[2]
+            }
+
+            split(parent_map, entries, " ")
+            for (i in entries) {
+                split(entries[i], kv, "=")
+                pd[kv[1]] = kv[2]
+            }
+
+            split(size_map, entries, " ")
+            for (i in entries) {
+                split(entries[i], kv, "=")
+                sz[kv[1]] = kv[2]
+            }
+
+            split(mount_map, entries, " ")
+            for (i in entries) {
+                split(entries[i], kv, "=")
+                mp[kv[1]] = kv[2]
+            }
+
+            fmt = "%-" dev_width "s %-" type_width "s %-" parent_width "s %-" size_width "s %-" mount_width "s %-12s %-12s\n"
+
+            printf fmt, "Device", "Type", "Parent", "Size", "Mount Point", "Read MB/s", "Write MB/s"
+
+            # Generate dynamic dashes
+            dash_dev    = sprintf("%" dev_width "s", ""); gsub(/ /, "-", dash_dev)
+            dash_type   = sprintf("%" type_width "s", ""); gsub(/ /, "-", dash_type)
+            dash_parent = sprintf("%" parent_width "s", ""); gsub(/ /, "-", dash_parent)
+            dash_size   = sprintf("%" size_width "s", ""); gsub(/ /, "-", dash_size)
+            dash_mount  = sprintf("%" mount_width "s", ""); gsub(/ /, "-", dash_mount)
+
+            printf fmt, dash_dev, dash_type, dash_parent, dash_size, dash_mount, "------------", "------------"
+        }
+        {
+            dev=$3
+            read_sectors=$6
+            read_ms=$7
+            write_sectors=$10
+            write_ms=$11
+
+            if (!(dev in ss)) next
+
+            sector_size = ss[dev]
+            type = dt[dev]
+            parent = pd[dev]
+            size = sz[dev]
+            mount = mp[dev]
+
+            read_mb = (read_sectors * sector_size) / (1024 * 1024)
+            write_mb = (write_sectors * sector_size) / (1024 * 1024)
+
+            read_throughput  = sprintf("%.2f", (read_ms > 0) ? read_mb / (read_ms / 1000) : 0)
+            write_throughput = sprintf("%.2f", (write_ms > 0) ? write_mb / (write_ms / 1000) : 0)
+
+            printf fmt, dev, type, (type == "part" ? parent : ""), size, mount, read_throughput, write_throughput
+        }' < $TEMPDIR/performance/nodes/$node/proc/diskstats > $TEMPDIR/performance/nodes/$node/throughput_report.txt
+    done
+    rm -f $TEMPDIR/.get-k8s-info/processed_lsblk.txt
+}
 function performanceTasks {
     nodes=($($KUBECTLCMD get node -o name 2>> $logfile | cut -d '/' -f2))
     nodePerformancePods=()
-    nodesPerformanceCommands=('getconf -a' 'top -bn 1 -w 512 | head -5' 'free -h' lscpu lsblk lsipc)
-    nodesPerformanceFiles=('/proc/cpuinfo' '/proc/meminfo' '/proc/diskstats' '/proc/cmdline' '/proc/interrupts' '/proc/partitions')
+    nodesPerformanceCommands=('getconf -a' 'top -bn 1 -w 512 | head -5' 'free -h' lscpu 'lsblk -l -o NAME,TYPE,LOG-SEC,PKNAME,SIZE,MOUNTPOINT' lsipc)
+    nodesPerformanceFiles=('/proc/cpuinfo' '/proc/mdstat' '/proc/meminfo' '/proc/diskstats' '/proc/cmdline' '/proc/interrupts' '/proc/partitions')
 
-    # Look for pods running on each node that have the performance command available
+    # Look for pods running on each node that have the performance commands available
     for nodeIndex in ${!nodes[@]}; do
-        for pod in $($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep " Running " | grep " ${nodes[$nodeIndex]} " | awk '{print $1"/"$2}'); do
+        # Test Viya pods first
+        availablePods=($($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep ' sas-' | grep " Running " | grep " ${nodes[$nodeIndex]} " | awk '{print $1"/"$2}'))
+        availablePods+=($($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep -v ' sas-' | grep " Running " | grep " ${nodes[$nodeIndex]} " | awk '{print $1"/"$2}'))
+        for pod in ${availablePods[@]}; do
             if $timeoutCmd 10 $KUBECTLCMD -n ${pod%%/*} exec ${pod#*/} -- type ${nodesPerformanceCommands[@]%% *} > /dev/null 2>&1; then
                 nodePerformancePods[$nodeIndex]=$pod
                 break
@@ -1385,17 +1588,24 @@ function runTask() {
     taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f1)
     taskOutput=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f2)
     echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Executing" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+    taskStart=$(date +%s)
     eval $timeoutCmd 300 ${taskCommand} > ${taskOutput} 2> $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log
     taskRc=$?
+    taskEnd=$(date +%s)
+    taskDuration=$((taskEnd - taskStart))
+    taskMinutes=$((taskDuration / 60))
+    if [[ ${#taskMinutes} -eq 1 ]]; then taskMinutes=0$taskMinutes; fi
+    taskSeconds=$((taskDuration % 60))
+    if [[ ${#taskSeconds} -eq 1 ]]; then taskSeconds=0$taskSeconds; fi
     if [[ $taskRc -eq 0 ]]; then
-        echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Finished" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+        echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Finished in $taskMinutes:$taskSeconds" >> $TEMPDIR/.get-k8s-info/workers/workers.log
     else
         if [[ $taskRc -eq 124 ]]; then
             echo "The task was terminated by get-k8s-info due to a timeout (5 minutes)" >> $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log
-            echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Finished (Timed Out)" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+            echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Finished in $taskMinutes:$taskSeconds (Timed Out)" >> $TEMPDIR/.get-k8s-info/workers/workers.log
             echo $task >> $TEMPDIR/.get-k8s-info/workers/worker${worker}/timedOutTasks
         else
-            echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Finished (With Errors)" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+            echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Finished in $taskMinutes:$taskSeconds (With Errors)" >> $TEMPDIR/.get-k8s-info/workers/workers.log
         fi
         echo -e "\nTask #$task: $taskCommand > ${taskOutput}" | cat - $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log >> $TEMPDIR/.get-k8s-info/kubectl_errors.log
     fi
@@ -1434,6 +1644,12 @@ function taskManager() {
     totalTasks=0
     endSignal=0
     workersStatus=()
+
+    quarterWay='false'
+    halfWay='false'
+    threeQuarters='false'
+
+    jumpBoxMetrics 'Start'
     
     # Initialize control files
     touch $TEMPDIR/.get-k8s-info/taskmanager/tasks
@@ -1481,6 +1697,24 @@ function taskManager() {
             fi
             assignedTasks=$[ $assignedTasks + $workerAssignedTasks ]
             completedTasks=$[ $completedTasks + $workerCompletedTasks ]
+            if [[ $threeQuarters == 'false' && $endSignal -gt 0 || $totalTasks -gt 1000 ]]; then
+                percentCompleted=$[ 100 * $completedTasks / $totalTasks ]
+                if [[ $quarterWay == 'false' && $percentCompleted -ge 25 ]]; then
+                    echo "get-k8s-info Tasks: $percentCompleted% ($completedTasks/$totalTasks)" >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
+                    jumpBoxMetrics 'Quarter-way'
+                    quarterWay='true'
+                fi
+                if [[ $halfWay == 'false' && $percentCompleted -ge 50 ]]; then
+                    echo "get-k8s-info Tasks: $percentCompleted% ($completedTasks/$totalTasks)" >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
+                    jumpBoxMetrics 'Halfway'
+                    halfWay='true'
+                fi
+                if [[ $threeQuarters == 'false' && $percentCompleted -ge 75 ]]; then
+                    echo "get-k8s-info Tasks: $percentCompleted% ($completedTasks/$totalTasks)" >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
+                    jumpBoxMetrics 'Three-quarters'
+                    threeQuarters='true'
+                fi
+            fi
             if [[ $endSignal -eq 3 ]]; then
                 if [[ -f $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid && $workerAssignedTasks -eq $workerCompletedTasks ]]; then
                     workerPid=$(cat $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid)
@@ -1494,6 +1728,7 @@ function taskManager() {
         echo $assignedTasks > $TEMPDIR/.get-k8s-info/taskmanager/assigned
         echo $completedTasks > $TEMPDIR/.get-k8s-info/taskmanager/completed
         if [[ ! ${workersStatus[@]} =~ 'running' ]]; then
+            jumpBoxMetrics 'End'
             rm -f $TEMPDIR/.get-k8s-info/taskmanager/pid
             exit 0
         fi
@@ -1520,7 +1755,7 @@ function getNamespaceData() {
         nginxobjects=(ingresses)
         openshiftobjects=(routes securitycontextconstraints)
         orchestrationobjects=(sasdeployments)
-        viyaobjects=(casdeployments dataservers distributedredisclusters opendistroclusters)
+        viyaobjects=(casdeployments dataservers distributedredisclusters opendistroclusters secrets)
 
         getobjects=(configmaps cronjobs daemonsets deployments endpoints events horizontalpodautoscalers jobs persistentvolumeclaims poddisruptionbudgets pods podtemplates replicasets rolebindings roles secrets serviceaccounts services statefulsets)
         describeobjects=(configmaps cronjobs daemonsets deployments endpoints horizontalpodautoscalers jobs persistentvolumeclaims poddisruptionbudgets pods podtemplates replicasets rolebindings roles secrets serviceaccounts services statefulsets)
@@ -1782,7 +2017,7 @@ function getNamespaceData() {
                     opendistroToken=$(echo -n $($KUBECTLCMD -n $namespace get secret sas-opendistro-sasadmin-secret -o jsonpath='{.data.username}' 2>> $logfile | base64 -d 2>> $logfile):$($KUBECTLCMD -n $namespace get secret sas-opendistro-sasadmin-secret -o jsonpath='{.data.password}' 2>> $logfile | base64 -d 2>> $logfile) | base64 2>> $logfile)
                     opendistroClientCm=($($KUBECTLCMD get cm -n $namespace -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2>> $logfile | grep ' sas-opendistro-client-config-' | sort -k1 -t ' ' -r | awk '{print $2}'))
                     if [[ ! -z $opendistroClientCm ]]; then
-                        if [[ $($KUBECTLCMD -n $namespace get cm ${opendistroClientCm[0]} -o jsonpath='{.data.OPENSEARCH_CLIENT_SSL_ENABLED}' 2>> $logfile) == 'true' ]]; then
+                        if [[ $($KUBECTLCMD -n $namespace get cm ${opendistroClientCm[0]} -o jsonpath='{.data.OPENSEARCH_CLIENT_SSL_ENABLED} {.data.ELASTICSEARCH_CLIENT_SSL_ENABLED}' 2>> $logfile) =~ 'true' ]]; then
                             opendistroProtocol='https'
                         else
                             opendistroProtocol='http'
@@ -1851,6 +2086,8 @@ function getNamespaceData() {
                     else
                         removeSensitiveData $TEMPDIR/kubernetes/$namespace/yaml/$object.yaml
                     fi
+                elif [[ $object == 'secrets' ]]; then
+                    createTask "$KUBECTLCMD -n $namespace get $($KUBECTLCMD -n $namespace get secrets -o name 2>> $logfile | grep 'sas-viya$\|sas-cas-license\|sas-license') -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
                 else
                     createTask "$KUBECTLCMD -n $namespace get $object -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
                 fi
@@ -1867,6 +2104,8 @@ function getNamespaceData() {
                     else
                         removeSensitiveData $TEMPDIR/kubernetes/$namespace/json/$object.json
                     fi
+                elif [[ $object == 'secrets' ]]; then
+                    createTask "$KUBECTLCMD -n $namespace get $($KUBECTLCMD -n $namespace get secrets -o name 2>> $logfile | grep 'sas-viya$\|sas-cas-license\|sas-license') -o json" "$TEMPDIR/kubernetes/$namespace/json/$object.json"
                 else
                     createTask "$KUBECTLCMD -n $namespace get $object -o json" "$TEMPDIR/kubernetes/$namespace/json/$object.json"
                 fi
@@ -2036,11 +2275,22 @@ function waitForTasks {
         done
     fi
 }
+function jumpBoxMetrics () {
+    # Collect key system metrics from the jumpbox VM to evaluate script performance and system load
+    echo '-------------------------------------------------------------------------------' >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
+    echo "$1 time: $(date)" >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
+    echo '-------------------------------------------------------------------------------' >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
+    top -bn 1 -w 512 | awk 'NF==0 {exit} 1' >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
+    echo -e '\n' >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
+}
 tput civis
 tput rmam
 TEMPDIR=$(mktemp -d --tmpdir=$OUTPATH -t .get-k8s-info.tmp.XXXXXXXXXX 2> /dev/null)
 mkdir -p $TEMPDIR/.get-k8s-info/workers $TEMPDIR/.get-k8s-info/taskmanager $TEMPDIR/reports $TEMPDIR/versions
 echo $BASHPID > $TEMPDIR/.get-k8s-info/pid
+
+# Jump start metrics
+echo "JumpBox Logical Processors: $(nproc)" > $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
 
 # Launch workers
 taskManager $WORKERS &
@@ -2120,11 +2370,12 @@ if [ ${#sasoperatorns[@]} -gt 0 ]; then
         echo -e "SASOPERATOR_NS: $SASOPERATOR_NS" > $TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt
         echo "  - SAS Deployment Operator and sas-orchestration image versions" | tee -a $logfile
         # Check sasoperator mode
-        if [[ $($KUBECTLCMD -n $SASOPERATOR_NS get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].env[1].valueFrom}' 2>> $logfile) == '' ]]; then 
-            echo -e "SASOPERATOR MODE: Cluster-Wide" >> $TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt
+        if [[ $($KUBECTLCMD -n $SASOPERATOR_NS get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].env[1].valueFrom}' 2>> $logfile) == '' ]]; then
+            operatorMode='Cluster-Wide'
         else
-            echo -e "SASOPERATOR MODE: Namespace" >> $TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt
+            operatorMode='Namespace'
         fi
+        echo -e "SASOPERATOR MODE: $operatorMode" >> $TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt
         createTask "$KUBECTLCMD -n $SASOPERATOR_NS get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].image}'" "$TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt"
     done
     if type docker > /dev/null 2>> $logfile; then
@@ -2181,7 +2432,7 @@ if grep monitoring.coreos.com $TEMPDIR/kubernetes/clusterwide/api-resources.txt 
 if grep orchestration.sas.com $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasOrchestrationCRD='true'; fi
 if grep metrics.k8s.io $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasMetricsServer='true'; fi
 
-clusterobjects=(clusterrolebindings clusterroles customresourcedefinitions namespaces nodes persistentvolumes storageclasses)
+clusterobjects=(clusterrolebindings clusterroles csidrivers customresourcedefinitions namespaces nodes persistentvolumes storageclasses)
 if [[ $hasCertManagerCRD == 'true' ]]; then clusterobjects+=(clusterissuers); fi
 if [[ $hasMetricsServer == 'true' ]]; then clusterobjects+=(nodemetrics); fi
 if [[ $isOpenShift == 'true' ]]; then clusterobjects+=(projects); fi
@@ -2258,6 +2509,9 @@ fi
 
 # Wait for pending tasks
 waitForTasks
+
+# Node Device Throughput Reports
+deviceThroughputReports 2>> $logfile
 
 # Generate kviya reports
 for namespace in ${namespaces[@]}; do
