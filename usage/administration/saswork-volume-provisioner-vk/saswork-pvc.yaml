@@ -6,7 +6,8 @@ metadata:
     sas.com/deployment: sas-viya
   name: saswork-pvc
 spec:
-  storageClassName: local-storage
+  storageClassName: ""
+  volume: saswork-pv
   accessModes:
     - ReadWriteMany
   resources:

@@ -39,3 +39,15 @@ patch: |-
 target:
   name: saswork-pvc
   kind: PersistentVolumeClaim
+---
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: saswork-pvc-sc-patch
+patch: |-
+  - op: add
+    path: /spec/storageClassName
+    value: local-storage
+target:
+  name: saswork-pvc
+  kind: PersistentVolumeClaim
