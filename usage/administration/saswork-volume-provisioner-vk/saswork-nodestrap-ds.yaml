@@ -35,6 +35,10 @@ spec:
       containers:
       - image: "google/pause"
         name: pause
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          readOnlyRootFilesystem: true
         resources:
           limits:
             cpu: 50m
@@ -56,6 +60,7 @@ spec:
           privileged: true
           runAsUser: 0
           runAsNonRoot: false
+          readOnlyRootFilesystem: true
         volumeMounts:
         - name: saswork-nodestrap-script
           mountPath: /saswork-nodestrap-script
