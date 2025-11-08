@@ -12,6 +12,8 @@ patch: |-
         values: 
           - compute
           - cas
+          - cascontroller
+          - casworker
 target:
   name: saswork-pv
   kind: PersistentVolume
