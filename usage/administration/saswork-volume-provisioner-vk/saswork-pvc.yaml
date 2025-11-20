@@ -7,7 +7,6 @@ metadata:
   name: saswork-pvc
 spec:
   storageClassName: ""
-  volume: saswork-pv
   accessModes:
     - ReadWriteMany
   resources:

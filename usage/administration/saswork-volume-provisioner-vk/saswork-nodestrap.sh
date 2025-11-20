@@ -224,6 +224,9 @@ function setup_storage {
     echo "UUID for device ${devices[0]} is $uuid."
     # Create the mount point, mount the device, and set permissions
     mkdir -p "$mountpath" && mount -o ${mountopts} --uuid "$uuid" "$mountpath" && chmod 777 "$mountpath"
+    # Add the mount to /etc/fstab to make it persistent
+    echo "UUID=$uuid $mountpath $filesystem ${mountopts} 0 2" >> /etc/fstab
+    echo "Mounted device ${devices[0]} to $mountpath with permissions 777."
 
     # If subpaths are provided, create them under the mount path
     if [[ -n "${subpaths:-}" ]]; then
