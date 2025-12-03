@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.5.12'
+version='get-k8s-info v1.5.13'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -795,8 +795,9 @@ function environmentDetails {
     # What Zone(s)?
     platformZones=$($KUBECTLCMD get node -o jsonpath={'.items[*].metadata.labels.topology\.kubernetes\.io/zone'} 2> /dev/null | tr ' ' '\n' | sort -u | tr '\n' ' ')
     # What Kubernetes Version?
-    serverVersion=$($KUBECTLCMD version -o yaml 2>/dev/null | grep serverVersion -A9 | grep gitVersion | cut -d ' ' -f4 | cut -d '+' -f1)
+    apiVersion=$($KUBECTLCMD version -o yaml 2>/dev/null | grep serverVersion -A9 | grep gitVersion | cut -d ' ' -f4 | cut -d '+' -f1)
     ocpVersion=$($KUBECTLCMD version -o yaml 2>/dev/null | grep openshiftVersion | cut -d ' ' -f2)
+    serverVersion=$($KUBECTLCMD get node -o jsonpath={'.items[*].status.nodeInfo.kubeletVersion'} 2> /dev/null | tr ' ' '\n' | cut -d '+' -f1 | sort -u | tr '\n' ' ')
     clientVersion=$($KUBECTLCMD version -o yaml 2>/dev/null | grep clientVersion -A9 | grep gitVersion | cut -d ' ' -f4 | cut -d '+' -f1 | cut -d '-' -f1)
 
     # Viya Details
@@ -820,7 +821,7 @@ function environmentDetails {
             deploymentMethod='SAS Deployment Operator'
         fi
         if [[ -z $sasoperatorns ]]; then
-            sasoperatorns=($($KUBECTLCMD get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq))
+            sasoperatorns=($($KUBECTLCMD get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' --all-namespaces --no-headers 2> /dev/null | awk '{print $1}' | sort | uniq))
         fi
         if [[ ! -z $sasoperatorns ]]; then
             # Look for Cluster-Wide operators
@@ -976,10 +977,11 @@ function environmentDetails {
     printf "%-25s %-s\n" 'Region(s):' "$platformRegions"
     printf "%-25s %-s\n" 'Zone(s):' "$platformZones"
     if [[ -z $ocpVersion ]]; then
-        printf "%-25s %-s\n" 'Kubernetes Server:' "$serverVersion"
+        printf "%-25s %-s\n" 'Kubernetes API:' "$apiVersion"
     else
-        printf "%-25s %-s\n" 'Kubernetes Server:' "$serverVersion (OpenShift $ocpVersion)"
+        printf "%-25s %-s\n" 'Kubernetes API:' "$apiVersion (OpenShift $ocpVersion)"
     fi
+    printf "%-25s %-s\n" 'Kubernetes Servers:' "$serverVersion"
     printf "%-25s %-s\n" 'Kubernetes Client:' "$clientVersion"
     echo -e "\nViya Environment"
     echo -e "----------------"
@@ -1645,10 +1647,6 @@ function taskManager() {
     endSignal=0
     workersStatus=()
 
-    quarterWay='false'
-    halfWay='false'
-    threeQuarters='false'
-
     jumpBoxMetrics 'Start'
     
     # Initialize control files
@@ -1697,24 +1695,6 @@ function taskManager() {
             fi
             assignedTasks=$[ $assignedTasks + $workerAssignedTasks ]
             completedTasks=$[ $completedTasks + $workerCompletedTasks ]
-            if [[ $threeQuarters == 'false' && $endSignal -gt 0 || $totalTasks -gt 1000 ]]; then
-                percentCompleted=$[ 100 * $completedTasks / $totalTasks ]
-                if [[ $quarterWay == 'false' && $percentCompleted -ge 25 ]]; then
-                    echo "get-k8s-info Tasks: $percentCompleted% ($completedTasks/$totalTasks)" >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
-                    jumpBoxMetrics 'Quarter-way'
-                    quarterWay='true'
-                fi
-                if [[ $halfWay == 'false' && $percentCompleted -ge 50 ]]; then
-                    echo "get-k8s-info Tasks: $percentCompleted% ($completedTasks/$totalTasks)" >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
-                    jumpBoxMetrics 'Halfway'
-                    halfWay='true'
-                fi
-                if [[ $threeQuarters == 'false' && $percentCompleted -ge 75 ]]; then
-                    echo "get-k8s-info Tasks: $percentCompleted% ($completedTasks/$totalTasks)" >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
-                    jumpBoxMetrics 'Three-quarters'
-                    threeQuarters='true'
-                fi
-            fi
             if [[ $endSignal -eq 3 ]]; then
                 if [[ -f $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid && $workerAssignedTasks -eq $workerCompletedTasks ]]; then
                     workerPid=$(cat $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid)
@@ -2291,6 +2271,7 @@ echo $BASHPID > $TEMPDIR/.get-k8s-info/pid
 
 # Jump start metrics
 echo "JumpBox Logical Processors: $(nproc)" > $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
+echo "get-k8s-info workers: $WORKERS" >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
 
 # Launch workers
 taskManager $WORKERS &
@@ -2498,7 +2479,7 @@ if [ $DEPLOYPATH != 'unavailable' ]; then
     echo "  - Collecting deployment assets" | tee -a $logfile
     mkdir $TEMPDIR/assets 2>> $logfile
     cd $DEPLOYPATH 2>> $logfile
-    find . -path ./sas-bases -prune -false -o \( -name "*.yaml" -o -path "*sas-risk*" -type f -name "*.env" \) 2>> $logfile | grep -vE '\./.*sas-bases.*/.*' | tar -cf $TEMPDIR/assets/assets.tar -T - 2>> $logfile
+    find . -path ./sas-bases -prune -false -o \( -name "*.yaml" -o -path "*sas-risk*" -type f -name "*.env" -o -path "*sas-aml-provisioning-job*" -type f -name "config.properties" \) 2>> $logfile | grep -vE '\./.*sas-bases.*/.*' | tar -cf $TEMPDIR/assets/assets.tar -T - 2>> $logfile
     tar xf $TEMPDIR/assets/assets.tar --directory $TEMPDIR/assets 2>> $logfile
     rm -rf $TEMPDIR/assets/assets.tar 2>> $logfile
     removeSensitiveData $(find $TEMPDIR/assets -type f)
