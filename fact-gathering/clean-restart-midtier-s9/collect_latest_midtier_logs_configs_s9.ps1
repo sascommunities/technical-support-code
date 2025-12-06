@@ -203,44 +203,39 @@ function collect_activemq_configs {
 ##Cache Locator
 function collect_gemfire_logs($getalllogs) {
 	Write-Host  "INFO: Copying Cache Locator Logs"
-	$GEMFIRE="$sasconfigdir\Web\gemfire\instances\ins_41415" #9.4M0 to M7
-	$GEODE="$sasconfigdir\Web\geode\instances\ins_41415" #9.4M8
-	
-	#determine if gemfire or geode
-	If (Test-Path -Path $GEMFIRE) {
-		Write-Host "INFO: Gemfire located. System appears to be <= 9.4M7." #debug
-		$chloctype="gemfire"
-		$chlocpath="$GEMFIRE"
+
+	# 2025-12-05 gw Need to tolerate instance IDs other than ins_41415.
+
+	# Get a list of paths that match the pattern $sasconfigdir\Web\{gemfire|geode}\instances\ins_*
+	$instancePaths = Get-ChildItem -Path "$sasconfigdir\Web" -Directory | Where-Object { $_.Name -in @("gemfire", "geode") } | ForEach-Object {
+		Get-ChildItem -Path "$($_.FullName)\instances" -Directory | Where-Object { $_.Name -like "ins_*" }
 	}
-	ElseIf (Test-Path -Path $GEODE) {
-		Write-Host "INFO: Geode located. System appears to be >= 9.4M8." #debug
-		$chloctype="geode"
-		$chlocpath="$GEODE"
+
+	# If at least one instance path is found, we will loop through each. Otherwise we will log a warning and exit the function.
+	If ($instancePaths.Count -gt 0) {
+		foreach ($instance in $instancePaths) {
+			$instanceType = $instance.Parent.Parent.Name  # gemfire or geode
+			$instanceName = $instance.Name                # ins_XXXX
+			$chlocpath = $instance.FullName               # Full path to the instance
+			Write-Host "INFO: Found $instanceType instance: $instanceName at path: $chlocpath" #debug
+			New-Item -Path "$WORKDIRFULL\" -Name "$instanceType-$instanceName" -ItemType "directory"
+			If ($getalllogs -eq 1) {
+				Get-ChildItem -Path "$chlocpath\*.log" | Copy-Item -Destination "$WORKDIRFULL\$instanceType-$instanceName"
+			}
+			Else {
+				Get-ChildItem -Path "$chlocpath\gemfire.log" | Copy-Item -Destination "$WORKDIRFULL\$instanceType-$instanceName"
+			}
+		}
 	}
 	Else {
-		Write-Host "WARN: Failed to locate either Gemfire or Geode cache locator services."
+		Write-Host "WARN: No Gemfire or Geode instances found under $sasconfigdir\Web\{gemfire|geode}\instances\ins_*."
 		Write-Host "WARN: No cache locator logs will be collected."
-		$chloctype="cachelocator"
-		$chlocpath=""
+		# Create a placeholder directory to indicate no logs were collected
+		New-Item -Path "$WORKDIRFULL\" -Name "cachelocator" -ItemType "directory"
+		New-Item "$WORKDIRFULL\cachelocator\cache-locator-no-instances-found.txt"
+		Set-Content "$WORKDIRFULL\cachelocator\cache-locator-no-instances-found.txt" "No Gemfire or Geode instances were found under $sasconfigdir\Web\{gemfire|geode}\instances\ins_*. No logs were collected for Cache Locator."
 	}
-	
-	New-Item -Path "$WORKDIRFULL\" -Name "$chloctype" -ItemType "directory"
-	
-	If ($chlocpath -eq "") {
-		#enter here if the determination above failed to locate either gemfire or geode, meaning we do not know where cache locator logs are
-		#store a basic text file in output directory so it is obvious that this failure occurred, but rest of script can still run
-		New-Item "$WORKDIRFULL\$chloctype\cache-locator-ID-type-error.txt"
-		Set-Content "$WORKDIRFULL\$chloctype\cache-locator-ID-type-error.txt" "Failed to locate standard directory under $sasconfigdir for either GEMFIRE or GEODE cache locator services. No logs were collected for Cache Locator due to this error."
-	}
-	Else {
-		#enter here if all went correctly in finding either GEMFIRE or GEODE path
-		If ($getalllogs -eq 1) {
-			Get-ChildItem -Path $chlocpath\*.log | Copy-Item -Destination "$WORKDIRFULL\$chloctype"
-		}
-		Else {
-			Get-ChildItem -Path $chlocpath\gemfire.log | Copy-Item -Destination "$WORKDIRFULL\$chloctype"
-		}
-	}
+
 }
 
 

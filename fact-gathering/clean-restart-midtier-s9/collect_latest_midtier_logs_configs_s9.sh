@@ -196,53 +196,51 @@ function collect_activemq_configs() {
 
 ###### Cache Locator###########
 function collect_gemfire_logs() {
-  # For M7 and prior releases
-  GEMFIRE="$SASCONFIGDIR/Web/gemfire/instances/ins_41415"
-  # For M8
-  GEODE="$SASCONFIGDIR/Web/geode/instances/ins_41415"
+  # 2025-12-05 gw Need to handle instances other than ins_41415.
 
-  # For M7 and prior releases
-  if [ -d $GEMFIRE ]; then
+  shopt -s nullglob
+  clpaths=( "$SASCONFIGDIR/Web/*/instances/ins_*" )
+  shopt -u nullglob
 
-    echo "INFO: Copying Cache Locator Logs "
-    mkdir $TEMPLOGSDIR/gemfire/ >>$SCRIPTLOG 2>&1
-    cp -R $SASCONFIGDIR/Web/gemfire/instances/ins_41415/gemfire.log $TEMPLOGSDIR/gemfire/ >>$SCRIPTLOG 2>&1
+  # The clpaths array will contain all the cache locator instance paths.
 
-  elif [ -d $GEODE ]; then
-
-    echo "INFO: Copying Cache Locator Logs "
-    mkdir $TEMPLOGSDIR/geode/ >>$SCRIPTLOG 2>&1
-    cp -R $SASCONFIGDIR/Web/geode/instances/ins_41415/gemfire.log $TEMPLOGSDIR/geode/ >>$SCRIPTLOG 2>&1
-
-  else
+  # Write a message if we found none.
+  if [ ${#clpaths[@]} -eq 0 ]; then
     echo "Cache Locator not found. Skipping."
+    return
   fi
 
+  # Now we can loop through them.
+  for instance_path in "${clpaths[@]}"; do
+    instance_name=$(basename "$instance_path")
+    echo "INFO: Copying Cache Locator Logs for instance $instance_name"
+    mkdir -p "$TEMPLOGSDIR/cachelocator/$instance_name/" >>$SCRIPTLOG 2>&1
+    cp -R "$instance_path/gemfire.log" "$TEMPLOGSDIR/cachelocator/$instance_name/" >>$SCRIPTLOG 2>&1
+  done
 }
 
 function collect_gemfire_logs_all() {
-  # For M7 and prior releases
-  GEMFIRE="$SASCONFIGDIR/Web/gemfire/instances/ins_41415"
-  # For M8
-  GEODE="$SASCONFIGDIR/Web/geode/instances/ins_41415"
+  # 2025-12-05 gw Need to handle instances other than ins_41415.
 
-  # For M7 and prior releases
-  if [ -d $GEMFIRE ]; then
+  shopt -s nullglob
+  clpaths=( "$SASCONFIGDIR/Web/*/instances/ins_*" )
+  shopt -u nullglob
 
-    echo "INFO: Copying Cache Locator Logs "
-    mkdir $TEMPLOGSDIR/gemfire/ >>$SCRIPTLOG 2>&1
-    cp -R $SASCONFIGDIR/Web/gemfire/instances/ins_41415/*.log $TEMPLOGSDIR/gemfire/ >>$SCRIPTLOG 2>&1
+  # The clpaths array will contain all the cache locator instance paths.
 
-  elif [ -d $GEODE ]; then
-
-    echo "INFO: Copying Cache Locator Logs "
-    mkdir $TEMPLOGSDIR/geode/ >>$SCRIPTLOG 2>&1
-    cp -R $SASCONFIGDIR/Web/geode/instances/ins_41415/*.log $TEMPLOGSDIR/geode/ >>$SCRIPTLOG 2>&1
-
-  else
+  # Write a message if we found none.
+  if [ ${#clpaths[@]} -eq 0 ]; then
     echo "Cache Locator not found. Skipping."
+    return
   fi
 
+  # Now we can loop through them.
+  for instance_path in "${clpaths[@]}"; do
+    instance_name=$(basename "$instance_path")
+    echo "INFO: Copying Cache Locator Logs for instance $instance_name"
+    mkdir -p "$TEMPLOGSDIR/cachelocator/$instance_name/" >>$SCRIPTLOG 2>&1
+    cp -R "$instance_path/"*.log "$TEMPLOGSDIR/cachelocator/$instance_name/" >>$SCRIPTLOG 2>&1
+  done
 }
 
 ###### Web Infrastructure Platform Data Server ###########

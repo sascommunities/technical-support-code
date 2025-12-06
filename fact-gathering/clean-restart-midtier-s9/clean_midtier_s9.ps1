@@ -23,30 +23,28 @@ param($c,[Parameter(Mandatory=$true)]$d)
 ### DEFINE FUNCTIONS
 ## GEMFIRE
 function clean_gemfire {
-	# For M7 and prior releases
-	$GEMFIRE="$sasconfigdir\Web\gemfire\instances\ins_41415"
-	# For M8
-	$GEODE="$sasconfigdir\Web\geode\instances\ins_41415"
-	
-	If (Test-Path -Path $GEMFIRE) {
-		Write-Host "Working on GEMFIRE $GEMFIRE - Cleaning..."
-		Get-ChildItem -Path $GEMFIRE\*.log -Recurse | Remove-Item -Force -Recurse
-		Get-ChildItem -Path $GEMFIRE\*.dat -Recurse | Remove-Item -Force -Recurse
-		Get-ChildItem -Path $GEMFIRE\*.locator -Recurse | Remove-Item -Force -Recurse
-		Get-ChildItem -Path $GEMFIRE\ConfigDiskDir_\* -Recurse | Remove-Item -Force -Recurse
-		
+	# 2025-12-05 gw Add support for multiple instance IDs.
+		$instancePaths = Get-ChildItem -Path "$sasconfigdir\Web" -Directory | Where-Object { $_.Name -in @("gemfire", "geode") } | ForEach-Object {
+		Get-ChildItem -Path "$($_.FullName)\instances" -Directory | Where-Object { $_.Name -like "ins_*" }
 	}
-	ElseIf (Test-Path -Path $GEODE) {
-		Write-Host "Working on $GEODE - Cleaning..."
-		Get-ChildItem -Path $GEODE\*.log -Recurse | Remove-Item -Force -Recurse
-		Get-ChildItem -Path $GEODE\*.dat -Recurse | Remove-Item -Force -Recurse
-		Get-ChildItem -Path $GEODE\*.locator -Recurse | Remove-Item -Force -Recurse
-		Get-ChildItem -Path $GEMFIRE\ConfigDiskDir*\* -Recurse | Remove-Item -Force -Recurse #dual wildcard new for M8... need to test
+
+	# If there is at least one instance path found, proceed to clean them
+	If ($instancePaths.Count -gt 0) {
+	foreach ($instance in $instancePaths) {
+		$instancePath = $instance.FullName
+		Write-Host "Working on instance at $instancePath - Cleaning..."
+		Get-ChildItem -Path "$instancePath\*.log" -Recurse | Remove-Item -Force -Recurse
+		Get-ChildItem -Path "$instancePath\*.dat" -Recurse | Remove-Item -Force -Recurse
+		Get-ChildItem -Path "$instancePath\*.locator" -Recurse | Remove-Item -Force -Recurse
+		Get-ChildItem -Path "$instancePath\ConfigDiskDir_*" -Recurse | Remove-Item -Force -Recurse
 	}
-	Else {
+	}	Else {
 		Write-Host "Cache locator not found. Skipping."
+		return
+
 	}
 }
+
 
 ## ACTIVEMQ
 function clean_activemq {

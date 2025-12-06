@@ -73,28 +73,20 @@ function clean_web_app_server() {
 
 ############# GEMFIRE ########################
 function clean_gemfire() {
-  # For M7 and prior releases
-  GEMFIRE="$SASCONFIGDIR/Web/gemfire/instances/ins_41415"
-  # For M8
-  GEODE="$SASCONFIGDIR/Web/geode/instances/ins_41415"
+  #2025-12-05 gw Add support for multiple instances
+  shopt -s nullglob
+  clpaths=( "$SASCONFIGDIR/Web/*/instances/ins_*" )
+  shopt -u nullglob
 
-  # For M7 and prior releases
-  if [ -d $GEMFIRE ]; then
-
-    echo "Working on GEMFIRE $GEMFIRE - Cleaning..."
-    rm -f $GEMFIRE/{*.log,*.dat,.locator} >/dev/null 2>&1
-    rm -f $GEMFIRE/ConfigDiskDir_/* >/dev/null 2>&1
-
-  elif [ -d $GEODE ]; then
-
-    echo "Working on $GEODE - Cleaning..."
-    rm -f $GEODE/{*.log,*.dat,.locator} >/dev/null 2>&1
-    rm -f $GEODE/ConfigDiskDir*/* [NOTICED DIFFERENT FOR FOR M8 – so added *] >/dev/null 2>&1
-
+  if [ ${#clpaths[@]} -gt 0 ]; then
+    for GEMDIR in "${clpaths[@]}"; do
+      echo "Working on GEMFIRE/GEODE $GEMDIR - Cleaning..."
+      rm -f $GEMDIR/{*.log,*.dat,.locator} >/dev/null 2>&1
+      rm -f $GEMDIR/ConfigDiskDir*/* >/dev/null 2>&1
+    done
   else
     echo "Cache locator not found. Skipping."
   fi
-
 }
 ############# ACTIVEMQ #######################
 function clean_activemq() {
