@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.5.13'
+version='get-k8s-info v1.6.03'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -464,7 +464,7 @@ if [ -z $ANSIBLEVARSFILE ]; then
                 echo "ERROR: File '$ANSIBLEVARSFILE' doesn't exist" | tee -a $logfile
                 cleanUp 1
             else
-                ANSIBLEVARSFILES+=("$ANSIBLEVARSFILE#$ns")
+                ANSIBLEVARSFILES+=("$ANSIBLEVARSFILE"$'\x1F'"$ns")
             fi
         fi
     done
@@ -494,7 +494,7 @@ elif [[ $ANSIBLEVARSFILE != 'unavailable' ]]; then
         else
             dacns='none'
         fi
-        ANSIBLEVARSFILES+=("$ANSIBLEVARSFILE#$dacns")
+        ANSIBLEVARSFILES+=("$ANSIBLEVARSFILE"$'\x1F'"$dacns")
     fi
 fi
 echo ANSIBLEVARSFILES: ${ANSIBLEVARSFILES[*]} >> $logfile
@@ -823,11 +823,11 @@ function environmentDetails {
         if [[ -z $sasoperatorns ]]; then
             sasoperatorns=($($KUBECTLCMD get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' --all-namespaces --no-headers 2> /dev/null | awk '{print $1}' | sort | uniq))
         fi
-        if [[ ! -z $sasoperatorns ]]; then
+        if [[ ! -z ${sasoperatorns[*]} ]]; then
             # Look for Cluster-Wide operators
-            for namespace in ${sasoperatorns[@]}; do
-                if [[ $($KUBECTLCMD -n $namespace get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].env[1].valueFrom}' 2> /dev/null) == '' ]]; then
-                    operatorMode="Cluster-Wide (namespace: $namespace)"
+            for sasoperns in ${sasoperatorns[@]}; do
+                if [[ $($KUBECTLCMD -n $sasoperns get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].env[1].valueFrom}' 2> /dev/null) == '' ]]; then
+                    operatorMode="Cluster-Wide (namespace: $sasoperns)"
                     break
                 fi
             done
@@ -849,6 +849,13 @@ function environmentDetails {
         fi
     fi
     # Ingress
+    if $KUBECTLCMD -n $ARGNAMESPACE get route sas-logon-app > /dev/null 2>&1; then
+        ingressController='HAProxy Router (OpenShift)'
+    elif $KUBECTLCMD -n $ARGNAMESPACE get ingress sas-logon-app > /dev/null 2>&1; then
+        ingressController='NGINX Ingress Controller'
+    elif $KUBECTLCMD -n $ARGNAMESPACE get httpproxy sas-logon-app > /dev/null 2>&1; then
+        ingressController='Contour HTTPProxy'
+    fi
     ingressCm=($($KUBECTLCMD get cm -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' ingress-input-' | sort -k1 -t ' ' -r | awk '{print $2}'))
     viyaIngress=$($KUBECTLCMD -n $ARGNAMESPACE get cm ${ingressCm[0]} -o jsonpath='{.data.INGRESS_HOST}' 2> /dev/null)
     if [[ ${#ingressCm[@]} -gt 1 ]]; then
@@ -1000,6 +1007,7 @@ function environmentDetails {
     printf "%-25s %-s\n" 'PostgreSQL Database:' "$viyaPostgreSQL"
     printf "%-25s %-s\n" 'TLS Mode:' "$tlsMode"
     printf "%-25s %-s\n" 'Certificate Generator:' "$viyaCertGenerator"
+    printf "%-25s %-s\n" 'Ingress Controller:' "$ingressController"
     printf "%-25s %-s\n" 'Ingress Host:' "$viyaIngress"
     printf "%-25s %-s\n" 'Ingress Certificate:' "$ingressCertificate"
     echo -e "Storage Classes in Use:"
@@ -1583,12 +1591,12 @@ function waitForCas {
     fi
 }
 function createTask() {
-    echo $1\@$2 >> $TEMPDIR/.get-k8s-info/taskmanager/tasks
+    printf "%s\x1F%s\n" "$1" "$2" >> $TEMPDIR/.get-k8s-info/taskmanager/tasks
 }
 function runTask() {
     task=$1
-    taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f1)
-    taskOutput=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f2)
+    taskLine=$(sed "$task!d" "$TEMPDIR/.get-k8s-info/taskmanager/tasks")
+    IFS=$'\x1F' read -r taskCommand taskOutput <<< "$taskLine"
     echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] [Task #$task] - Executing" >> $TEMPDIR/.get-k8s-info/workers/workers.log
     taskStart=$(date +%s)
     eval $timeoutCmd 300 ${taskCommand} > ${taskOutput} 2> $TEMPDIR/.get-k8s-info/workers/worker${worker}/syserr.log
@@ -1733,6 +1741,7 @@ function getNamespaceData() {
         metricsobjects=(podmetrics)
         monitoringobjects=(alertmanagerconfigs alertmanagers podmonitors probes prometheusagents prometheuses prometheusrules scrapeconfigs servicemonitors thanosrulers)
         nginxobjects=(ingresses)
+        contourobjects=(httpproxies)
         openshiftobjects=(routes securitycontextconstraints)
         orchestrationobjects=(sasdeployments)
         viyaobjects=(casdeployments dataservers distributedredisclusters opendistroclusters secrets)
@@ -1754,6 +1763,12 @@ function getNamespaceData() {
             yamlobjects+=(${openshiftobjects[@]})
             jsonobjects+=(${openshiftobjects[@]})
         else
+            if [[ $hasContour == 'true' ]]; then
+                getobjects+=(${contourobjects[@]})
+                describeobjects+=(${contourobjects[@]})
+                yamlobjects+=(${contourobjects[@]})
+                jsonobjects+=(${contourobjects[@]})
+            fi
             getobjects+=(${nginxobjects[@]})
             describeobjects+=(${nginxobjects[@]})
             yamlobjects+=(${nginxobjects[@]})
@@ -1817,7 +1832,7 @@ function getNamespaceData() {
                     waitForCasTimeout=$[ $(date +%s) + 120 ]
                     waitForCas $namespace $casDefaultControllerPod &
                     waitForCasPid=$!
-                    echo $waitForCasPid:$waitForCasTimeout:$namespace >> $TEMPDIR/.get-k8s-info/waitForCas
+                    printf "%s\x1F%s\x1F%s\n" "$waitForCasPid" "$waitForCasTimeout" "$namespace" >> $TEMPDIR/.get-k8s-info/waitForCas
                 fi
 
                 # performance debugtag
@@ -2067,7 +2082,8 @@ function getNamespaceData() {
                         removeSensitiveData $TEMPDIR/kubernetes/$namespace/yaml/$object.yaml
                     fi
                 elif [[ $object == 'secrets' ]]; then
-                    createTask "$KUBECTLCMD -n $namespace get $($KUBECTLCMD -n $namespace get secrets -o name 2>> $logfile | grep 'sas-viya$\|sas-cas-license\|sas-license') -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
+                    viyaLicenses=($($KUBECTLCMD -n $namespace get secrets -o name 2>> $logfile | grep 'sas-viya$\|sas-cas-license\|sas-license'))
+                    createTask "$KUBECTLCMD -n $namespace get ${viyaLicenses[*]} -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
                 else
                     createTask "$KUBECTLCMD -n $namespace get $object -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
                 fi
@@ -2085,7 +2101,8 @@ function getNamespaceData() {
                         removeSensitiveData $TEMPDIR/kubernetes/$namespace/json/$object.json
                     fi
                 elif [[ $object == 'secrets' ]]; then
-                    createTask "$KUBECTLCMD -n $namespace get $($KUBECTLCMD -n $namespace get secrets -o name 2>> $logfile | grep 'sas-viya$\|sas-cas-license\|sas-license') -o json" "$TEMPDIR/kubernetes/$namespace/json/$object.json"
+                    viyaLicenses=($($KUBECTLCMD -n $namespace get secrets -o name 2>> $logfile | grep 'sas-viya$\|sas-cas-license\|sas-license'))
+                    createTask "$KUBECTLCMD -n $namespace get ${viyaLicenses[*]} -o json" "$TEMPDIR/kubernetes/$namespace/json/$object.json"
                 else
                     createTask "$KUBECTLCMD -n $namespace get $object -o json" "$TEMPDIR/kubernetes/$namespace/json/$object.json"
                 fi
@@ -2176,7 +2193,9 @@ function waitForTasks {
                 if [[ $completedTask -ne ${workerStatus[${worker}0]} ]]; then
                     taskStart=$(date -r $TEMPDIR/.get-k8s-info/workers/worker${worker}/assignedTasks +%s)
                     workerStatus[${worker}1]=$(date -ud "@$[ $(date +%s) - $taskStart ]" +%M:%S)
-                    workerStatus[${worker}2]=$(sed "${workerStatus[${worker}0]}!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f1)
+                    workerTaskLine=$(sed "${workerStatus[${worker}0]}!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks)
+                    IFS=$'\x1F' read -r workerTaskCommand workerTaskOutput <<< $workerTaskLine
+                    workerStatus[${worker}2]="$workerTaskCommand"
                     if [[ ${#workerStatus[${worker}2]} -gt 100 ]]; then
                         workerStatus[${worker}2]="${workerStatus[${worker}2]::100} ..."
                     fi
@@ -2212,8 +2231,8 @@ function waitForTasks {
     done
     echo;
     # Remove sensitive data from get-k8s-info files
-    removeSensitiveData $TEMPDIR/.get-k8s-info/kubectl_errors.log
-    removeSensitiveData $TEMPDIR/.get-k8s-info/taskmanager/tasks
+    removeSensitiveData $TEMPDIR/.get-k8s-info/kubectl_errors.log > /dev/null
+    removeSensitiveData $TEMPDIR/.get-k8s-info/taskmanager/tasks > /dev/null
 
     for worker in $(seq 1 $WORKERS); do
         timedOutTasks+=($(cat $TEMPDIR/.get-k8s-info/workers/worker${worker}/timedOutTasks))
@@ -2225,7 +2244,8 @@ function waitForTasks {
         printf "\n%5s    %s\n" Task Command | tee -a $logfile
         echo $seperator | tee -a $logfile
         for task in ${timedOutTasks[@]}; do
-            taskCommand=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks | cut -d '@' -f1)
+            timedOutTaskLine=$(sed "$task!d" $TEMPDIR/.get-k8s-info/taskmanager/tasks)
+            IFS=$'\x1F' read -r taskCommand taskOutput <<< $timedOutTaskLine
             if [[ ${#taskCommand} -gt 100 ]]; then
                 taskCommand="${taskCommand::100} ..."
             fi
@@ -2234,10 +2254,7 @@ function waitForTasks {
     fi
 
     if [[ -f $TEMPDIR/.get-k8s-info/waitForCas ]]; then
-        for line in $(cat $TEMPDIR/.get-k8s-info/waitForCas); do
-            waitForCasPid=$(cut -d ':' -f1 <<< $line)
-            waitForCasTimeout=$(cut -d ':' -f2 <<< $line)
-            waitForCasNamespace=$(cut -d ':' -f3 <<< $line)
+        while IFS=$'\x1F' read -r waitForCasPid waitForCasTimeout waitForCasNamespace; do
             currentTime=$[ $(date +%s) - 30 ]
             if [[ $currentTime -lt $waitForCasTimeout ]]; then
                 echo -e "\nINFO: Waiting $[ $waitForCasTimeout - $currentTime ] seconds for background processes from namespace $waitForCasNamespace to finish"
@@ -2252,7 +2269,7 @@ function waitForTasks {
             fi
             kill $waitForCasPid > /dev/null 2>&1
             wait $waitForCasPid 2> /dev/null
-        done
+        done < "$TEMPDIR/.get-k8s-info/waitForCas"
     fi
 }
 function jumpBoxMetrics () {
@@ -2270,7 +2287,7 @@ mkdir -p $TEMPDIR/.get-k8s-info/workers $TEMPDIR/.get-k8s-info/taskmanager $TEMP
 echo $BASHPID > $TEMPDIR/.get-k8s-info/pid
 
 # Jump start metrics
-echo "JumpBox Logical Processors: $(nproc)" > $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
+echo "JumpBox Logical Processors: $(getconf _NPROCESSORS_ONLN 2>> $logfile)" > $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
 echo "get-k8s-info workers: $WORKERS" >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
 
 # Launch workers
@@ -2294,9 +2311,20 @@ if [ ${#ingressns[@]} -gt 0 ]; then
         createTask "$KUBECTLCMD -n $INGRESS_NS get deploy -l 'app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller' -o jsonpath='{.items[0].spec.template.spec.containers[].image}'" "$TEMPDIR/versions/${INGRESS_NS}_ingress-controller-version.txt"
     done
     namespaces+=(${ingressns[@]})
-else
-    echo "WARNING: An Ingress Controller instance wasn't found in the current kubernetes cluster." | tee -a $logfile
-    echo "WARNING: The script will continue without collecting nginx information." | tee -a $logfile
+fi
+# Look for contour namespaces
+echo 'DEBUG: Looking for Contour namespaces' >> $logfile
+contourns=($($KUBECTLCMD get deploy -l 'app.kubernetes.io/name=contour' --all-namespaces --no-headers 2>> $logfile | awk '{print $1}' | sort | uniq ))
+if [ ${#contourns[@]} -gt 0 ]; then
+    if [ ${#contourns[@]} -gt 1 ]; then
+        echo "WARNING: Multiple Contour instances were found in the current kubernetes cluster." | tee -a $logfile
+    fi
+    for CONTOUR_NS in ${contourns[@]}; do
+        echo CONTOUR_NS: $CONTOUR_NS >> $logfile
+        echo "  - Contour version" | tee -a $logfile
+        createTask "$KUBECTLCMD -n $CONTOUR_NS get deploy -l 'app.kubernetes.io/name=contour' -o jsonpath='{.items[0].spec.template.spec.containers[].image}'" "$TEMPDIR/versions/${CONTOUR_NS}_contour-version.txt"
+    done
+    namespaces+=(${contourns[@]})
 fi
 # Look for cert-manager namespaces
 echo 'DEBUG: Looking for cert-manager namespaces' >> $logfile
@@ -2348,7 +2376,7 @@ sasoperatorns=($($KUBECTLCMD get deploy -l 'app.kubernetes.io/name=sas-deploymen
 if [ ${#sasoperatorns[@]} -gt 0 ]; then
     namespaces+=(${sasoperatorns[@]})
     for SASOPERATOR_NS in ${sasoperatorns[@]}; do
-        echo -e "SASOPERATOR_NS: $SASOPERATOR_NS" > $TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt
+        echo -e "SASOPERATOR_NS: $SASOPERATOR_NS" >> $logfile
         echo "  - SAS Deployment Operator and sas-orchestration image versions" | tee -a $logfile
         # Check sasoperator mode
         if [[ $($KUBECTLCMD -n $SASOPERATOR_NS get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].env[1].valueFrom}' 2>> $logfile) == '' ]]; then
@@ -2356,7 +2384,7 @@ if [ ${#sasoperatorns[@]} -gt 0 ]; then
         else
             operatorMode='Namespace'
         fi
-        echo -e "SASOPERATOR MODE: $operatorMode" >> $TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt
+        echo -e "SASOPERATOR MODE: $operatorMode" >> $logfile
         createTask "$KUBECTLCMD -n $SASOPERATOR_NS get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].image}'" "$TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt"
     done
     if type docker > /dev/null 2>> $logfile; then
@@ -2390,8 +2418,9 @@ if [[ ! -z $ANSIBLEVARSFILES ]]; then
     mkdir -p $TEMPDIR/iac-dac-files
     echo "  - Collecting dac information" | tee -a $logfile
     for file in ${ANSIBLEVARSFILES[@]}; do
-        cp ${file%%#*} $TEMPDIR/iac-dac-files/${file#*#}-ansible-vars.yaml
-        removeSensitiveData $TEMPDIR/iac-dac-files/${file#*#}-ansible-vars.yaml
+        IFS=$'\x1F' read -r ansibleVarsFile dacns <<< "$file"
+        cp "$ansibleVarsFile" "$TEMPDIR/iac-dac-files/${dacns}-ansible-vars.yaml"
+        removeSensitiveData "$TEMPDIR/iac-dac-files/${dacns}-ansible-vars.yaml"
     done
 fi
 
@@ -2401,6 +2430,7 @@ hasEspCRD='false'
 hasMonitoringCRD='false'
 hasOrchestrationCRD='false'
 hasMetricsServer='false'
+hasContour='false'
 
 mkdir -p $TEMPDIR/kubernetes/clusterwide
 mv $k8sApiResources $TEMPDIR/kubernetes/clusterwide/api-resources.txt
@@ -2412,6 +2442,7 @@ if grep iot.sas.com $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/nul
 if grep monitoring.coreos.com $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasMonitoringCRD='true'; fi
 if grep orchestration.sas.com $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasOrchestrationCRD='true'; fi
 if grep metrics.k8s.io $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasMetricsServer='true'; fi
+if grep projectcontour.io $TEMPDIR/kubernetes/clusterwide/api-resources.txt > /dev/null 2>&1; then hasContour='true'; fi
 
 clusterobjects=(clusterrolebindings clusterroles csidrivers customresourcedefinitions namespaces nodes persistentvolumes storageclasses)
 if [[ $hasCertManagerCRD == 'true' ]]; then clusterobjects+=(clusterissuers); fi
@@ -2479,7 +2510,7 @@ if [ $DEPLOYPATH != 'unavailable' ]; then
     echo "  - Collecting deployment assets" | tee -a $logfile
     mkdir $TEMPDIR/assets 2>> $logfile
     cd $DEPLOYPATH 2>> $logfile
-    find . -path ./sas-bases -prune -false -o \( -name "*.yaml" -o -path "*sas-risk*" -type f -name "*.env" -o -path "*sas-aml-provisioning-job*" -type f -name "config.properties" \) 2>> $logfile | grep -vE '\./.*sas-bases.*/.*' | tar -cf $TEMPDIR/assets/assets.tar -T - 2>> $logfile
+    find . \( -path "./.get-k8s-info.tmp.*" -o -path "*sas-bases*" \) -prune -false -o \( -name "*.yaml" -o \( -path "*sas-risk*" -type f -name "*.env" \) -o \( -path "*sas-aml-provisioning-job*" -type f -name "config.properties" \) \) 2>> $logfile | tar -cf $TEMPDIR/assets/assets.tar -T - 2>> $logfile    
     tar xf $TEMPDIR/assets/assets.tar --directory $TEMPDIR/assets 2>> $logfile
     rm -rf $TEMPDIR/assets/assets.tar 2>> $logfile
     removeSensitiveData $(find $TEMPDIR/assets -type f)
