@@ -93,7 +93,12 @@ function wdirclean {
         # Because of this, we need to extract the characters that will match, and search for processes that match 
         # that prefix.
 
-        prefix=$( echo "${podname}" | sed -E 's/.*([a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{6}).*/\1/')
+        prefix=$( echo "${podname}" | sed -E 's/.*([a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}).*/\1/')
+        # If the prefix doesn't match the regular expression we should stop and not attempt to query the launcher service with it, as this could lead to unintended consequences.
+        if ! [[ "$prefix" =~ ^[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$ ]]; then
+            echo "WARN: Extracted prefix ${prefix} does not match expected format. Skipping query to launcher service for this directory."
+            return
+        fi
         echo "NOTE: Extracted launcher process ID prefix ${prefix} from pod name."
 
         # Now that we have the prefix of the launcher process ID, we need to call the launcher service to see if
