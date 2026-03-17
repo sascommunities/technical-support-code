@@ -606,7 +606,7 @@
             a.threadid as thread,
             a.file as file
         from
-            import_open as a,
+            (select * from import_open where status="ACCEPTED" and find(msg,'New out call client connection')=0) as a,
             import_jobs as b,
             import_redirwkspc as c
         where
@@ -629,7 +629,7 @@
             a.threadid as thread,
             a.file as file
         from
-            import_open as a,
+            (select * from import_open where status="ACCEPTED" and find(msg,'New out call client connection')=0) as a,
             import_redirwkspc as b
         where
             a.threadid = b.threadid and
