@@ -199,7 +199,7 @@ function collect_gemfire_logs() {
   # 2025-12-05 gw Need to handle instances other than ins_41415.
 
   shopt -s nullglob
-  clpaths=( "$SASCONFIGDIR/Web/*/instances/ins_*" )
+  clpaths=( "$SASCONFIGDIR"/Web/*/instances/ins_* )
   shopt -u nullglob
 
   # The clpaths array will contain all the cache locator instance paths.
@@ -223,7 +223,7 @@ function collect_gemfire_logs_all() {
   # 2025-12-05 gw Need to handle instances other than ins_41415.
 
   shopt -s nullglob
-  clpaths=( "$SASCONFIGDIR/Web/*/instances/ins_*" )
+  clpaths=( "$SASCONFIGDIR"/Web/*/instances/ins_* )
   shopt -u nullglob
 
   # The clpaths array will contain all the cache locator instance paths.
