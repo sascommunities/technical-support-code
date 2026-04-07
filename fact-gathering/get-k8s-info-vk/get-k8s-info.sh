@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.6.03'
+version='get-k8s-info v1.6.04'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -1158,12 +1158,13 @@ function podMon {
         PENDING=$(grep -c "Pending" $TEMPDIR/.kviya/work/notready.out)
         CONSUL=$(grep -c "sas-consul" $TEMPDIR/.kviya/work/notready.out)
         POSTGRES=$(grep -c "sas-crunchy\|sas-data-server-operator" $TEMPDIR/.kviya/work/notready.out)
-        RABBIT=$(grep -c "sas-rabbitmq" $TEMPDIR/.kviya/work/notready.out)
+        RABBIT=$(grep -c "sas-rabbitmq\|sas-arke" $TEMPDIR/.kviya/work/notready.out)
         CACHE=$(grep -c "sas-cache\|sas-redis" $TEMPDIR/.kviya/work/notready.out)
         CAS=$(grep -c "sas-cas-" $TEMPDIR/.kviya/work/notready.out)
         LOGON=$(grep -c "sas-logon-app" $TEMPDIR/.kviya/work/notready.out)
         CONFIG=$(grep -c "sas-configuration" $TEMPDIR/.kviya/work/notready.out)
-        OTHER=$[ $NOTREADY-$PENDING-$CONSUL-$POSTGRES-$RABBIT-$CACHE-$CAS-$LOGON-$CONFIG ]
+        AUTH=$(grep -c "sas-authorization" $TEMPDIR/.kviya/work/notready.out)
+        OTHER=$[ $NOTREADY-$PENDING-$CONSUL-$POSTGRES-$RABBIT-$CACHE-$CAS-$LOGON-$CONFIG-$AUTH ]
 
         head -1 $TEMPDIR/.kviya/work/getpod.out | sed 's/NOMINATED NODE//' | sed 's/READINESS GATES//' >> $TEMPDIR/.kviya/work/podMon.out
         if [ "$ARGPODEVENTS" == 'true' ]; then 
@@ -1196,7 +1197,7 @@ function podMon {
             fi
             if [ $RABBIT -gt 0 ]; then
                 echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
-                for pod in $(grep "sas-rabbitmq" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" | awk '{print $1}'); do printPods; done
+                for pod in $(grep "sas-rabbitmq\|sas-arke" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" | awk '{print $1}'); do printPods; done
             fi
             if [ $CACHE -gt 0 ]; then
                 echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
@@ -1214,9 +1215,13 @@ function podMon {
                 echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
                 for pod in $(grep "sas-configuration" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" | awk '{print $1}'); do printPods; done
             fi
+            if [ $AUTH -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                for pod in $(grep "sas-authorization" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" | awk '{print $1}'); do printPods; done
+            fi
             if [ $OTHER -gt 0 ] || [ $ARGREADYPODS == 'true' ] || [ ! -z "${ARGPODGREP}" ]; then
                 echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
-                for pod in $(grep -v "Pending\|sas-consul\|sas-crunchy\|sas-data-server-operator\|sas-rabbitmq\|sas-cache\|sas-redis\|sas-cas-\|sas-logon-app\|sas-configuration" $TEMPDIR/.kviya/work/notready.out | awk '{print $1}'); do printPods; done
+                for pod in $(grep -v "Pending\|sas-consul\|sas-crunchy\|sas-data-server-operator\|sas-rabbitmq\|sas-cache\|sas-redis\|sas-cas-\|sas-logon-app\|sas-configuration\|sas-authorization\|sas-arke" $TEMPDIR/.kviya/work/notready.out | awk '{print $1}'); do printPods; done
             fi
         else
             if [ $PENDING -gt 0 ]; then
@@ -1233,7 +1238,7 @@ function podMon {
             fi
             if [ $RABBIT -gt 0 ]; then
                 echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
-                grep "sas-rabbitmq" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
+                grep "sas-rabbitmq\|sas-arke" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
             fi
             if [ $CACHE -gt 0 ]; then
                 echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
@@ -1251,9 +1256,13 @@ function podMon {
                 echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
                 grep "sas-configuration" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
             fi
+            if [ $AUTH -gt 0 ]; then
+                echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
+                grep "sas-authorization" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
+            fi
             if [ $OTHER -gt 0 ] || [ $ARGREADYPODS == 'true' ] || [ ! -z "${ARGPODGREP}" ]; then
                 echo -e "" >> $TEMPDIR/.kviya/work/podMon.out
-                grep -v "Pending\|sas-consul\|sas-crunchy\|sas-data-server-operator\|sas-rabbitmq\|sas-cache\|sas-redis\|sas-cas-\|sas-logon-app\|sas-configuration" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
+                grep -v "Pending\|sas-consul\|sas-crunchy\|sas-data-server-operator\|sas-rabbitmq\|sas-cache\|sas-redis\|sas-cas-\|sas-logon-app\|sas-configuration\|sas-authorization\|sas-arke" $TEMPDIR/.kviya/work/notready.out | grep -v "Pending" >> $TEMPDIR/.kviya/work/podMon.out
             fi
         fi
     fi
@@ -1991,10 +2000,10 @@ function getNamespaceData() {
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl cluster_status'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_cluster-status.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl environment'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_environment.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_connections pid name port host peer_port peer_host ssl ssl_protocol ssl_key_exchange ssl_cipher ssl_hash peer_cert_subject peer_cert_issuer peer_cert_validity state channels protocol auth_mechanism user vhost timeout frame_max channel_max client_properties recv_oct recv_cnt send_oct send_cnt send_pend connected_at'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list_connections.txt"
-                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_channels pid connection name number user vhost transactional confirm consumer_count messages_unacknowledged messages_uncommitted acks_uncommitted messages_unconfirmed prefetch_count global_prefetch_count'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list_channels.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_channels pid connection name number user vhost transactional confirm consumer_count messages_unacknowledged messages_uncommitted acks_uncommitted messages_unconfirmed prefetch_count'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list_channels.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmq-diagnostics command_line_arguments'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmq-diagnostics_command-line-arguments.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmq-diagnostics os_env'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmq-diagnostics_os-env.txt"
-                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_queues name durable auto_delete arguments policy operator_policy effective_policy_definition pid owner_pid exclusive exclusive_consumer_pid exclusive_consumer_tag messages_ready messages_unacknowledged messages messages_ready_ram messages_unacknowledged_ram messages_ram messages_persistent message_bytes message_bytes_ready message_bytes_unacknowledged message_bytes_ram message_bytes_persistent head_message_timestamp disk_reads disk_writes consumers consumer_utilisation consumer_capacity memory slave_pids synchronised_slave_pids state type leader members online slave_pids synchronised_slave_pids'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-queues.txt"
+                        createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_queues name durable auto_delete arguments policy operator_policy effective_policy_definition pid owner_pid exclusive exclusive_consumer_pid exclusive_consumer_tag messages_ready messages_unacknowledged messages messages_ready_ram messages_unacknowledged_ram messages_ram messages_persistent message_bytes message_bytes_ready message_bytes_unacknowledged message_bytes_ram message_bytes_persistent head_message_timestamp disk_reads disk_writes consumers consumer_utilisation consumer_capacity memory state type leader members online'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-queues.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_queues messages_ready consumers name | grep -v ^0 | (sed -u 3q; sort -r -n -k 1)'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-queues-nonempty.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_exchanges name type durable auto_delete internal arguments policy'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-exchanges.txt"
                         createTask "$KUBECTLCMD -n $namespace exec $rabbitmqPod -c sas-rabbitmq-server -- bash -c 'source /rabbitmq/data/.bashrc;/opt/sas/viya/home/lib/rabbitmq-server/sbin/rabbitmqctl list_bindings'" "$TEMPDIR/kubernetes/$namespace/exec/$rabbitmqPod/sas-rabbitmq-server_rabbitmqctl_list-bindings.txt"
