@@ -1,0 +1,2727 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Viya · GenAI Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=Reddit+Mono:wght@300;400;500;600;700&family=Reddit+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  /* Light theme is default (:root) */
+  :root,[data-theme="light"] {
+    --bg:#f0f4fa; --bg2:#ffffff; --bg3:#e8edf7;
+    --border:#d0d8e8; --border2:#b8c4d8;
+    --text:#1a2540; --text-dim:#7a8aaa; --text-mid:#3a4a68;
+    --accent:#2563eb; --accent2:#0891b2;
+    --green:#059669; --yellow:#b45309; --red:#dc2626; --purple:#6d28d9;
+    --mono:'Reddit Mono',monospace; --sans:'Reddit Sans',sans-serif;
+    --header-bg:rgba(240,244,250,.96);
+    --grid-color:rgba(37,99,235,.04);
+    --shadow:0 2px 12px rgba(0,0,0,.1);
+    --code-color:#1e40af;
+    --invert-icon:invert(1) hue-rotate(180deg);
+    --card-bg:#ffffff;
+  }
+  [data-theme="dark"] {
+    --bg:#0a0c10; --bg2:#0f1219; --bg3:#151a24;
+    --border:#1e2636; --border2:#2a3650;
+    --text:#c8d4e8; --text-dim:#4a5a78; --text-mid:#7a90b8;
+    --accent:#3b82f6; --accent2:#06b6d4;
+    --green:#10b981; --yellow:#f59e0b; --red:#ef4444; --purple:#a78bfa;
+    --header-bg:rgba(10,12,16,.92);
+    --grid-color:rgba(59,130,246,.03);
+    --shadow:0 2px 12px rgba(0,0,0,.4);
+    --code-color:#93c5fd;
+    --invert-icon:invert(0);
+    --card-bg:#0f1219;
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html{transition:background-color .25s,color .2s}
+  body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13px;line-height:1.6;min-height:100vh;overflow-x:hidden}
+  body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(var(--grid-color) 1px,transparent 1px),linear-gradient(90deg,var(--grid-color) 1px,transparent 1px);background-size:32px 32px;pointer-events:none;z-index:0}
+
+  header{position:sticky;top:0;z-index:100;background:var(--header-bg);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:0 28px;display:flex;align-items:center;justify-content:space-between;height:56px;box-shadow:0 2px 0 var(--bg)}
+  .logo{font-family:var(--sans);font-weight:800;font-size:17px;letter-spacing:-.5px;color:var(--text);display:flex;align-items:center;gap:10px}
+  .logo-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent);animation:blink 2s infinite}
+  @keyframes blink{0%,100%{opacity:1;box-shadow:0 0 10px var(--accent)}50%{opacity:.4;box-shadow:0 0 3px var(--accent)}}
+  .header-right{display:flex;align-items:center;gap:12px}
+
+  .toolbar{position:sticky;top:56px;z-index:90;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 28px;border-bottom:1px solid var(--border);background:var(--bg2);box-shadow:0 4px 0 var(--bg2)}
+
+  .seg{display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden}
+  .seg-btn{background:transparent;border:none;color:var(--text-mid);font-family:var(--mono);font-size:12px;padding:6px 14px;cursor:pointer;transition:all .15s;border-right:1px solid var(--border2);white-space:nowrap}
+  .seg-btn:last-child{border-right:none}
+  .seg-btn:hover{background:var(--bg3);color:var(--text)}
+  .seg-btn.active{background:var(--accent);color:#fff}
+
+  .input-group{display:flex;align-items:center;gap:6px}
+  .input-group label{color:var(--text-dim);font-size:11px;white-space:nowrap}
+  input[type=text],input[type=number],input[type=password]{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;padding:6px 10px;outline:none;transition:border-color .15s}
+  input:focus{border-color:var(--accent)}
+  input[type=number]{width:64px}
+
+  .btn{background:var(--accent);border:none;border-radius:6px;color:#fff;font-family:var(--mono);font-size:12px;font-weight:600;padding:7px 16px;cursor:pointer;transition:all .15s;white-space:nowrap}
+  .btn:hover{background:#2563eb}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--text-mid)}
+  .btn-ghost:hover{background:var(--bg3);border-color:var(--text-mid);color:var(--text)}
+
+  .statusbar{position:sticky;top:calc(56px + var(--toolbar-h, 52px));z-index:89;display:flex;align-items:center;gap:20px;padding:8px 28px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:11px;color:var(--text-dim);flex-wrap:wrap;box-shadow:0 4px 0 var(--bg2)}
+  .status-item{display:flex;align-items:center;gap:6px}
+  .status-dot{width:6px;height:6px;border-radius:50%;background:var(--text-dim)}
+  .status-dot.green{background:var(--green);box-shadow:0 0 6px var(--green);animation:blink 2s infinite}
+  .status-dot.yellow{background:var(--yellow)}
+  .status-dot.red{background:var(--red)}
+
+  .badge{display:inline-flex;align-items:center;gap:4px;background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:1px 7px;font-size:11px;color:var(--text-mid)}
+  .badge.green-badge{border-color:var(--green);color:var(--green)}
+  .badge.blue-badge{border-color:var(--accent);color:#60a5fa}
+
+  main{position:relative;z-index:1;padding:24px 28px;display:flex;flex-direction:column;gap:14px}
+  .empty{text-align:center;padding:80px 20px;color:var(--text-dim)}
+  .empty-icon{font-size:48px;margin-bottom:12px}
+  .empty h3{font-family:var(--sans);font-size:18px;color:var(--text-mid);margin-bottom:8px}
+
+  .chat-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .2s;animation:slideIn .25s ease both}
+  @keyframes slideIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+  .chat-card:hover{border-color:var(--border2)}
+  .chat-card.is-active{border-color:rgba(16,185,129,.35)}
+
+  .chat-header{display:flex;align-items:flex-start;justify-content:space-between;padding:14px 18px 12px;border-bottom:1px solid var(--border);cursor:pointer;user-select:none;gap:12px}
+  .chat-header:hover{background:var(--bg3)}
+  .chat-meta{flex:1;min-width:0}
+  .chat-id{font-size:10px;color:var(--text-dim);letter-spacing:.5px;margin-bottom:3px}
+  .chat-title{font-family:var(--sans);font-size:14px;font-weight:600;color:var(--text)}
+  .chat-sub{font-size:11px;color:var(--text-dim);margin-top:3px;display:flex;gap:12px;flex-wrap:wrap}
+  .chat-badges{display:flex;gap:6px;align-items:center;flex-shrink:0}
+  .tag{display:inline-flex;align-items:center;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600;letter-spacing:.5px;border:1px solid}
+  .tag-green{background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.3);color:var(--green)}
+  .tag-blue{background:rgba(59,130,246,.1);border-color:rgba(59,130,246,.3);color:#60a5fa}
+  .tag-purple{background:rgba(167,139,250,.1);border-color:rgba(167,139,250,.3);color:var(--purple)}
+  .tag-dim{background:rgba(74,90,120,.1);border-color:rgba(74,90,120,.3);color:var(--text-dim)}
+  .tag-yellow{background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.3);color:var(--yellow)}
+  .chevron{color:var(--text-dim);font-size:14px;transition:transform .2s;flex-shrink:0;padding-top:2px}
+  .chat-card.collapsed .chevron{transform:rotate(-90deg)}
+  .messages-wrap{overflow:hidden;transition:max-height .3s ease}
+  .chat-card.collapsed .messages-wrap{max-height:0!important}
+
+  .message{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;gap:14px}
+  .message:last-child{border-bottom:none}
+  .message.user{background:rgba(59,130,246,.03)}
+  .message.copilot{background:rgba(6,182,212,.03)}
+  .msg-avatar{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;border:1px solid}
+  .user .msg-avatar{background:rgba(59,130,246,.15);border-color:rgba(59,130,246,.3)}
+  .copilot .msg-avatar{background:rgba(6,182,212,.15);border-color:rgba(6,182,212,.3)}
+  .msg-body{flex:1;min-width:0}
+  .msg-meta{display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap}
+  .msg-role{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase}
+  .user .msg-role{color:#60a5fa}
+  .copilot .msg-role{color:var(--accent2)}
+  .msg-ts{font-size:10px;color:var(--text-dim)}
+  .msg-id-badge{font-size:10px;color:var(--text-dim);background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:0 5px}
+  /* ── Markdown (Obsidian-style via marked.js) ── */
+  .msg-content{color:var(--text);line-height:1.75;word-break:break-word;font-size:12.5px}
+  .msg-content.is-empty{color:var(--text-dim);font-style:italic}
+  /* paragraphs */
+  .msg-content p{margin:0 0 6px}
+  /* headings */
+  .msg-content .md-h1{display:block;font-family:var(--sans);font-size:17px;font-weight:800;color:var(--text);margin:14px 0 6px;border-bottom:1px solid var(--border);padding-bottom:4px}
+  .msg-content .md-h2{display:block;font-family:var(--sans);font-size:14px;font-weight:700;color:var(--text);margin:12px 0 4px}
+  .msg-content .md-h3{display:block;font-family:var(--sans);font-size:13px;font-weight:600;color:var(--text-mid);margin:10px 0 3px}
+  /* inline */
+  .msg-content .md-bold{font-weight:700;color:var(--text)}
+  .msg-content .md-em{font-style:italic;color:var(--text-mid)}
+  .msg-content .md-code{background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:1px 6px;font-family:var(--mono);font-size:11.5px;color:var(--code-color)}
+  .msg-content .md-link{color:var(--accent);text-decoration:none}
+  .msg-content .md-link:hover{text-decoration:underline}
+  /* fenced code block */
+  .msg-content .md-code-block{background:var(--bg);border:1px solid var(--border2);border-radius:6px;margin:8px 0;overflow:hidden}
+  .msg-content .md-code-lang{display:flex;align-items:center;justify-content:space-between;background:var(--bg3);border-bottom:1px solid var(--border2);padding:5px 12px;font-size:10px;font-weight:600;color:var(--accent2);letter-spacing:.8px;text-transform:uppercase}
+  .msg-content .md-code-block pre{margin:0;padding:13px 14px;overflow-x:auto}
+  .msg-content .md-code-block pre code{font-family:var(--mono);font-size:12px;color:var(--code-color);line-height:1.65;white-space:pre;background:none;border:none;padding:0;border-radius:0}
+  .md-copy-btn{background:none;border:1px solid var(--border2);border-radius:4px;color:var(--text-dim);cursor:pointer;font-family:var(--mono);font-size:10px;padding:2px 8px;transition:all .15s;flex-shrink:0}
+  .md-copy-btn:hover{background:var(--accent);border-color:var(--accent);color:#fff}
+  /* lists — proper block layout like Obsidian */
+  .msg-content ul,.msg-content ol{margin:4px 0 10px;padding-left:0;list-style:none}
+  .msg-content li{position:relative;padding-left:20px;margin:3px 0;line-height:1.7}
+  .msg-content li>p{margin:0}
+  .msg-content ul li::before{content:'›';color:var(--accent);position:absolute;left:4px;top:0;font-size:14px;line-height:1.7}
+  .msg-content ol{counter-reset:li}
+  .msg-content ol li{counter-increment:li}
+  .msg-content ol li::before{content:counter(li)'.';color:var(--accent);position:absolute;left:0;top:0;min-width:18px;font-size:12px;line-height:1.7}
+  /* nested lists */
+  .msg-content li ul,.msg-content li ol{margin:3px 0 3px 12px}
+  /* HR */
+  .msg-content hr{border:none;border-top:1px solid var(--border);margin:12px 0}
+  /* tables (GFM) */
+  .msg-content table{border-collapse:collapse;margin:8px 0;font-size:12px;width:100%}
+  .msg-content th{background:var(--bg3);color:var(--text-mid);font-weight:600;padding:6px 12px;border:1px solid var(--border2);text-align:left}
+  .msg-content td{padding:5px 12px;border:1px solid var(--border);color:var(--text)}
+  .msg-content tr:nth-child(even) td{background:var(--bg3)}
+  /* blockquote */
+  .msg-content blockquote{border-left:3px solid var(--accent);margin:6px 0;padding:4px 12px;color:var(--text-mid);background:rgba(59,130,246,.05);border-radius:0 4px 4px 0}
+  .msg-providers{margin-top:8px;font-size:10px;color:var(--text-dim);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .card-export-btn{background:none;border:1px solid var(--border2);border-radius:4px;color:var(--text-mid);cursor:pointer;font-size:11px;padding:2px 7px;line-height:1.4;transition:all .15s;flex-shrink:0}
+  .card-export-btn:hover{background:var(--accent);border-color:var(--accent);color:#fff}
+  .counter-chip{background:var(--accent);color:#fff;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700;min-width:20px;text-align:center}
+  .counter-chip.green-chip{background:var(--green)}
+
+  /* Config panel */
+  .config-panel{position:fixed;top:0;right:0;bottom:0;width:380px;background:var(--bg2);border-left:1px solid var(--border);z-index:200;transform:translateX(100%);transition:transform .25s ease;display:flex;flex-direction:column;overflow:hidden}
+  .config-panel.open{transform:translateX(0)}
+  .config-header{padding:18px 20px;border-bottom:1px solid var(--border);font-family:var(--sans);font-weight:700;font-size:15px;display:flex;align-items:center;justify-content:space-between}
+  .config-body{padding:20px;flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:16px}
+  .config-field{display:flex;flex-direction:column;gap:6px}
+  .config-field label{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px}
+  .config-field input{width:100%}
+  .config-note{font-size:11px;color:var(--text-dim);line-height:1.7;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;padding:12px}
+  .config-note code{color:var(--accent2);background:var(--bg);border-radius:3px;padding:1px 5px}
+
+  .step-body code{color:var(--accent2);background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:2px 7px;font-family:var(--mono);display:inline-block;margin:3px 0}
+  .step-body strong{color:var(--text)}
+
+  #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:10px 20px;font-size:12px;color:var(--text);opacity:0;transition:opacity .2s;pointer-events:none;z-index:999;white-space:nowrap}
+  #toast.show{opacity:1}
+  .icon-btn{background:none;border:1px solid var(--border2);border-radius:6px;color:var(--text-mid);cursor:pointer;padding:6px 10px;font-size:14px;transition:all .15s}
+  .icon-btn:hover{background:var(--bg3);color:var(--text);border-color:var(--text-mid)}
+  ::-webkit-scrollbar{width:6px}
+  ::-webkit-scrollbar-track{background:var(--bg)}
+  ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
+
+  /* Theme toggle button */
+  #themeBtn{font-size:15px;padding:5px 9px;line-height:1}
+  /* Light theme is now default — overrides moved to [data-theme="dark"] */
+
+  /* Search highlight */
+  mark.hl{background:rgba(245,158,11,.35);color:#fcd34d;border-radius:2px;padding:0 1px;font-style:normal}
+  mark.hl-focus{background:rgba(245,158,11,.7);color:#fff}
+
+  /* Search result bar */
+  .search-bar{position:sticky;top:calc(56px + var(--toolbar-h, 52px) + var(--statusbar-h, 36px));z-index:88;display:none;align-items:center;gap:12px;padding:7px 28px;background:var(--bg2);border-top:1px solid rgba(245,158,11,.3);border-bottom:2px solid rgba(245,158,11,.4);font-size:11px;color:var(--yellow);box-shadow:0 4px 0 var(--bg2)}
+  .search-bar.visible{display:flex}
+  .search-nav{display:flex;align-items:center;gap:4px}
+  .search-nav button{background:none;border:1px solid rgba(245,158,11,.3);border-radius:4px;color:var(--yellow);cursor:pointer;padding:2px 8px;font-family:var(--mono);font-size:11px;transition:all .15s}
+  .search-nav button:hover{background:rgba(245,158,11,.15)}
+
+  /* User filter select */
+  select{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;padding:6px 28px 6px 10px;outline:none;transition:border-color .15s;cursor:pointer;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%234a5a78'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 9px center}
+  select:focus{border-color:var(--accent)}
+  select option{background:var(--bg3)}
+
+  /* Message hidden by filter */
+  .message.hidden-msg{display:none}
+  /* Card hidden when all messages filtered out */
+  .chat-card.hidden-card{display:none}
+
+  /* ── Login wizard ── */
+  #loginScreen{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:var(--bg);overflow-y:auto;padding:24px}
+  #loginScreen::before{content:'';position:fixed;inset:0;background-image:linear-gradient(var(--grid-color) 1px,transparent 1px),linear-gradient(90deg,var(--grid-color) 1px,transparent 1px);background-size:32px 32px;pointer-events:none}
+  .login-box{position:relative;background:var(--bg2);border:1px solid var(--border2);border-radius:14px;padding:36px 40px;width:100%;max-width:520px;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+  .login-logo{display:flex;align-items:center;gap:12px;margin-bottom:6px}
+  .login-logo-dot{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 14px var(--accent);animation:blink 2s infinite}
+  .login-logo-text{font-family:var(--sans);font-weight:800;font-size:20px;color:var(--text)}
+  .login-subtitle{font-size:11px;color:var(--text-dim);margin-bottom:22px}
+  /* Step indicator */
+  .login-step-item.active{color:var(--accent)}
+  .login-step-item.done{color:var(--green)}
+  /* Fields */
+  .login-fields{display:flex;flex-direction:column;gap:14px}
+  .login-field{display:flex;flex-direction:column;gap:5px}
+  .login-field label{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
+  .login-field input,.login-field select,.login-field textarea{width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-family:var(--mono);font-size:13px;padding:10px 14px;outline:none;transition:border-color .15s,box-shadow .15s}
+  .login-field textarea{resize:vertical;min-height:90px;font-size:11.5px;line-height:1.5}
+  .login-field input:focus,.login-field select:focus,.login-field textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.15)}
+  .login-field small{font-size:10px;color:var(--text-dim);line-height:1.5}
+  /* Upload zone */
+  /* Context selector */
+  /* Connection method tabs */
+  /* Buttons */
+  .login-btn{margin-top:16px;width:100%;background:var(--accent);border:none;border-radius:8px;color:#fff;font-family:var(--sans);font-size:14px;font-weight:700;padding:12px;cursor:pointer;transition:all .15s;letter-spacing:.3px}
+  .login-btn:hover{background:#2563eb;transform:translateY(-1px);box-shadow:0 4px 14px rgba(59,130,246,.4)}
+  .login-btn:active{transform:translateY(0)}
+  .login-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+  .login-btn-back{background:transparent;border:1px solid var(--border2);color:var(--text-mid);margin-top:8px}
+  .login-btn-back:hover{background:var(--bg3);border-color:var(--text-mid);color:var(--text);transform:none;box-shadow:none}
+  .login-error{display:none;margin-top:10px;padding:10px 14px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;color:var(--red);line-height:1.5}
+  .login-error.show{display:block}
+  .login-divider{border:none;border-top:1px solid var(--border);margin:18px 0}
+  .login-note{font-size:11px;color:var(--text-dim);line-height:1.6;text-align:center}
+  .login-note code{color:var(--accent2);background:var(--bg3);border-radius:3px;padding:1px 5px}
+  #appShell{display:none}
+
+  /* ── Profile picker (Freelens-style) ── */
+  #loginScreen{position:fixed;inset:0;z-index:1000;display:flex;background:var(--bg);overflow:hidden}
+  #loginScreen::before{content:'';position:fixed;inset:0;background-image:linear-gradient(var(--grid-color) 1px,transparent 1px),linear-gradient(90deg,var(--grid-color) 1px,transparent 1px);background-size:32px 32px;pointer-events:none}
+
+  /* Sidebar */
+  .profile-sidebar{position:relative;z-index:1;width:260px;min-width:260px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;height:100%}
+  .profile-sidebar-header{padding:20px 18px 14px;border-bottom:1px solid var(--border)}
+  .profile-sidebar-logo{display:flex;align-items:center;gap:9px;margin-bottom:4px}
+  .profile-sidebar-logo-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);animation:blink 2s infinite}
+  .profile-sidebar-logo-text{font-family:var(--sans);font-weight:800;font-size:15px;color:var(--text)}
+  .profile-sidebar-sub{font-size:10px;color:var(--text-dim);margin-top:1px}
+  .profile-list{flex:1;overflow-y:auto;padding:10px 8px}
+  .profile-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;transition:all .15s;margin-bottom:4px;border:1px solid transparent}
+  .profile-item:hover{background:var(--bg3);border-color:var(--border)}
+  .profile-item.active{background:rgba(37,99,235,.08);border-color:rgba(37,99,235,.3)}
+  .profile-avatar{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;font-weight:700;font-family:var(--sans)}
+  .profile-info{flex:1;min-width:0}
+  .profile-name{font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .profile-meta{font-size:10px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  .profile-actions{display:flex;gap:4px;opacity:0;transition:opacity .15s}
+  .profile-item:hover .profile-actions{opacity:1}
+  .profile-action-btn{background:none;border:none;cursor:pointer;color:var(--text-dim);font-size:13px;padding:2px 5px;border-radius:4px;line-height:1;transition:all .15s}
+  .profile-action-btn:hover{background:var(--border2);color:var(--red)}
+  .profile-sidebar-footer{padding:12px 8px;border-top:1px solid var(--border)}
+  .profile-new-btn{width:100%;background:var(--accent);border:none;border-radius:8px;color:#fff;font-family:var(--sans);font-size:13px;font-weight:700;padding:10px;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:7px}
+  .profile-new-btn:hover{background:#1d4ed8}
+  .profile-empty{text-align:center;padding:32px 16px;color:var(--text-dim);font-size:12px}
+  .profile-empty-icon{font-size:32px;margin-bottom:8px}
+
+  /* Wizard panel */
+  .profile-wizard{flex:1;position:relative;z-index:1;overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:32px 24px}
+  .login-box{background:var(--bg2);border:1px solid var(--border2);border-radius:14px;padding:36px 40px;width:100%;max-width:500px;box-shadow:0 8px 32px rgba(0,0,0,.08)}
+
+  /* Welcome screen (shown when no profile selected) */
+  .profile-welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;color:var(--text-dim);padding:40px}
+  .profile-welcome-icon{font-size:56px;margin-bottom:16px}
+  .profile-welcome h2{font-family:var(--sans);font-size:20px;font-weight:700;color:var(--text-mid);margin-bottom:8px}
+  .profile-welcome p{font-size:12px;line-height:1.7;max-width:300px}
+  .profile-welcome .profile-new-btn{margin-top:20px;width:auto;padding:10px 24px}
+
+  /* ── Saved Prompts Panel ── */
+  #savedPanel{position:fixed;top:0;right:0;bottom:0;width:420px;background:var(--bg2);border-left:1px solid var(--border);z-index:150;transform:translateX(100%);transition:transform .25s ease;display:flex;flex-direction:column;overflow:hidden;box-shadow:-4px 0 20px rgba(0,0,0,.08)}
+  #savedPanel.open{transform:translateX(0)}
+  .saved-panel-header{padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+  .saved-panel-title{font-family:var(--sans);font-weight:700;font-size:15px;color:var(--text);display:flex;align-items:center;gap:8px}
+  .saved-panel-count{background:var(--accent);color:#fff;border-radius:10px;padding:1px 8px;font-size:11px;font-weight:700}
+  .saved-search{padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0}
+  .saved-search input{width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;padding:7px 10px;outline:none;transition:border-color .15s}
+  .saved-search input:focus{border-color:var(--accent)}
+  .saved-list{flex:1;overflow-y:auto;padding:10px 14px;display:flex;flex-direction:column;gap:10px}
+  .saved-empty{text-align:center;padding:48px 20px;color:var(--text-dim)}
+  .saved-empty-icon{font-size:36px;margin-bottom:10px}
+  .saved-empty p{font-size:12px;line-height:1.6}
+  /* Saved prompt card */
+  .saved-card{background:var(--bg);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .15s}
+  .saved-card:hover{border-color:var(--border2)}
+  .saved-card-header{display:flex;align-items:flex-start;gap:10px;padding:11px 13px 8px}
+  .saved-card-icon{font-size:16px;flex-shrink:0;margin-top:1px}
+  .saved-card-meta{flex:1;min-width:0}
+  .saved-card-title{font-family:var(--sans);font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .saved-card-sub{font-size:10px;color:var(--text-dim);margin-top:2px}
+  .saved-card-actions{display:flex;gap:4px;flex-shrink:0}
+  .saved-card-btn{background:none;border:1px solid var(--border2);border-radius:5px;color:var(--text-dim);cursor:pointer;font-size:11px;padding:3px 7px;transition:all .15s;font-family:var(--mono)}
+  .saved-card-btn:hover{background:var(--bg3);color:var(--text);border-color:var(--text-dim)}
+  .saved-card-btn.del:hover{background:rgba(239,68,68,.08);color:var(--red);border-color:rgba(239,68,68,.3)}
+  .saved-card-content{padding:0 13px 10px;font-size:11.5px;color:var(--text-mid);line-height:1.6;max-height:80px;overflow:hidden;position:relative}
+  .saved-card-content::after{content:'';position:absolute;bottom:0;left:0;right:0;height:24px;background:linear-gradient(transparent,var(--bg))}
+  .saved-card-tags{padding:0 13px 10px;display:flex;flex-wrap:wrap;gap:5px}
+  .saved-tag{background:var(--bg3);border:1px solid var(--border2);border-radius:12px;padding:1px 9px;font-size:10px;color:var(--text-mid);cursor:pointer;transition:all .15s}
+  .saved-tag:hover{border-color:var(--accent);color:var(--accent)}
+  .saved-tag.active-tag{background:rgba(37,99,235,.08);border-color:var(--accent);color:var(--accent)}
+  /* Bookmark button on messages */
+  .msg-bookmark-btn{background:none;border:1px solid transparent;border-radius:5px;cursor:pointer;font-size:13px;padding:2px 5px;transition:all .15s;color:var(--text-dim);line-height:1;margin-left:auto;flex-shrink:0}
+  .msg-bookmark-btn:hover{background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.3);color:var(--yellow)}
+  .msg-bookmark-btn.saved{color:var(--yellow);border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.08)}
+  /* Header button for saved panel */
+  .saved-panel-open-btn{position:relative}
+  .saved-panel-badge{position:absolute;top:-4px;right:-4px;background:var(--yellow);color:#fff;border-radius:8px;font-size:9px;font-weight:700;padding:0 4px;min-width:14px;text-align:center;display:none}
+  /* Saved prompt jump-to highlight */
+  @keyframes msgHighlight{
+    0%  { background:rgba(245,158,11,.18); box-shadow:0 0 0 3px rgba(245,158,11,.3); }
+    60% { background:rgba(245,158,11,.10); box-shadow:0 0 0 2px rgba(245,158,11,.15); }
+    100%{ background:transparent; box-shadow:none; }
+  }
+  .msg-highlight{ animation:msgHighlight 2.2s ease forwards; border-radius:6px; }
+  /* Make saved card header show hover state */
+  .saved-card-header:hover{ background:rgba(37,99,235,.04); border-radius:10px 10px 0 0; }
+  .saved-card-content:hover{ background:rgba(37,99,235,.03); }
+  /* Tag filter bar */
+  .saved-tags-bar{padding:8px 14px;border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap;flex-shrink:0}
+
+  /* ── Profile icon picker ── */
+  .icon-picker-row{display:flex;align-items:center;gap:14px;margin-bottom:18px;margin-top:16px}
+  .icon-preview{width:54px;height:54px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:26px;flex-shrink:0;cursor:pointer;border:2px solid var(--border2);transition:all .2s;user-select:none}
+  .icon-preview:hover{transform:scale(1.06);border-color:var(--accent)}
+  .icon-picker-fields{flex:1;display:flex;flex-direction:column;gap:8px}
+  .icon-picker-label{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
+  /* Emoji grid popup */
+  .emoji-popup{display:none;position:absolute;z-index:300;background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:12px;box-shadow:0 8px 32px rgba(0,0,0,.15);width:280px}
+  .emoji-popup.open{display:block}
+  .emoji-popup-title{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px;margin-bottom:8px;font-weight:600}
+  .emoji-grid{display:grid;grid-template-columns:repeat(8,1fr);gap:4px;margin-bottom:10px}
+  .emoji-opt{width:30px;height:30px;border-radius:6px;border:1px solid transparent;display:flex;align-items:center;justify-content:center;font-size:17px;cursor:pointer;transition:all .12s}
+  .emoji-opt:hover{background:var(--bg3);border-color:var(--border2);transform:scale(1.15)}
+  .emoji-opt.selected{background:rgba(37,99,235,.1);border-color:var(--accent)}
+  /* Color swatches */
+  .color-swatches{display:flex;gap:6px;flex-wrap:wrap}
+  .color-swatch{width:22px;height:22px;border-radius:6px;cursor:pointer;border:2px solid transparent;transition:all .12s;flex-shrink:0}
+  .color-swatch:hover{transform:scale(1.2)}
+  .color-swatch.selected{border-color:var(--text);transform:scale(1.15)}
+
+  /* ── Profile import/export ── */
+  .profile-io-row{display:flex;gap:6px;margin-top:8px}
+  .profile-io-btn{flex:1;background:transparent;border:1px solid var(--border2);border-radius:7px;color:var(--text-mid);font-family:var(--sans);font-size:11px;font-weight:600;padding:8px 6px;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:5px}
+  .profile-io-btn:hover{background:var(--bg3);border-color:var(--text-mid);color:var(--text)}
+  .profile-action-btn.export-btn:hover{background:rgba(37,99,235,.08);color:var(--accent);border-color:rgba(37,99,235,.3)}
+  /* Import drop overlay */
+  #importDropOverlay{display:none;position:fixed;inset:0;z-index:2000;background:rgba(37,99,235,.12);backdrop-filter:blur(4px);align-items:center;justify-content:center}
+  #importDropOverlay.active{display:flex}
+  .import-drop-box{background:var(--bg2);border:2px dashed var(--accent);border-radius:16px;padding:48px 56px;text-align:center;pointer-events:none}
+  .import-drop-box-icon{font-size:48px;margin-bottom:12px}
+  .import-drop-box h3{font-family:var(--sans);font-size:18px;font-weight:700;color:var(--text);margin-bottom:6px}
+  .import-drop-box p{font-size:12px;color:var(--text-dim)}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
+</head>
+<body>
+
+<!-- ── LOGIN SCREEN WITH PROFILE PICKER ─────────────────────────────────────── -->
+<div id="loginScreen">
+
+  <!-- ── LEFT SIDEBAR: profile list ────────────────────────────────────────── -->
+  <div class="profile-sidebar">
+    <div class="profile-sidebar-header">
+      <div class="profile-sidebar-logo">
+        <div class="profile-sidebar-logo-dot"></div>
+        <div class="profile-sidebar-logo-text">Viya Monitor</div>
+      </div>
+      <div class="profile-sidebar-sub">Select or create a cluster profile</div>
+    </div>
+
+    <div class="profile-list" id="profileList">
+      <!-- populated by JS -->
+    </div>
+
+    <div class="profile-sidebar-footer">
+      <button class="profile-new-btn" onclick="newProfile()">
+        <span>＋</span> New Profile
+      </button>
+      <div class="profile-io-row">
+        <button class="profile-io-btn" onclick="exportAllProfiles()" title="Export all profiles to JSON file">⬇ Export All</button>
+        <button class="profile-io-btn" onclick="$('importFileInput').click()" title="Import profiles from JSON file">⬆ Import</button>
+      </div>
+      <input type="file" id="importFileInput" accept=".json" style="display:none" onchange="importProfiles(event)">
+    </div>
+
+    <!-- Drop overlay for drag-and-drop import -->
+    <div id="importDropOverlay">
+      <div class="import-drop-box">
+        <div class="import-drop-box-icon">📥</div>
+        <h3>Drop to import profiles</h3>
+        <p>Release to import your Viya Monitor profiles</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── RIGHT PANEL: wizard or welcome ────────────────────────────────────── -->
+  <div class="profile-wizard" id="profileWizard">
+
+    <!-- Welcome state (no profile selected / no profiles exist) -->
+    <div class="profile-welcome" id="profileWelcome">
+      <div class="profile-welcome-icon">🖥️</div>
+      <h2>No cluster selected</h2>
+      <p>Create a profile for each of your Viya environments. Each profile stores its cluster connection and credentials separately.</p>
+      <button class="profile-new-btn" onclick="newProfile()">＋ Add your first cluster</button>
+    </div>
+
+    <!-- Wizard (shown when editing/creating a profile) -->
+    <div class="login-box" id="wizardBox" style="display:none">
+
+      <div class="login-logo">
+        <div class="login-logo-dot"></div>
+        <div class="login-logo-text" id="wizardTitle">New Profile</div>
+      </div>
+      <div class="login-subtitle" id="wizardSubtitle">Configure your cluster connection</div>
+
+      <!-- Profile icon + name -->
+      <div class="icon-picker-row" style="position:relative">
+        <!-- Avatar preview — click to open picker -->
+        <div class="icon-preview" id="iconPreview" onclick="toggleIconPicker(event)" title="Click to change icon">🖥️</div>
+
+        <!-- Emoji + color popup -->
+        <div class="emoji-popup" id="emojiPopup">
+          <div class="emoji-popup-title">Choose Icon</div>
+          <div class="emoji-grid" id="emojiGrid"></div>
+          <div class="emoji-popup-title" style="margin-top:4px">Choose Color</div>
+          <div class="color-swatches" id="colorSwatches"></div>
+        </div>
+
+        <div class="icon-picker-fields">
+          <label class="icon-picker-label">Profile Name</label>
+          <input type="text" id="profileName" placeholder="e.g. Production, Dev, Lab…"
+                 autocomplete="off" oninput="updateWizardTitle()"
+                 style="background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-family:var(--mono);font-size:13px;padding:9px 12px;outline:none;width:100%;transition:border-color .15s">
+          <small style="font-size:10px;color:var(--text-dim)">Click the icon to change it</small>
+        </div>
+      </div>
+
+      <div class="login-fields" style="margin-top:16px">
+        <div class="login-field">
+          <label>Viya Ingress URL</label>
+          <input type="text" id="login-url" placeholder="https://your-viya4.example.com"
+                 autocomplete="off" spellcheck="false">
+          <small>External HTTPS URL of your Viya deployment</small>
+        </div>
+        <div class="login-field">
+          <label>Username</label>
+          <input type="text" id="login-user" placeholder="sasboot" value="sasboot"
+                 autocomplete="username">
+        </div>
+        <div class="login-field">
+          <label>Password</label>
+          <input type="password" id="login-pass" placeholder="&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;"
+                 autocomplete="current-password">
+        </div>
+        <div class="login-field">
+          <label>Poll interval <span style="text-transform:none;letter-spacing:0">(seconds)</span></label>
+          <input type="number" id="login-interval" value="5" min="3" max="300" style="width:100px">
+        </div>
+      </div>
+      <div class="login-error" id="loginError"></div>
+      <button class="login-btn" id="loginBtn" onclick="doLogin()">Connect &#8594;</button>
+
+      <hr class="login-divider">
+      <p class="login-note">
+        Profiles are saved locally in your browser. Passwords are stored only in memory.
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- ── APP SHELL (hidden until login) ───────────────────────────────────────── -->
+<div id="appShell">
+<header>
+  <div class="logo">
+    <div class="logo-dot" id="liveDot"></div>
+    Viya · GenAI Monitor
+  </div>
+  <div class="header-right">
+    <span class="badge blue-badge" id="modeBadge">● ACTIVE</span>
+    <span class="badge" id="nsBadge" style="display:none;border-color:var(--purple);color:var(--purple)">ns</span>
+    <button class="icon-btn saved-panel-open-btn" onclick="toggleSavedPanel()" title="Saved Prompts">⭐<span class="saved-panel-badge" id="savedPanelBadge"></span></button>
+    <button class="icon-btn" id="themeBtn" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
+    <button class="icon-btn" onclick="toggleConfig()" title="Settings">⚙</button>
+  </div>
+</header>
+
+<!-- ── SAVED PROMPTS PANEL ──────────────────────────────────────────────────── -->
+<div id="savedPanel">
+  <div class="saved-panel-header">
+    <div class="saved-panel-title">⭐ Saved Prompts <span class="saved-panel-count" id="savedCount">0</span></div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <button class="btn btn-ghost" style="font-size:11px;padding:4px 10px" onclick="exportAllSavedChats()" title="Export all saved prompts with full chats as HTML">⬇ Export</button>
+      <button class="icon-btn" onclick="toggleSavedPanel()">✕</button>
+    </div>
+  </div>
+  <div class="saved-search">
+    <input type="text" id="savedSearchInput" placeholder="Search saved prompts…" oninput="renderSavedList()">
+  </div>
+  <div class="saved-tags-bar" id="savedTagsBar"></div>
+  <div class="saved-list" id="savedList">
+    <div class="saved-empty">
+      <div class="saved-empty-icon">⭐</div>
+      <p>No saved prompts yet.<br>Click the <strong>⭐</strong> button on any message to save it here.</p>
+    </div>
+  </div>
+</div>
+
+<div class="toolbar">
+  <div class="seg">
+    <button class="seg-btn active" onclick="setMode('active')" id="btn-active">● Active</button>
+    <button class="seg-btn"       onclick="setMode('all')"    id="btn-all">◎ All</button>
+    <button class="seg-btn"       onclick="setMode('history')" id="btn-history">📋 History</button>
+  </div>
+  <div class="input-group" id="activeMinutesGroup">
+    <label>active window</label>
+    <input type="number" id="activeMinutes" value="10" min="1" max="1440" onchange="fetchNow()">
+    <label>min</label>
+  </div>
+  <div class="input-group" id="historyDaysGroup" style="display:none">
+    <label>period</label>
+    <select id="historyDays" onchange="applyHistoryFilter()">
+      <option value="3">Last 3 days</option>
+      <option value="7" selected>Last 7 days</option>
+      <option value="15">Last 15 days</option>
+      <option value="30">Last 30 days</option>
+      <option value="0">All time</option>
+    </select>
+  </div>
+  <div class="input-group">
+    <label>chat id</label>
+    <input type="text" id="chatFilter" placeholder="filter by chat id…" style="width:220px">
+  </div>
+  <div class="input-group">
+    <label>user</label>
+    <select id="userFilter" onchange="applyClientFilters()" style="width:140px">
+      <option value="">all users</option>
+    </select>
+  </div>
+  <div class="input-group">
+    <label>app</label>
+    <select id="appFilter" onchange="applyClientFilters()" style="width:160px">
+      <option value="">all apps</option>
+    </select>
+  </div>
+  <div class="input-group">
+    <label>search</label>
+    <input type="text" id="msgSearch" placeholder="search messages…" style="width:200px" oninput="debounceFilter()">
+  </div>
+  <button class="btn btn-ghost" onclick="clearFilters()" id="clearFiltersBtn" style="display:none">✕ Clear</button>
+  <button class="btn" onclick="fetchNow()" id="fetchBtn">▶ Fetch</button>
+  <button class="btn btn-ghost" id="liveBtn" onclick="toggleLive()">⏸ Pause</button>
+  <div class="seg">
+    <button class="seg-btn active" onclick="setSort('newest')" id="btn-sort-newest">↓ Newest</button>
+    <button class="seg-btn"       onclick="setSort('oldest')" id="btn-sort-oldest">↑ Oldest</button>
+  </div>
+  <button class="btn btn-ghost" onclick="expandAll()">⊞ Expand All</button>
+  <button class="btn btn-ghost" onclick="collapseAll()">⊟ Collapse All</button>
+</div>
+
+<div class="statusbar">
+  <div class="status-item"><div class="status-dot" id="connDot"></div><span id="connStatus">Not connected</span></div>
+  <div class="status-item">🔄 Cycle: <strong id="cycleNum">—</strong></div>
+  <div class="status-item">🕐 Checked: <strong id="lastChecked">—</strong></div>
+  <div class="status-item">📡 Changed: <strong id="lastChange">—</strong></div>
+  <div class="status-item">⏱ Next: <strong id="nextPoll">—</strong></div>
+  <div class="status-item" style="margin-left:auto;display:flex;gap:6px;align-items:center">
+    <span class="badge" id="chatCountBadge" style="font-size:10px">— chats</span>
+    <span class="badge" id="displayedCountBadge" style="display:none;border-color:var(--accent);color:var(--accent);font-size:10px">— shown</span>
+    <span class="badge green-badge" id="activeCountBadge" style="display:none;font-size:10px">0 active</span>
+  </div>
+</div>
+<div class="search-bar" id="searchBar">
+  <span>🔍 <strong id="searchMatchCount">0</strong> match(es) for "<span id="searchTerm"></span>"</span>
+  <div class="search-nav">
+    <button onclick="navSearch(-1)">▲ prev</button>
+    <span id="searchPos">0 / 0</span>
+    <button onclick="navSearch(1)">▼ next</button>
+  </div>
+  <span id="hiddenChatsNote" style="color:var(--text-dim)"></span>
+</div>
+
+<main id="main">
+</main>
+
+<!-- Config panel -->
+<div class="config-panel" id="configPanel">
+  <div class="config-header">Settings <button class="icon-btn" onclick="toggleConfig()">X</button></div>
+  <div class="config-body">
+    <div class="config-field">
+      <label>Poll interval (seconds)</label>
+      <input type="number" id="cfg-interval" value="5" min="3" max="300">
+    </div>
+    <button class="btn" onclick="applyConfig()">Apply</button>
+    <button class="btn btn-ghost" style="margin-top:4px" onclick="disconnect()">Disconnect</button>
+    <div class="config-note">
+      <strong>How it works:</strong><br>
+      Browser &#8594; <code>liveGenAiMonitoring.py</code> (local) &#8594; Viya cluster<br><br>
+      The proxy handles OAuth and SSL. Your browser never talks directly to Viya.
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────────
+// Proxy base = same origin as this page (served by viya4_server.py)
+let proxyBase = '';  // empty = auto (same host:port as the page)
+
+let cfg = {
+  viyaUrl:  '',
+  user:     '',
+  pass:     '',
+  interval: 5,
+};
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let token = null, tokenAt = 0;
+let lastHash = '', lastChange = '—', cycle = 0;
+let liveTimer = null, countdownTimer = null, nextPollSecs = 0;
+let mode = 'active', isLive = true, sortOrder = 'newest';
+let collapsedSet = new Set();
+let allUsers = new Set();           // discovered users for the dropdown
+let searchMatches = [];             // DOM nodes matching current search
+let searchIdx = 0;                  // current focused match index
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+function toast(msg, dur=2500){
+  const el=$('toast'); el.textContent=msg; el.classList.add('show');
+  setTimeout(()=>el.classList.remove('show'),dur);
+}
+const _fmtTsOpts = {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'};
+function fmtTs(ts){ return ts ? new Date(ts).toLocaleString(undefined,_fmtTsOpts) : '—'; }
+function setConn(color,msg){ $('connDot').className=`status-dot ${color}`; $('connStatus').textContent=msg; }
+function isVisibleChat(c){
+  // Embedding chats are always hidden — permanent system calls
+  if((c.applicationName||'').toLowerCase().includes('embedding')) return false;
+  // Anonymous filter: skip for grace-set chats — the API temporarily sets modifiedBy=anonymous
+  // while the copilot is generating. If we recently rendered this chat, keep it visible.
+  if((c.modifiedBy||'').toLowerCase() === 'anonymous'){
+    if(_activeGraceSet && _activeGraceSet[c.id]) return true;  // grace: keep it
+    return false;
+  }
+  return true;
+}
+
+function updateChatBadges(displayed, total){
+  // chatCountBadge = what is actually shown (period/filter applied)
+  $('chatCountBadge').textContent = displayed + (displayed===1?' chat':' chats');
+  // displayedCountBadge = total from server, shown only when different from displayed
+  const badge = $('displayedCountBadge');
+  if(total !== null && total !== undefined && displayed !== total){
+    badge.textContent = total + ' total';
+    badge.style.display = '';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function copyCode(id){
+  const el = document.getElementById(id);
+  if(!el) return;
+  navigator.clipboard.writeText(el.textContent).then(()=>toast('⎘ Copied to clipboard')).catch(()=>{
+    // fallback for http:// contexts where clipboard API may be blocked
+    const ta=document.createElement('textarea');
+    ta.value=el.textContent; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    toast('⎘ Copied to clipboard');
+  });
+}
+// Plain JS hash — works over HTTP (no crypto.subtle needed)
+function sha1(s){
+  let h=0x811c9dc5;
+  for(let i=0;i<s.length;i++){
+    h^=s.charCodeAt(i);
+    h=(h*0x01000193)>>>0;
+  }
+  return h.toString(16);
+}
+
+// ── Authentication ──────────────────────────────────────────────────────────
+async function doLogin(){
+  const url     =$('login-url').value.trim().replace(/\/+$/,'');
+  const user    =$('login-user').value.trim();
+  const pass    =$('login-pass').value;
+  const interval=parseInt($('login-interval').value)||5;
+  const btn     =$('loginBtn');
+
+  $('loginError').classList.remove('show');
+  if(!url) { showLoginError('Viya Ingress URL is required.'); return; }
+  if(!user){ showLoginError('Username is required.'); return; }
+  if(!pass){ showLoginError('Password is required.'); return; }
+  if(!/^https?:\/\//i.test(url)){ showLoginError('URL must start with https://'); return; }
+
+  btn.disabled=true; btn.textContent='Connecting...';
+  try {
+    const r=await fetch(proxyUrl('/api/token'),{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url, username:user, password:pass}),
+    });
+    const data=await r.json();
+    if(!r.ok) throw new Error(data.error||'Authentication failed (HTTP '+r.status+')');
+
+    cfg.viyaUrl=url; cfg.user=user; cfg.pass=pass; cfg.interval=interval;
+    token=data.access_token; tokenAt=Date.now();
+    lastHash=''; _msgStore={};
+    // Load persisted chat cache from previous session for this profile+user
+    _chatCache = {};
+    await _loadPersistedCache();
+
+    saveCurrentProfile({ viyaUrl: url, user: user, interval: interval });
+
+    $('cfg-interval').value=interval;
+    $('nsBadge').style.display='none';
+
+    $('loginScreen').style.display='none';
+    $('appShell').style.display='block';
+    setConn('green','Authenticated as '+user+' @ '+url.replace(/^https?:\/\//,''));
+    updateStickyOffsets();
+    updateSavedBadge();
+    if($('savedPanel').classList.contains('open')) renderSavedList();
+    if(mode!=='history') startLive();
+    fetchNow();
+
+  } catch(e){
+    showLoginError(e.message);
+    btn.disabled=false; btn.textContent='Connect ->';
+  }
+}
+
+function showLoginError(msg){ const el=$('loginError'); el.textContent='Error: '+msg; el.classList.add('show'); }
+
+document.addEventListener('keydown',function(e){
+  if(e.key==='Enter') doLogin();
+});
+
+function proxyUrl(path){ return (proxyBase || '') + path; }
+
+async function getToken(){
+  setConn('yellow','Authenticating…');
+  const r = await fetch(proxyUrl('/api/token'),{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ url: cfg.viyaUrl, username: cfg.user, password: cfg.pass }),
+  });
+  const data = await r.json();
+  if(!r.ok) throw new Error(data.error || `Auth failed ${r.status}`);
+  token   = data.access_token;
+  tokenAt = Date.now();
+  setConn('green', `Authenticated as ${cfg.user}`);
+}
+
+async function ensureToken(){
+  if(!token || (Date.now()-tokenAt) > (3600*1000)) await getToken();
+}
+
+async function proxyGet(apiPath){
+  const r = await fetch(proxyUrl('/api/proxy'),{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ url: cfg.viyaUrl, path: apiPath, token }),
+  });
+  if(r.status===401){ token=null; await ensureToken(); return proxyGet(apiPath); }
+  const data = await r.json();
+  if(!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+// proxyGetAll — asks the server to fetch all pages and return combined result
+async function proxyGetAll(apiPath){
+  const r = await fetch(proxyUrl('/api/proxy-all'),{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ url: cfg.viyaUrl, path: apiPath, token, limit: 100 }),
+  });
+  if(r.status===401){ token=null; await ensureToken(); return proxyGetAll(apiPath); }
+  const data = await r.json();
+  if(!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+// ── Config panel ──────────────────────────────────────────────────────────────
+function toggleConfig(){
+  $('configPanel').classList.toggle('open');
+  // Always sync current interval into the field when opening
+  if($('configPanel').classList.contains('open')){
+    $('cfg-interval').value = cfg.interval || 5;
+  }
+}
+function applyConfig(){
+  cfg.interval = parseInt($('cfg-interval').value)||5;
+  toggleConfig();
+  toast('Poll interval updated.');
+  if(liveTimer) { clearInterval(liveTimer); startLive(); }
+}
+
+// ── Mode ──────────────────────────────────────────────────────────────────────
+// Cache of last fetched data for instant mode-switch re-renders
+var _cachedChats   = [];
+var _cachedMsgsMap = {};
+var _cachedActive  = 0;
+var _cachedCutoff  = null;
+
+function setMode(m){
+  mode=m;
+  ['active','all','history'].forEach(x=>$('btn-'+x).classList.toggle('active',x===m));
+  $('activeMinutesGroup').style.display = m==='active'?'flex':'none';
+  $('historyDaysGroup').style.display   = m==='history'?'flex':'none';
+  $('modeBadge').textContent = m==='active'?'● ACTIVE': m==='all'?'◎ ALL':'📋 HISTORY';
+  if(m==='history'){ stopLive(); $('liveBtn').style.display='none'; }
+  else { $('liveBtn').style.display=''; if(!isLive) startLive(); }
+  setTimeout(updateStickyOffsets, 50);
+
+  //   // Helper: build msgsMap from _chatCache for any list of items
+  // (avoids needing _cachedMsgsMap which is mode-scoped)
+  function _msgsFromCache(items){
+    const m = {};
+    items.forEach(c => { m[c.id] = _chatCache[c.id] ? _chatCache[c.id].msgs : null; });
+    return m;
+  }
+
+  // If a fetch is already running, wait for it then re-render
+  if(_isFetching && _fetchPromise){
+    _fetchPromise.then(()=>{ setMode(m); });
+    return;
+  }
+
+  // Re-render immediately from _lastAllItems + _chatCache — no network fetch needed.
+  // _lastAllItems is a superset across all modes so switching never loses data.
+  const fullItems = _lastAllItems.length ? _lastAllItems : _cachedChats;
+  if(fullItems.length && Object.keys(_chatCache).length > 0){
+    const activeMins = parseInt($('activeMinutes').value)||10;
+    const cutoff     = new Date(Date.now()-activeMins*60*1000);
+    const allActive  = fullItems.filter(i=>new Date(i.modifiedTimeStamp)>=cutoff && isVisibleChat(i));
+    const histDays   = m==='history' ? parseInt($('historyDays').value) : 0;
+    const histCutoff = m==='history' && histDays>0 ? new Date(Date.now()-histDays*24*60*60*1000) : null;
+    const displayed  = m==='active' ? allActive
+                     : histCutoff   ? fullItems.filter(c=>new Date(c.modifiedTimeStamp)>=histCutoff)
+                     : fullItems;
+    const msgsMap = _msgsFromCache(displayed);
+    render(displayed, msgsMap, activeMins, cutoff);
+    populateAppDropdown(displayed);
+    populateUserDropdown(displayed, msgsMap);
+    applyClientFilters();
+    $('activeCountBadge').textContent=`${allActive.length} active`;
+    $('activeCountBadge').style.display=allActive.length?'':'none';
+    if(m !== 'history') return;
+    return;
+  }
+  fetchNow();
+}
+
+// ── History period filter ─────────────────────────────────────────────────────
+function applyHistoryFilter(){
+  if(mode !== 'history') return;
+  if(!_cachedChats.length || !Object.keys(_cachedMsgsMap).length) return;
+  const days     = parseInt($('historyDays').value);
+  const cutoff   = days > 0 ? new Date(Date.now() - days*24*60*60*1000) : null;
+  const displayed = cutoff
+    ? _cachedChats.filter(c => new Date(c.modifiedTimeStamp) >= cutoff)
+    : _cachedChats;
+  const activeMins = parseInt($('activeMinutes').value)||10;
+  const activeCutoff = new Date(Date.now()-activeMins*60*1000);
+  render(displayed, _cachedMsgsMap, activeMins, activeCutoff);
+  populateAppDropdown(displayed);
+  populateUserDropdown(displayed, _cachedMsgsMap);
+  applyClientFilters();
+}
+
+// ── Sort ──────────────────────────────────────────────────────────────────────
+function setSort(s){
+  sortOrder = s;
+  ['newest','oldest'].forEach(x=>$('btn-sort-'+x).classList.toggle('active', x===s));
+  // Re-render with existing data if we have it — just re-apply sort client-side
+  const cards = [...document.querySelectorAll('.chat-card')];
+  if(!cards.length) return;
+  const main = $('main');
+  cards.sort((a,b)=>{
+    const ta = a.dataset.modified||'', tb = b.dataset.modified||'';
+    return sortOrder==='newest' ? tb.localeCompare(ta) : ta.localeCompare(tb);
+  });
+  cards.forEach(c=>main.appendChild(c));
+  applyClientFilters();
+}
+
+function startLive(){
+  if(liveTimer) return;
+  isLive=true; $('liveBtn').textContent='⏸ Pause';
+  $('liveDot').style.animation='blink 2s infinite';
+  scheduleNext();
+}
+function stopLive(){
+  clearTimeout(liveTimer); liveTimer=null;
+  clearInterval(countdownTimer); countdownTimer=null;
+  isLive=false; $('liveBtn').textContent='▶ Resume';
+  $('liveDot').style.animation='none'; $('liveDot').style.opacity='.3';
+  $('nextPoll').textContent='paused';
+}
+function toggleLive(){ isLive?stopLive():startLive(); }
+function scheduleNext(){
+  clearInterval(countdownTimer); countdownTimer=null;
+  nextPollSecs = cfg.interval;
+  $('nextPoll').textContent = cfg.interval+'s';
+  countdownTimer = setInterval(()=>{
+    if(nextPollSecs > 0) nextPollSecs--;
+    $('nextPoll').textContent = nextPollSecs+'s';
+  }, 1000);
+  liveTimer = setTimeout(async()=>{
+    // Stop countdown display during the fetch itself
+    clearInterval(countdownTimer); countdownTimer=null;
+    $('nextPoll').textContent = '…';
+    await fetchNow();
+    if(isLive && mode!=='history') scheduleNext();
+  }, cfg.interval*1000);
+}
+
+// ── Fetch ─────────────────────────────────────────────────────────────────────
+var _isFetching   = false;
+var _fetchPromise = null;
+// Per-chat cache: { [chatId]: { modifiedTimeStamp, msgs } }
+var _chatCache      = {};  // in-memory: { chatId: { modifiedTimeStamp, msgs } }
+var _activeGraceSet = {};  // { chatId: timestampMs } — keeps chats visible while copilot generates
+var _lastRenderedIds = '';  // IDs of chats rendered last cycle — grace set is seeded from these
+var _lastAllItems    = [];  // full chat list from previous cycle — merged to cover API gaps during generation
+
+// ── Persistent chat cache (localStorage) ─────────────────────────────────────
+// Keyed by cluster+user so different profiles never mix data
+// ── Server-side persistent cache — no browser storage limits ─────────────────
+// Cache files stored in cache/ folder next to liveGenAiMonitoring.py
+// Endpoint: POST /api/cache  { action, cluster, user, data }
+
+function _cacheCluster(){
+  return (cfg.viyaUrl||'').replace(/^https?:\/\//,'').toLowerCase().replace(/\/+$/,'');
+}
+function _cacheUser(){
+  return (cfg.user||'').toLowerCase();
+}
+function _persistCacheKey(){
+  return _cacheCluster() + ':' + _cacheUser();
+}
+
+async function _savePersistedCache(){
+  var entries = Object.keys(_chatCache).length;
+  if(entries === 0) return;
+  try {
+    var r = await fetch(proxyUrl('/api/cache'), {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'save', cluster:_cacheCluster(), user:_cacheUser(), data:_chatCache })
+    });
+    var j = await r.json();
+    if(j.saved) console.log('[GenAI Monitor] Cache saved: ' + j.entries + ' chats, ' + j.size_kb + ' KB');
+    else        console.warn('[GenAI Monitor] Cache save failed:', j.error);
+  } catch(e){ console.warn('[GenAI Monitor] Cache save error:', e.message); }
+}
+
+async function _loadPersistedCache(){
+  try {
+    var r = await fetch(proxyUrl('/api/cache'), {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'load', cluster:_cacheCluster(), user:_cacheUser() })
+    });
+    var j = await r.json();
+    if(!j.found || !j.data){ console.log('[GenAI Monitor] No server cache found for:', _persistCacheKey()); return; }
+    var total = Object.keys(j.data).length, loaded = 0, skipped = 0;
+    Object.keys(j.data).forEach(function(id){
+      var e = j.data[id];
+      if(e && e.modifiedTimeStamp && Array.isArray(e.msgs)){ _chatCache[id]=e; loaded++; }
+      else skipped++;
+    });
+    console.log('[GenAI Monitor] Cache loaded: ' + loaded + ' chats' + (skipped?' ('+skipped+' skipped)':''));
+  } catch(e){ console.warn('[GenAI Monitor] Cache load error:', e.message); }
+}
+
+function _clearPersistedCache(){
+  fetch(proxyUrl('/api/cache'), {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ action:'clear', cluster:_cacheCluster(), user:_cacheUser() })
+  }).catch(function(){});
+}
+
+async function fetchNow(){
+  // If already fetching, return the same promise so callers can await it
+  if(_isFetching && _fetchPromise) return _fetchPromise;
+  _isFetching = true;
+  _fetchPromise = (async()=>{
+  try{
+    $('fetchBtn').disabled=true;
+    await ensureToken();
+
+    // ── Step 1: Fetch chat list (lightweight metadata only) ───────────────────
+    // Only Active mode applies a server-side date filter — ALL and History
+    // fetch the full list from Viya and let their own client-side logic handle display.
+    let chatsPath = '/genAiGateway/v1/chats?sortBy=modifiedTimeStamp:descending';
+    if(mode === 'active'){
+      // Push the window filter to the server (2× buffer for grace period / clock skew)
+      const activeMinsNow = parseInt($('activeMinutes').value) || 10;
+      const bufferMins = activeMinsNow * 2;
+      const since = new Date(Date.now() - bufferMins * 60 * 1000).toISOString();
+      chatsPath += '&filter=ge(modifiedTimeStamp,"' + since + '")';
+    }
+    const chatsData = await proxyGetAll(chatsPath);
+    const freshItems = chatsData.items || [];
+
+    // Merge freshItems with _lastAllItems: keep any chat that was in the grace set
+    // even if the API temporarily stopped returning it (happens during copilot generation)
+    const freshIds = new Set(freshItems.map(c=>c.id));
+    const graceIds = new Set(Object.keys(_activeGraceSet));
+    const missingGraceChats = _lastAllItems.filter(c => graceIds.has(c.id) && !freshIds.has(c.id));
+    const allItems = missingGraceChats.length > 0
+      ? freshItems.concat(missingGraceChats)
+      : freshItems;   // FULL list used for all cache ops
+    if(missingGraceChats.length > 0)
+      console.log('[GenAI Monitor] Grace merge: kept', missingGraceChats.length, 'chat(s) missing from API response');
+
+    // Save current list for next cycle's grace merge.
+    // Merge with previous _lastAllItems so Active mode (date-filtered) doesn't
+    // overwrite the full list that ALL/History mode built — this prevents
+    // cache misses when switching between modes.
+    const freshIdSet = new Set(freshItems.map(c=>c.id));
+    const keptOld = _lastAllItems.filter(c => !freshIdSet.has(c.id));
+    _lastAllItems = freshItems.concat(keptOld).slice(0, 2000); // cap at 2000
+
+    // Apply chat ID filter for display only — never affects the cache
+    const filterVal = $('chatFilter').value.trim();
+    let items = filterVal ? allItems.filter(i=>i.id===filterVal) : allItems;
+
+    const activeMins = parseInt($('activeMinutes').value)||10;
+    const cutoff = new Date(Date.now()-activeMins*60*1000);
+    // ── Active chat computation with grace period ───────────────────────────────
+    // A chat stays in ACTIVE if:
+    //   a) its modifiedTimeStamp is within the active window (truly active), OR
+    //   b) it was RENDERED in the previous cycle (grace: copilot still loading)
+    //
+    // KEY INSIGHT: we seed the grace set from what was RENDERED last cycle,
+    // NOT from truly-active chats. This is the only reliable way to keep a chat
+    // visible while the copilot is generating — because during generation the
+    // server does NOT update modifiedTimeStamp until the answer is complete.
+    const GRACE_MS    = 2 * 60 * 1000;   // 2 minutes grace window
+    const _graceNow   = Date.now();
+    const _graceFloor = _graceNow - GRACE_MS;
+
+    // Step 1: seed grace set from what was visible last render cycle
+    // (This runs BEFORE computing allActive so the current render is protected)
+    // Always refresh grace stamp for previously rendered IDs (keeps them alive across cycles)
+    if(_lastRenderedIds){
+      _lastRenderedIds.split(',').forEach(function(id){
+        if(id) _activeGraceSet[id] = _graceNow;
+      });
+    }
+
+    // Step 2: chats within the active window right now (refresh their grace stamp)
+    const trulyActive = allItems.filter(i => isVisibleChat(i) && new Date(i.modifiedTimeStamp) >= cutoff);
+    trulyActive.forEach(i => { _activeGraceSet[i.id] = _graceNow; });
+
+    // Step 3: prune grace entries older than 2 minutes
+    Object.keys(_activeGraceSet).forEach(id => {
+      if((_activeGraceSet[id] || 0) < _graceFloor) delete _activeGraceSet[id];
+    });
+
+    // Step 4: allActive = truly active now + any chat still in grace period
+    const allActive = allItems.filter(i => isVisibleChat(i) && (
+      new Date(i.modifiedTimeStamp) >= cutoff ||
+      (_activeGraceSet[i.id] || 0) >= _graceFloor
+    ));
+
+    const histDaysFetch = mode==='history' ? parseInt($('historyDays').value) : 0;
+    const histCutoffFetch = mode==='history' && histDaysFetch>0 ? new Date(Date.now()-histDaysFetch*24*60*60*1000) : null;
+    let displayed = mode==='active' ? allActive
+                  : histCutoffFetch ? items.filter(c=>new Date(c.modifiedTimeStamp)>=histCutoffFetch)
+                  : items;
+
+    // ── Step 2: Determine which chats actually need message re-fetching ───────
+    // Compare ALL chats (unfiltered) against cache — never skip based on display filter
+    const toFetch   = [];
+    const unchanged = [];
+    allItems.forEach(item=>{
+      const cached = _chatCache[item.id];
+      if(!cached || cached.modifiedTimeStamp !== item.modifiedTimeStamp){
+        toFetch.push(item);
+      } else {
+        unchanged.push(item);
+      }
+    });
+
+    // ── Step 3: Fetch messages only for new/changed chats ────────────────────
+    console.log('[GenAI Monitor] Step 2 result — toFetch:', toFetch.length, '/ unchanged:', unchanged.length, '/ total:', allItems.length, '| _chatCache entries:', Object.keys(_chatCache).length);
+    const newMsgs = {};
+    const CONCURRENCY = 8;
+    if(toFetch.length > 0){
+      const pct = allItems.length > 0 ? Math.round(toFetch.length/allItems.length*100) : 0;
+      setConn('yellow', `Fetching ${toFetch.length} of ${allItems.length} chats (${pct}% updated)…`);
+      for(let i=0; i<toFetch.length; i+=CONCURRENCY){
+        const batch = toFetch.slice(i, i+CONCURRENCY);
+        await Promise.all(batch.map(async item=>{
+          try{
+            const mData = await proxyGetAll(`/genAiGateway/v1/chats/${item.id}/messages`);
+            const msgs  = mData.items || [];
+            newMsgs[item.id] = msgs;
+            // Update per-chat cache
+            _chatCache[item.id] = { modifiedTimeStamp: item.modifiedTimeStamp, msgs };
+          }
+          catch(e){ newMsgs[item.id]=null; }
+        }));
+      }
+    }
+
+    // ── Step 4: Build msgsMap — merge fresh fetches with cached results ───────
+    // Build over ALL items so mode-switch re-renders have complete data
+    const msgsMap = {};
+    allItems.forEach(item=>{
+      if(newMsgs.hasOwnProperty(item.id)){
+        msgsMap[item.id] = newMsgs[item.id];            // freshly fetched
+      } else if(_chatCache[item.id]){
+        msgsMap[item.id] = _chatCache[item.id].msgs;    // reused from cache
+      } else {
+        msgsMap[item.id] = null;
+      }
+    });
+
+    // ── Step 5: Evict cache entries only when cache grows very large ──────────
+    // IMPORTANT: never delete based on allItems — allItems in Active mode is
+    // date-filtered, so evicting by it would wipe History/ALL cache entries and
+    // force a full re-fetch on every mode switch.
+    const MAX_CACHE = 500;
+    const cacheKeys = Object.keys(_chatCache);
+    if(cacheKeys.length > MAX_CACHE){
+      // Evict oldest entries (by modifiedTimeStamp) down to 80% of max
+      cacheKeys
+        .sort((a,b) => (_chatCache[a].modifiedTimeStamp||'') < (_chatCache[b].modifiedTimeStamp||'') ? -1 : 1)
+        .slice(0, cacheKeys.length - Math.floor(MAX_CACHE * 0.8))
+        .forEach(id => delete _chatCache[id]);
+    }
+
+    // ── Step 5b: Persist updated cache to server ──────────────────────────────
+    await _savePersistedCache();
+
+    // ── Step 6: Hash and render ───────────────────────────────────────────────
+    // Hash over ALL items so mode-switch re-renders aren't skipped
+    const hashInput = allItems.map(c=>c.id+':'+(msgsMap[c.id]||[]).length).join('|');
+    const hash=sha1(hashInput);
+    const now=new Date().toLocaleTimeString();
+
+    cycle++; $('cycleNum').textContent=cycle; $('lastChecked').textContent=now;
+    $('activeCountBadge').textContent=`${allActive.length} active`;
+    $('activeCountBadge').style.display=allActive.length?'':'none';
+
+    // Log fetch efficiency
+    if(toFetch.length < allItems.length){
+      console.log(`[GenAI Monitor] Smart fetch: ${toFetch.length} updated / ${allItems.length} total chats (${unchanged.length} from cache)`);
+    }
+
+    // Always update the in-memory cache so mode-switch re-renders are instant
+    _cachedChats   = allItems;
+    _cachedMsgsMap = msgsMap;
+
+    // Render when data changed OR when active list changed
+    const activeIds     = allActive.map(c=>c.id).sort().join(',');
+    const hashChanged   = hash !== lastHash;
+    const activeChanged = activeIds !== _lastRenderedIds;
+
+    if(hashChanged || (mode==='active' && activeChanged)){
+      const isFirstLoad = lastHash === '';
+      if(hashChanged){ lastHash=hash; lastChange=now; $('lastChange').textContent=lastChange; }
+
+      // Only update _lastRenderedIds when allActive is non-empty
+      // This preserves the previous IDs when copilot is generating (allActive may be empty)
+      if(allActive.length > 0) _lastRenderedIds = activeIds;
+
+      render(displayed, msgsMap, activeMins, cutoff);
+      populateAppDropdown(displayed);
+      populateUserDropdown(displayed, msgsMap);
+      applyClientFilters();
+      if(hashChanged && !isFirstLoad) toast(`↺ Updated — ${displayed.length} chat${displayed.length!==1?'s':''}`);
+    }
+
+    // Restore green status
+    setConn('green','Authenticated as '+cfg.user+' @ '+cfg.viyaUrl.replace(/^https?:\/\//,''));
+
+  } catch(e){
+    setConn('red',`Error: ${e.message}`);
+    toast(`❌ ${e.message}`,4000);
+  } finally {
+    $('fetchBtn').disabled=false;
+    _isFetching = false;
+    _fetchPromise = null;
+  }
+  })();
+  return _fetchPromise;
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function render(chats,msgsMap,activeMins,cutoff){
+  const main=$('main');
+
+  // Remove all previous cards and empty states
+  [...main.querySelectorAll('.chat-card, .empty')].forEach(c=>c.remove());
+
+  if(!chats.length){
+    const empty=document.createElement('div');
+    empty.className='empty';
+    empty.innerHTML=`<div class="empty-icon">${mode==='active'?'😴':'📭'}</div>
+      <h3>${mode==='active'?`No active chats in last ${activeMins} min`:'No chats found'}</h3>
+      <p style="color:var(--text-dim);margin-top:8px">${mode==='active'?'Try increasing the active window or switching to All.':''}</p>`;
+    main.appendChild(empty);
+    return;
+  }
+
+  // Sort by modifiedTimeStamp
+  const sorted = [...chats].sort((a,b)=>{
+    const ta=a.modifiedTimeStamp||'', tb=b.modifiedTimeStamp||'';
+    return sortOrder==='newest' ? tb.localeCompare(ta) : ta.localeCompare(tb);
+  });
+
+  const fragment = document.createDocumentFragment();
+  sorted.forEach((chat,idx)=>{
+    const isActive=new Date(chat.modifiedTimeStamp)>=cutoff;
+    const msgs=msgsMap[chat.id];
+    // Collapsed by default — unless the user explicitly expanded this card
+    if(!collapsedSet.has('expanded:'+chat.id)){
+      collapsedSet.add(chat.id);
+    }
+    const collapsed=collapsedSet.has(chat.id);
+    const copilot=chat.copilot||{};
+
+    const card=document.createElement('div');
+    card.className=`chat-card ${isActive?'is-active':''} ${collapsed?'collapsed':''}`;
+    card.id=`card-${chat.id}`;
+    card.dataset.user       = (chat.createdBy||'').toLowerCase();
+    card.dataset.app        = (chat.applicationName||'').toLowerCase();
+    card.dataset.modifiedby = (chat.modifiedBy||'').toLowerCase();
+    card.dataset.modified   = chat.modifiedTimeStamp||'';
+
+    const actTag=isActive?`<span class="tag tag-green">● ACTIVE</span>`:`<span class="tag tag-dim">○ idle</span>`;
+    const msgCount = (msgs != null && msgs !== undefined) ? msgs.length : '?';
+    const chip=`<span class="counter-chip ${isActive?'green-chip':''}">${msgCount}</span>`;
+
+    const msgsHtml = (msgs === null)
+      ? `<div class="message"><div class="msg-body" style="color:var(--red)">❌ Failed to load messages</div></div>`
+      : (msgs === undefined)
+        ? `<div class="message"><div class="msg-body" style="color:var(--text-dim);font-style:italic">Click Fetch to load messages</div></div>`
+        : msgs.length === 0
+          ? `<div class="message"><div class="msg-body" style="color:var(--text-dim);font-style:italic">No messages</div></div>`
+          : [...msgs].sort((a,b)=>(a.creationTimeStamp||'').localeCompare(b.creationTimeStamp||'')).map(renderMessage).join('');
+
+    card.innerHTML=`
+      <div class="chat-header" onclick="toggleCard('${chat.id}')">
+        <div class="chat-meta">
+          <div class="chat-id">${chat.id}</div>
+          <div class="chat-title">${chat.applicationName||'?'} · ${chat.createdBy}</div>
+          <div class="chat-sub">
+            <span>created ${fmtTs(chat.creationTimeStamp)}</span>
+            <span>modified ${fmtTs(chat.modifiedTimeStamp)}</span>
+            <span>by ${chat.modifiedBy==='anonymous' ? '<em style="color:var(--accent2)">⟳ generating…</em>' : chat.modifiedBy}</span>
+          </div>
+        </div>
+        <div class="chat-badges">
+          ${actTag}
+          <span class="tag tag-blue">${chat.applicationName||'?'}</span>
+          <span class="tag tag-purple">${copilot.id||'?'} ${copilot.version||''}</span>
+          ${chip}
+          <button class="card-export-btn" title="Export this chat as HTML" onclick="event.stopPropagation();exportChatById('${chat.id}')">⬇</button>
+          <span class="chevron">▾</span>
+        </div>
+      </div>
+      <div class="messages-wrap" style="max-height:${collapsed?'0':'6000px'}">
+        ${msgsHtml}
+      </div>`;
+
+    fragment.appendChild(card);
+  });
+  main.appendChild(fragment);
+}
+
+var _msgStore = {};
+
+// Message types to always skip — internal function plumbing, not user-visible
+// Stored lowercase; renderMessage checks both original and lowercased type
+const HIDDEN_MSG_TYPES = new Set([
+  'functionresult','functionResult','FUNCTIONRESULT',
+  'copilotfunctionresponse','copilotFunctionResponse','COPILOTFUNCTIONRESPONSE',
+]);
+
+function renderMessage(m){
+  // Store the full message object so the bookmark button can retrieve it safely
+  if(m.id) _msgStore[m.id] = m;
+
+  // Normalise type to lowercase for matching
+  const type = (m.type||'').toLowerCase();
+
+  // Skip internal function plumbing types immediately
+  if(HIDDEN_MSG_TYPES.has(m.type) || HIDDEN_MSG_TYPES.has(type)) return '';
+
+  // SAS API stores content in different fields by message type:
+  // - userRequest        → content (string)
+  // - userPromptRequest  → selectedPrompt (string or {text/label/value} object) or content
+  // - copilotResponse    → content (string)
+  function extractText(v){
+    if(!v) return '';
+    if(typeof v === 'string') return v;
+    if(typeof v === 'object'){
+      // Common nested shapes: {text:...}, {label:...}, {value:...}, {content:...}, {prompt:...}
+      return String(v.text || v.label || v.value || v.content || v.prompt || v.title || JSON.stringify(v));
+    }
+    return String(v);
+  }
+  const content = extractText(m.content || m.selectedPrompt || m.value || m.text || m.prompt || '').trim();
+
+  // Skip if no content found in any field
+  if(!content) return '';
+
+  // User: any type containing 'user' or 'prompt'
+  const isUser    = type.includes('user') || type.includes('prompt');
+  // Copilot: any type starting with 'copilot' but not a function call
+  const isCopilot = type.startsWith('copilot') && !type.includes('function');
+
+  // Derive app base path from the chat so relative links resolve correctly
+  // e.g. SAS Visual Analytics → /SASVisualAnalytics/
+  const chatObj = m.chatId ? _cachedChats.find(c=>c.id===m.chatId) : null;
+  const appName = chatObj ? (chatObj.applicationName||'') : '';
+  const appPath = appName
+    ? '/' + appName.replace(/\s+\(.*?\)/g,'').trim().replace(/\s+/g,'') + '/'
+    : '';
+
+  const cls  = isUser ? 'user' : isCopilot ? 'copilot' : '';
+  const icon = isUser ? '👤'   : isCopilot ? '🤖'      : '💬';
+  const role = isUser ? 'USER' : isCopilot ? 'COPILOT' : (m.type||'?').toUpperCase();
+  const flags=[
+    m.canceled?`<span class="tag tag-yellow">⚠ CANCELED</span>`:'',
+    m.complete===false?`<span class="tag" style="border-color:rgba(239,68,68,.3);color:var(--red);background:rgba(239,68,68,.1)">⚠ INCOMPLETE</span>`:'',
+  ].join('');
+  const providers=(m.context?.providers||[]).map(p=>p.id).filter(Boolean);
+  const provHtml=providers.length?`<div class="msg-providers">↳ providers: ${providers.map(p=>`<span class="badge">${p}</span>`).join('')}</div>`:'';
+  const isSaved = isMsgSaved(m.id);
+  const bookmarkTitle = isSaved ? 'Remove from saved' : 'Save this prompt';
+  // Pass only the safe msg ID — full object retrieved from _msgStore in handler
+  const safeId = (m.id||'').replace(/['"\\]/g,'');
+  return `
+  <div class="message ${cls}" data-msg-id="${safeId}">
+    <div class="msg-avatar">${icon}</div>
+    <div class="msg-body">
+      <div class="msg-meta">
+        <span class="msg-role">${role}</span>
+        <span class="msg-ts">${fmtTs(m.creationTimeStamp)}</span>
+        <span class="msg-id-badge">${safeId.slice(0,8)}…</span>
+        ${flags}
+        <button class="msg-bookmark-btn ${isSaved?'saved':''}" title="${bookmarkTitle}"
+                onclick="toggleSaveMsg('${safeId}')">⭐</button>
+      </div>
+      <div class="msg-content ${content?'':'is-empty'}">${content?renderMd(content,appPath):'[empty]'}</div>
+      ${provHtml}
+    </div>
+  </div>`;
+}
+
+// ── Build marked renderer ONCE — reused for every message ────────────────────
+(function initMarked(){
+  const renderer = new marked.Renderer();
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  renderer.code = (code, lang) => {
+    const id    = 'cb-' + Math.random().toString(36).slice(2,9);
+    const label = lang || 'code';
+    return `<div class="md-code-block">`
+      +`<span class="md-code-lang"><span>${esc(label)}</span>`
+      +`<button class="md-copy-btn" onclick="copyCode('${id}')">⎘ copy</button></span>`
+      +`<pre><code id="${id}">${esc(code)}</code></pre></div>`;
+  };
+  renderer.heading   = (t,l) => `<span class="${['','md-h1','md-h2','md-h3','md-h3','md-h3','md-h3'][l]||'md-h3'}">${t}</span>`;
+  renderer.link = (h,_,t) => {
+    // Resolve relative URLs against the Viya4 cluster
+    // Handles three cases:
+    //   /SASVisualAnalytics/0#ve19  → root-relative: prepend viyaUrl only
+    //   0#ve19                      → path-relative: prepend viyaUrl + app base path
+    //   https://...                 → already absolute: leave unchanged
+    var href = h;
+    if(href && !/^https?:\/\//i.test(href) && !/^mailto:/i.test(href)){
+      var base = (cfg && cfg.viyaUrl) ? cfg.viyaUrl.replace(/\/+$/,'') : '';
+      if(base){
+        if(href.startsWith('/')){
+          // Root-relative — just prepend the cluster URL
+          href = base + href;
+        } else {
+          // Path-relative (e.g. "0#ve19") — need the app base path too.
+          // _currentRenderAppPath is set by renderMd when it knows the app context
+          var appBase = (typeof _currentRenderAppPath !== 'undefined' && _currentRenderAppPath)
+            ? _currentRenderAppPath
+            : '/SASVisualAnalytics/';   // sensible default for VA links
+          href = base + appBase + href;
+        }
+      }
+    }
+    return `<a class="md-link" href="${href}" target="_blank" rel="noopener">${t}</a>`;
+  };
+  renderer.hr        = ()     => `<hr class="md-hr">`;
+  renderer.strong    = t      => `<span class="md-bold">${t}</span>`;
+  renderer.em        = t      => `<em class="md-em">${t}</em>`;
+  renderer.codespan  = c      => `<code class="md-code">${c}</code>`;
+  renderer.list      = (b,o)  => o ? `<ol>${b}</ol>` : `<ul>${b}</ul>`;
+  renderer.listitem  = t      => `<li>${t.replace(/^<p>(.*?)<\/p>\n?$/s,'$1')}</li>\n`;
+  renderer.paragraph = t      => `<p>${t}</p>`;
+  marked.use({ renderer, breaks: true, gfm: true });
+})();
+
+var _currentRenderAppPath = '';   // set before marked.parse so the link renderer can use it
+
+function renderMd(text, appPath){
+  _currentRenderAppPath = appPath || '';
+  var result = marked.parse(text.replace(/\\n/g,'\n'));
+  _currentRenderAppPath = '';
+  return result;
+}
+
+function toggleCard(id){
+  const card=$(`card-${id}`), wrap=card.querySelector('.messages-wrap');
+  const c=card.classList.toggle('collapsed');
+  wrap.style.maxHeight=c?'0':'6000px';
+  if(c){
+    collapsedSet.add(id);
+    collapsedSet.delete('expanded:'+id);
+  } else {
+    collapsedSet.delete(id);
+    collapsedSet.add('expanded:'+id);   // remember user explicitly opened this
+  }
+}
+function expandAll(){
+  document.querySelectorAll('.chat-card').forEach(c=>{
+    const id=c.id.replace('card-','');
+    c.classList.remove('collapsed');
+    c.querySelector('.messages-wrap').style.maxHeight='6000px';
+    collapsedSet.delete(id);
+    collapsedSet.add('expanded:'+id);
+  });
+}
+function collapseAll(){
+  document.querySelectorAll('.chat-card').forEach(c=>{
+    const id=c.id.replace('card-','');
+    c.classList.add('collapsed');
+    c.querySelector('.messages-wrap').style.maxHeight='0';
+    collapsedSet.add(id);
+    collapsedSet.delete('expanded:'+id);
+  });
+}
+
+// ── Client-side filters (user + search) ──────────────────────────────────────
+var _lastDropdownUsers = '';
+var _lastDropdownApps  = '';
+
+function populateAppDropdown(chats){
+  const apps = new Set();
+  chats.forEach(c=>{
+    // Exclude embedding apps from the dropdown — they are system/background calls
+    if(c.applicationName && !c.applicationName.toLowerCase().includes('embedding'))
+      apps.add(c.applicationName);
+  });
+  const sig = [...apps].sort().join(' ');
+  if(sig === _lastDropdownApps) return;
+  _lastDropdownApps = sig;
+  const prev = $('appFilter').value;
+  const sel  = $('appFilter');
+  sel.innerHTML = '<option value="">all apps</option>';
+  [...apps].sort().forEach(a=>{
+    const o = document.createElement('option');
+    o.value = a; o.textContent = a;
+    if(a === prev) o.selected = true;
+    sel.appendChild(o);
+  });
+}
+
+function populateUserDropdown(chats, msgsMap){
+  const prev = $('userFilter').value;
+  allUsers.clear();
+  chats.forEach(c=>{
+    if(c.createdBy)  allUsers.add(c.createdBy);
+    if(c.modifiedBy) allUsers.add(c.modifiedBy);
+    (msgsMap[c.id]||[]).forEach(m=>{ if(m.createdBy) allUsers.add(m.createdBy); });
+  });
+  // Skip DOM rebuild if the user list hasn't changed
+  const sig = [...allUsers].sort().join('\x00');
+  if(sig === _lastDropdownUsers) return;
+  _lastDropdownUsers = sig;
+  const sel = $('userFilter');
+  sel.innerHTML = '<option value="">all users</option>';
+  [...allUsers].sort().forEach(u=>{
+    const o=document.createElement('option');
+    o.value=u; o.textContent=u;
+    if(u===prev) o.selected=true;
+    sel.appendChild(o);
+  });
+}
+
+// Debounced search — waits 220ms after last keystroke before filtering
+let _filterTimer = null;
+function debounceFilter(){
+  clearTimeout(_filterTimer);
+  _filterTimer = setTimeout(applyClientFilters, 220);
+}
+
+function applyClientFilters(){
+  const userVal   = $('userFilter').value.trim().toLowerCase();
+  const appVal    = $('appFilter').value.trim().toLowerCase();
+  const searchVal = $('msgSearch').value.trim().toLowerCase();
+
+  // Toggle clear button visibility
+  $('clearFiltersBtn').style.display = (userVal||appVal||searchVal) ? '' : 'none';
+
+  // Remove all previous highlights efficiently
+  document.querySelectorAll('mark.hl').forEach(m=>{
+    m.replaceWith(document.createTextNode(m.textContent));
+  });
+  searchMatches = []; searchIdx = 0;
+
+  let totalHidden = 0;
+
+  document.querySelectorAll('.chat-card').forEach(card=>{
+    const chatCreatedBy = (card.dataset.user||'').toLowerCase();
+    let cardVisible = true;
+
+    // App filter: hide card if applicationName doesn't match
+    const chatApp = (card.dataset.app||'').toLowerCase();
+    // Embedding chats are always hidden — they are anonymous system calls
+    if(chatApp.includes('embedding')){
+      card.classList.add('hidden-card');
+      return;
+    }
+    // Chats modified by 'anonymous' are system-generated — permanently hidden
+    // Exception: if the chat is in the grace set it's a real chat mid-generation
+    if((card.dataset.modifiedby||'') === 'anonymous'){
+      const cardId = card.dataset.chatid || card.id.replace('card-','');
+      if(!cardId || !_activeGraceSet[cardId]){
+        card.classList.add('hidden-card');
+        return;
+      }
+    }
+    if(appVal && !chatApp.includes(appVal)){
+      card.classList.add('hidden-card');
+      return;
+    }
+
+    // User filter: hide whole card if chat not by selected user
+    if(userVal && !chatCreatedBy.includes(userVal)){
+      card.classList.add('hidden-card');
+      return;
+    } else {
+      card.classList.remove('hidden-card');
+    }
+
+    // Search filter: per-message visibility + highlight
+    const messages = card.querySelectorAll('.message');
+    let anyVisible = messages.length === 0; // cards with no messages stay visible
+
+    messages.forEach(msgEl=>{
+      const contentEl = msgEl.querySelector('.msg-content');
+      if(!contentEl){ msgEl.classList.remove('hidden-msg'); anyVisible=true; return; }
+
+      const text = contentEl.textContent.toLowerCase();
+      if(!searchVal || text.includes(searchVal)){
+        msgEl.classList.remove('hidden-msg');
+        anyVisible = true;
+
+        // Apply highlight
+        if(searchVal && contentEl){
+          highlightNode(contentEl, searchVal);
+          contentEl.querySelectorAll('mark.hl').forEach(m=>searchMatches.push(m));
+        }
+      } else {
+        msgEl.classList.add('hidden-msg');
+        totalHidden++;
+      }
+    });
+
+    // If search active and no messages match, hide the whole card
+    if(searchVal && !anyVisible){
+      card.classList.add('hidden-card');
+    } else {
+      card.classList.remove('hidden-card');
+      // Auto-expand card if it has search matches
+      if(searchVal && anyVisible){
+        card.classList.remove('collapsed');
+        card.querySelector('.messages-wrap').style.maxHeight='6000px';
+        var sid = card.id.replace('card-','');
+        collapsedSet.delete(sid);
+        collapsedSet.add('expanded:'+sid);
+      }
+    }
+  });
+
+  // Update search result bar
+  const sbar = $('searchBar');
+  if(searchVal){
+    sbar.classList.add('visible');
+    $('searchMatchCount').textContent = searchMatches.length;
+    $('searchTerm').textContent = searchVal;
+    $('searchPos').textContent  = searchMatches.length ? `1 / ${searchMatches.length}` : '0 / 0';
+    const hiddenCards = document.querySelectorAll('.chat-card.hidden-card').length;
+    $('hiddenChatsNote').textContent = hiddenCards ? `(${hiddenCards} chat${hiddenCards>1?'s':''} hidden)` : '';
+    if(searchMatches.length){ focusMatch(0); }
+  } else {
+    sbar.classList.remove('visible');
+  }
+
+  // Update count badges: visible (after all filters) vs non-embedding total
+  const visibleCards   = document.querySelectorAll('.chat-card:not(.hidden-card)').length;
+  const nonEmbedTotal  = _cachedChats.filter(c=>
+    !(c.applicationName||'').toLowerCase().includes('embedding') &&
+    (c.modifiedBy||'').toLowerCase() !== 'anonymous'
+  ).length;
+  updateChatBadges(visibleCards, nonEmbedTotal);
+}
+
+function highlightNode(el, term){
+  // Walk text nodes, but skip anything inside <code> or <pre> blocks
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+    acceptNode: node => {
+      let p = node.parentElement;
+      while(p && p !== el){
+        if(p.tagName === 'CODE' || p.tagName === 'PRE') return NodeFilter.FILTER_REJECT;
+        p = p.parentElement;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+  const nodes = [];
+  let n;
+  while((n=walker.nextNode())) nodes.push(n);
+  // Replace each text node with potentially multiple <mark> spans
+  nodes.forEach(node=>{
+    const text  = node.textContent;
+    const lower = text.toLowerCase();
+    if(!lower.includes(term)) return;
+    const frag = document.createDocumentFragment();
+    let   pos  = 0, found;
+    while((found = lower.indexOf(term, pos)) !== -1){
+      if(found > pos) frag.appendChild(document.createTextNode(text.slice(pos, found)));
+      const mark = document.createElement('mark');
+      mark.className = 'hl';
+      mark.textContent = text.slice(found, found + term.length);
+      frag.appendChild(mark);
+      pos = found + term.length;
+    }
+    if(pos < text.length) frag.appendChild(document.createTextNode(text.slice(pos)));
+    node.parentNode.replaceChild(frag, node);
+  });
+}
+
+function focusMatch(idx){
+  searchMatches.forEach(m=>m.classList.remove('hl-focus'));
+  if(!searchMatches.length) return;
+  idx = ((idx % searchMatches.length) + searchMatches.length) % searchMatches.length;
+  searchIdx = idx;
+  searchMatches[idx].classList.add('hl-focus');
+  searchMatches[idx].scrollIntoView({behavior:'smooth', block:'center'});
+  $('searchPos').textContent = `${idx+1} / ${searchMatches.length}`;
+}
+
+function navSearch(dir){ focusMatch(searchIdx + dir); }
+
+function clearFilters(){
+  $('userFilter').value   = '';
+  $('appFilter').value    = '';
+  _lastDropdownUsers = '';
+  $('msgSearch').value    = '';
+  $('clearFiltersBtn').style.display = 'none';
+  applyClientFilters();
+}
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+function toggleTheme(){
+  const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+  const next = isDark ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  $('themeBtn').textContent = next === 'light' ? '🌙' : '☀️';
+  try{ localStorage.setItem('viya4-theme', next); } catch(e){}
+}
+
+function disconnect(){
+  stopLive();
+  token=null; tokenAt=0; lastHash='';
+  cfg={viyaUrl:'',user:'',pass:'',interval:5};
+  editingProfileId = null;  // reset so next profile selection starts fresh
+  _cachedChats = []; _cachedMsgsMap = {}; _chatCache = {}; _activeGraceSet = {}; _lastRenderedIds = ''; _lastAllItems = []; _lastDropdownUsers = ''; _lastDropdownApps = ''; lastHash='';
+  // Note: persisted localStorage cache is intentionally kept — reused on next login
+  // Clear saved panel so next profile's prompts load fresh
+  $('savedPanel').classList.remove('open');
+  savedActiveTag='';
+  $('nsBadge').style.display='none';
+  $('appShell').style.display='none';
+  $('loginScreen').style.display='flex';
+  renderProfileList();
+  showWelcome();
+  toggleConfig();
+}
+
+function updateStickyOffsets(){
+  const toolbar   = document.querySelector('.toolbar');
+  const statusbar = document.querySelector('.statusbar');
+  const root      = document.documentElement;
+  if(toolbar)   root.style.setProperty('--toolbar-h',   toolbar.offsetHeight   + 'px');
+  if(statusbar) root.style.setProperty('--statusbar-h', statusbar.offsetHeight + 'px');
+}
+
+// ── Icon / Color Picker ───────────────────────────────────────────────────────
+var PICKER_EMOJIS = [
+  '🖥️','🌐','🔧','⚙️','🚀','🔬','🏢','🧪','💼','🛠️',
+  '☁️','🔒','📊','📡','🗄️','🔑','🐳','⚡','🌍','🏗️',
+  '🎯','🔴','🟢','🔵','🟡','🟠','🟣','⬛','🏷️','📌',
+  '🦁','🐯','🦊','🐧','🦅','🐬','🦋','🌲','🌊','🏔️',
+];
+var PICKER_COLORS = [
+  '#3b82f6','#2563eb','#06b6d4','#10b981','#059669',
+  '#f59e0b','#f97316','#ef4444','#ec4899','#8b5cf6',
+  '#6366f1','#0ea5e9','#14b8a6','#84cc16','#78716c',
+];
+
+var pickerEmoji = '🖥️';
+var pickerColor = '#3b82f6';
+
+function initIconPicker(){
+  // Emoji grid
+  var grid = $('emojiGrid');
+  if(!grid) return;
+  grid.innerHTML = PICKER_EMOJIS.map(function(e){
+    return '<div class="emoji-opt'+(e===pickerEmoji?' selected':'')+'" data-e="'+e+'" onclick="pickEmoji(\''+e+'\')" title="'+e+'">'+e+'</div>';
+  }).join('');
+
+  // Color swatches
+  var sw = $('colorSwatches');
+  sw.innerHTML = PICKER_COLORS.map(function(c){
+    var safe = c.replace('#','');
+    return '<div class="color-swatch'+(c===pickerColor?' selected':'')+'" data-c="'+c+'"'
+      +' style="background:'+c+'"'
+      +' onclick="pickColor(\''+safe+'\')" title="'+c+'"></div>';
+  }).join('');
+
+  updatePreview();
+}
+
+function toggleIconPicker(e){
+  e.stopPropagation();
+  var pop = $('emojiPopup');
+  pop.classList.toggle('open');
+  if(pop.classList.contains('open')) initIconPicker();
+}
+
+// Close picker when clicking outside
+document.addEventListener('click', function(e){
+  var pop = $('emojiPopup');
+  if(pop && !pop.contains(e.target) && e.target.id !== 'iconPreview'){
+    pop.classList.remove('open');
+  }
+});
+
+function pickEmoji(em){
+  pickerEmoji = em;
+  document.querySelectorAll('.emoji-opt').forEach(function(el){
+    el.classList.toggle('selected', el.getAttribute('data-e')===em);
+  });
+  updatePreview();
+}
+
+function pickColor(safe){
+  pickerColor = '#'+safe;
+  document.querySelectorAll('.color-swatch').forEach(function(el){
+    el.classList.toggle('selected', el.getAttribute('data-c')==='#'+safe);
+  });
+  updatePreview();
+}
+
+function updatePreview(){
+  var prev = $('iconPreview');
+  if(!prev) return;
+  prev.textContent = pickerEmoji;
+  prev.style.background = pickerColor+'22';
+  prev.style.color       = pickerColor;
+  prev.style.borderColor = pickerColor+'66';
+}
+
+function setPickerValues(emoji, color){
+  pickerEmoji = emoji || '🖥️';
+  pickerColor = color || '#3b82f6';
+  updatePreview();
+}
+
+var _titleTimer = null;
+function updateWizardTitle(){
+  // Debounce — avoids re-rendering the wizard header on every keystroke
+  clearTimeout(_titleTimer);
+  _titleTimer = setTimeout(function(){
+    var n = $('profileName').value.trim();
+    $('wizardTitle').textContent    = n || 'New Profile';
+    $('wizardSubtitle').textContent = cfg.viyaUrl
+      ? cfg.viyaUrl.replace(/^https?:\/\//,'')
+      : 'Configure connection';
+  }, 150);
+}
+
+// Profiles stored in localStorage. Passwords NOT stored (cleared on save).
+// Shape: { id, name, color, emoji, viyaUrl, user, interval }
+
+var PROFILE_KEY = 'viya4-profiles';
+var editingProfileId = null;   // null = new profile
+
+function loadProfiles(){
+  try{
+    var raw = JSON.parse(localStorage.getItem(PROFILE_KEY));
+    if(!Array.isArray(raw)) return [];
+    // Sanitise each profile — strip old fields, ensure required ones exist
+    return raw.filter(function(p){ return p && p.id; }).map(function(p){
+      return {
+        id:       p.id,
+        name:     p.name     || 'Profile',
+        color:    p.color    || '#3b82f6',
+        emoji:    p.emoji    || '🖥️',
+        viyaUrl:  p.viyaUrl  || '',
+        lastUser: p.lastUser || p.user || '',
+        interval: p.interval || 5,
+        savedAt:  p.savedAt  || '',
+      };
+    });
+  } catch(e){ return []; }
+}
+function saveProfiles(profiles){
+  try { localStorage.setItem(PROFILE_KEY, JSON.stringify(profiles)); }
+  catch(e){ console.warn('Could not save profiles', e); }
+}
+function genId(){
+  return 'p-' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+}
+
+var COLORS = [
+  '#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6',
+  '#06b6d4','#ec4899','#f97316','#6366f1','#14b8a6'
+];
+var EMOJIS = ['🖥️','🌐','🔧','⚙️','🚀','🔬','🏢','🧪','💼','🛠️'];
+
+function profileColor(idx){ return COLORS[idx % COLORS.length]; }
+function profileEmoji(idx){ return EMOJIS[idx % EMOJIS.length]; }
+
+// ── Render sidebar profile list ───────────────────────────────────────────────
+function renderProfileList(){
+  var profiles = loadProfiles();
+  var list = $('profileList');
+  if(!profiles.length){
+    list.innerHTML = '<div class="profile-empty"><div class="profile-empty-icon">🗂️</div>No profiles yet.<br>Click <strong>New Profile</strong> below.</div>';
+    showWelcome();
+    return;
+  }
+  list.innerHTML = profiles.map(function(p, i){
+    var color = p.color || profileColor(i);
+    var emoji = p.emoji || profileEmoji(i);
+    var isActive = editingProfileId === p.id ? ' active' : '';
+    return '<div class="profile-item'+isActive+'" data-id="'+p.id+'" onclick="selectProfile(\''+p.id+'\')">'
+      +'<div class="profile-avatar" style="background:'+color+'22;color:'+color+';border:1.5px solid '+color+'44">'+emoji+'</div>'
+      +'<div class="profile-info">'
+        +'<div class="profile-name">'+escHtml(p.name||'Unnamed')+'</div>'
+        +'<div class="profile-meta">'+(p.viyaUrl ? escHtml(p.viyaUrl.replace(/^https?:\/\//,'')) : 'not configured')+'</div>'
+      +'</div>'
+      +'<div class="profile-actions">'
+        +'<button class="profile-action-btn export-btn" title="Export this profile" onclick="event.stopPropagation();exportProfile(\''+p.id+'\')">⬇</button>'
+      +'<button class="profile-action-btn" title="Delete" onclick="event.stopPropagation();deleteProfile(\''+p.id+'\')">🗑</button>'
+      +'</div>'
+      +'</div>';
+  }).join('');
+}
+
+function escHtml(s){
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Show/hide wizard vs welcome ───────────────────────────────────────────────
+function showWelcome(){
+  $('profileWelcome').style.display = 'flex';
+  $('wizardBox').style.display      = 'none';
+}
+function showWizard(){
+  $('profileWelcome').style.display = 'none';
+  $('wizardBox').style.display      = 'block';
+}
+
+// ── New profile ───────────────────────────────────────────────────────────────
+function newProfile(){
+  editingProfileId = null;
+
+  // Clear form
+  $('profileName').value       = '';
+  $('login-user').value        = 'sasboot';
+  $('login-pass').value        = '';
+  $('login-interval').value    = '5';
+  $('loginError').classList.remove('show');
+  $('loginBtn').disabled = false;
+  $('loginBtn').textContent = 'Connect →';
+
+  // Reset wizard to step 1
+
+  $('wizardTitle').textContent    = 'New Profile';
+
+  // Deselect sidebar items
+  document.querySelectorAll('.profile-item').forEach(function(el){ el.classList.remove('active'); });
+  showWizard();
+  $('profileName').focus();
+}
+
+// ── Select existing profile ───────────────────────────────────────────────────
+function selectProfile(id){
+  var profiles = loadProfiles();
+  var p = null;
+  for(var i=0;i<profiles.length;i++){ if(profiles[i].id===id){ p=profiles[i]; break; } }
+  if(!p) return;
+
+  editingProfileId = id;
+
+  setPickerValues(p.emoji || '🖥️', p.color || '#3b82f6');
+
+  // Populate form fields
+  $('profileName').value    = p.name      || '';
+  $('login-url').value      = p.viyaUrl   || '';
+  $('login-user').value     = p.lastUser || p.user || 'sasboot';
+  $('login-pass').value     = '';   // never stored — always re-enter
+  $('login-interval').value = p.interval  || 5;
+
+  // Reset wizard UI cleanly
+  $('loginError').classList.remove('show');
+  $('loginBtn').disabled = false;
+
+  // Update wizard header
+  $('wizardTitle').textContent    = p.name || 'Profile';
+  $('wizardSubtitle').textContent = p.viyaUrl
+    ? p.viyaUrl.replace(/^https?:\/\//,'')
+    : 'Configure connection';
+
+  // Mark active in sidebar
+  document.querySelectorAll('.profile-item').forEach(function(el){
+    el.classList.toggle('active', el.getAttribute('data-id')===id);
+  });
+
+  showWizard();
+}
+
+// ── Delete profile ────────────────────────────────────────────────────────────
+function deleteProfile(id){
+  var profiles = loadProfiles().filter(function(p){ return p.id !== id; });
+  saveProfiles(profiles);
+  if(editingProfileId === id){
+    editingProfileId = null;
+    showWelcome();
+  }
+  renderProfileList();
+}
+
+// ── Save profile (called from doLogin on success) ─────────────────────────────
+function saveCurrentProfile(extra){
+  var profiles = loadProfiles();
+  var idx = -1;
+  for(var i=0;i<profiles.length;i++){ if(profiles[i].id===editingProfileId){ idx=i; break; } }
+
+  var nameEl = $('profileName');
+  var name = (nameEl ? nameEl.value||'' : '').trim() || extra.viyaUrl || 'Profile '+(profiles.length+1);
+  var existing = idx >= 0 ? profiles[idx] : {};
+
+  var updated = {
+    id:        existing.id    || genId(),
+    name:      name,
+    color:     pickerColor    || existing.color || '#3b82f6',
+    emoji:     pickerEmoji    || existing.emoji || '🖥️',
+    viyaUrl:   extra.viyaUrl  || existing.viyaUrl  || '',
+    lastUser:  extra.user     || existing.lastUser  || '',
+    interval:  extra.interval || existing.interval  || 5,
+    savedAt:   new Date().toISOString(),
+  };
+
+  if(idx >= 0) profiles[idx] = updated;
+  else profiles.push(updated);
+  saveProfiles(profiles);
+  editingProfileId = updated.id;
+  // Defer sidebar re-render to next animation frame — avoids blocking the UI
+  requestAnimationFrame(renderProfileList);
+  return updated;
+}
+
+// ── Saved Prompts ─────────────────────────────────────────────────────────────
+var SAVED_KEY_PREFIX = 'viya4-saved-prompts';
+var savedActiveTag   = '';   // currently filtered tag
+
+function savedKey(){
+  // Favorites scoped by username + cluster URL
+  // Stable across profile renames, deletions and re-imports
+  // Same user on different clusters = separate favorites
+  // Same cluster, different users = separate favorites
+  var user    = cfg.user    ? cfg.user.toLowerCase().trim()                       : '';
+  var cluster = cfg.viyaUrl ? cfg.viyaUrl.replace(/^https?:\/\//,'').toLowerCase().replace(/\/+$/,'') : '';
+  if(!user && !cluster) return SAVED_KEY_PREFIX;
+  return SAVED_KEY_PREFIX + (cluster ? ':' + cluster : '') + (user ? ':' + user : '');
+}
+
+function loadSaved(){
+  try{ return JSON.parse(localStorage.getItem(savedKey())) || []; }
+  catch(e){ return []; }
+}
+function storeSaved(items){
+  try{ localStorage.setItem(savedKey(), JSON.stringify(items)); }
+  catch(e){ console.warn('Could not save prompts', e); }
+}
+
+function isMsgSaved(msgId){
+  if(!msgId) return false;
+  return loadSaved().some(function(s){ return s.id === msgId; });
+}
+
+function toggleSaveMsg(msgId){
+  var m = _msgStore[msgId];
+  if(!m){
+    toast('Message not found - try refreshing');
+    return;
+  }
+
+  var items = loadSaved();   // loaded once, reused below
+  var idx   = -1;
+  for(var i=0;i<items.length;i++){ if(items[i].id===m.id){ idx=i; break; } }
+
+  if(idx >= 0){
+    // Already saved — remove it
+    items.splice(idx, 1);
+    storeSaved(items);
+    toast('Removed from saved');
+  } else {
+    // New save — ask for optional tags
+    var note = window.prompt('Add tags for this saved prompt (optional, comma-separated):\ne.g.  ldap, identity, fix', '');
+    if(note === null) return;   // user cancelled
+    var tags = note.trim()
+      ? note.split(/[\s,]+/).map(function(t){ return t.replace(/^#/,'').trim(); }).filter(Boolean)
+      : [];
+
+    items.unshift({
+      id:        m.id,
+      type:      m.type,
+      content:   (function(v){ if(!v) return ''; if(typeof v==='string') return v.trim(); if(typeof v==='object') return String(v.text||v.label||v.value||v.content||v.prompt||JSON.stringify(v)).trim(); return String(v).trim(); })(m.content || m.selectedPrompt || ''),
+      role:      (function(t){ return t==='userrequest'||t==='userpromptrequest'?'USER':'COPILOT'; })((m.type||'').toLowerCase()),
+      chatId:    m.chatId || '',
+      ts:        m.creationTimeStamp || '',
+      savedAt:   new Date().toISOString(),
+      tags:      tags,
+      profile:   cfg.viyaUrl ? cfg.viyaUrl.replace(/^https?:\/\//,'') : '',
+    });
+    storeSaved(items);
+    toast('⭐ Saved!');
+  }
+
+  // Update the bookmark button appearance
+  var msgEl = document.querySelector('[data-msg-id="'+msgId+'"]');
+  if(msgEl){
+    var btn = msgEl.querySelector('.msg-bookmark-btn');
+    if(btn){
+      var nowSaved = isMsgSaved(m.id);
+      btn.classList.toggle('saved', nowSaved);
+      btn.title = nowSaved ? 'Remove from saved' : 'Save this prompt';
+    }
+  }
+
+  updateSavedBadge();
+  if($('savedPanel').classList.contains('open')) renderSavedList();
+}
+
+// ── Panel toggle ──────────────────────────────────────────────────────────────
+function toggleSavedPanel(){
+  $('savedPanel').classList.toggle('open');
+  if($('savedPanel').classList.contains('open')) renderSavedList();
+}
+
+function updateSavedBadge(){
+  var n   = loadSaved().length;
+  var bdg = $('savedPanelBadge');
+  if(n > 0){ bdg.textContent=n; bdg.style.display='block'; }
+  else { bdg.style.display='none'; }
+  var cnt = $('savedCount');
+  if(cnt) cnt.textContent = n;
+}
+
+// ── Render saved list ─────────────────────────────────────────────────────────
+function renderSavedList(){
+  var items  = loadSaved();
+  var search = ($('savedSearchInput').value||'').toLowerCase().trim();
+
+  // Collect all unique tags
+  var allTags = {};
+  items.forEach(function(s){
+    (s.tags||[]).forEach(function(t){ allTags[t]=(allTags[t]||0)+1; });
+  });
+
+  // Render tag filter bar
+  var tagsBar = $('savedTagsBar');
+  var tagKeys = Object.keys(allTags).sort();
+  if(tagKeys.length){
+    tagsBar.style.display='flex';
+    tagsBar.innerHTML = '<span style="font-size:10px;color:var(--text-dim);align-self:center;white-space:nowrap">Filter:</span>'
+      + tagKeys.map(function(t){
+        var active = t===savedActiveTag ? ' active-tag' : '';
+        return '<span class="saved-tag'+active+'" onclick="filterSavedTag(\''+escSavedAttr(t)+'\')">'+escHtml(t)+' <span style="opacity:.6">'+allTags[t]+'</span></span>';
+      }).join('');
+  } else {
+    tagsBar.style.display='none';
+  }
+
+  // Filter items
+  var filtered = items.filter(function(s){
+    var matchSearch = !search
+      || s.content.toLowerCase().includes(search)
+      || (s.tags||[]).some(function(t){ return t.toLowerCase().includes(search); })
+      || (s.profile||'').toLowerCase().includes(search);
+    var matchTag = !savedActiveTag || (s.tags||[]).includes(savedActiveTag);
+    return matchSearch && matchTag;
+  });
+
+  var list = $('savedList');
+  if(!filtered.length){
+    list.innerHTML = '<div class="saved-empty"><div class="saved-empty-icon">'
+      +(items.length?'🔍':'⭐')+'</div><p>'
+      +(items.length?'No matches for your search.':'No saved prompts yet.<br>Click ⭐ on any message to save it here.')
+      +'</p></div>';
+    $('savedCount').textContent = items.length;
+    return;
+  }
+
+  $('savedCount').textContent = items.length;
+
+  list.innerHTML = filtered.map(function(s, i){
+    var roleIcon  = s.role==='USER' ? '👤' : '🤖';
+    var short     = (s.content||'').slice(0,120).replace(/\n/g,' ');
+    var savedDate = s.savedAt ? new Date(s.savedAt).toLocaleString(undefined,_fmtTsOpts) : '';
+    var tagsHtml  = (s.tags||[]).length
+      ? '<div class="saved-card-tags">'+s.tags.map(function(t){
+          return '<span class="saved-tag" onclick="filterSavedTag(\''+escSavedAttr(t)+'\')">'+escHtml(t)+'</span>';
+        }).join('')+'</div>'
+      : '';
+    var profileBadge = s.profile ? '<span style="color:var(--text-dim)"> · '+escHtml(s.profile)+'</span>' : '';
+
+    return '<div class="saved-card" id="sc-'+escSavedAttr(s.id)+'">'
+      +'<div class="saved-card-header" onclick="jumpToMessage(\''+escSavedAttr(s.id)+'\')" style="cursor:pointer" title="Click to jump to this message in the chat">'
+        +'<div class="saved-card-icon">'+roleIcon+'</div>'
+        +'<div class="saved-card-meta">'
+          +'<div class="saved-card-title">'+escHtml(short||'(empty)')+'</div>'
+          +'<div class="saved-card-sub">'+savedDate+profileBadge+'</div>'
+        +'</div>'
+        +'<div class="saved-card-actions">'
+          +'<button class="saved-card-btn" title="Jump to message" onclick="event.stopPropagation();jumpToMessage(\''+escSavedAttr(s.id)+'\')">↗</button>'
+          +'<button class="saved-card-btn" title="Copy" onclick="event.stopPropagation();copySaved(\''+escSavedAttr(s.id)+'\')">⎘</button>'
+          +'<button class="saved-card-btn" title="Edit tags" onclick="event.stopPropagation();editSavedTags(\''+escSavedAttr(s.id)+'\')">🏷</button>'
+          +'<button class="saved-card-btn" title="Export chat" onclick="event.stopPropagation();exportSavedChat(\''+escSavedAttr(s.id)+'\')">⬇</button>'
+          +'<button class="saved-card-btn del" title="Delete" onclick="event.stopPropagation();deleteSaved(\''+escSavedAttr(s.id)+'\')">🗑</button>'
+        +'</div>'
+      +'</div>'
+      +'<div class="saved-card-content" onclick="jumpToMessage(\''+escSavedAttr(s.id)+'\')" style="cursor:pointer">'+escHtml(s.content||'')+'</div>'
+      +tagsHtml
+      +'</div>';
+  }).join('');
+}
+
+function escHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function escSavedAttr(s){ return String(s||'').replace(/['"&<>]/g,''); }
+
+function filterSavedTag(tag){
+  savedActiveTag = (savedActiveTag===tag) ? '' : tag;
+  renderSavedList();
+}
+
+function jumpToMessage(id){
+  // 1. Close the panel so the message is visible
+  $('savedPanel').classList.remove('open');
+
+  // 2. Find the message DOM element by data-msg-id
+  var msgEl = document.querySelector('[data-msg-id="'+id+'"]');
+
+  if(!msgEl){
+    // Message not in DOM — it may be in a collapsed card or not yet fetched.
+    // Try to expand the containing chat card first.
+    toast('⚠ Message not visible — try switching to All or History mode', 3500);
+    return;
+  }
+
+  // 3. Expand parent chat card if collapsed
+  var card = msgEl.closest('.chat-card');
+  if(card && card.classList.contains('collapsed')){
+    var wrap = card.querySelector('.messages-wrap');
+    card.classList.remove('collapsed');
+    if(wrap) wrap.style.maxHeight = '6000px';
+    var cardId = card.id.replace('card-','');
+    collapsedSet.delete(cardId);
+    collapsedSet.add('expanded:'+cardId);
+  }
+
+  // 4. Scroll into view — offset for sticky headers
+  setTimeout(function(){
+    var headerH = 56;
+    var toolbarH = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--toolbar-h'))||52;
+    var statusH  = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--statusbar-h'))||36;
+    var offset   = headerH + toolbarH + statusH + 12;
+    var top = msgEl.getBoundingClientRect().top + window.scrollY - offset;
+    window.scrollTo({ top: top, behavior: 'smooth' });
+
+    // 5. Highlight animation
+    msgEl.classList.add('msg-highlight');
+    setTimeout(function(){ msgEl.classList.remove('msg-highlight'); }, 2200);
+  }, 120);
+}
+
+// ── Chat export to HTML ──────────────────────────────────────────────────────
+function buildChatExportHtml(chatsToExport){
+  // chatsToExport: array of { chat, msgs, savedPromptIds }
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  var bg     = isDark ? '#1a1b1e' : '#f8f9fc';
+  var bg2    = isDark ? '#25262b' : '#ffffff';
+  var bg3    = isDark ? '#2c2d32' : '#f1f3f7';
+  var text   = isDark ? '#e8eaed' : '#1a1b1e';
+  var textMid= isDark ? '#9ca3af' : '#6b7280';
+  var accent = '#3b82f6';
+  var green  = '#10b981';
+  var border = isDark ? '#3a3b40' : '#e5e7eb';
+
+  var chatHtml = chatsToExport.map(function(item){
+    var chat = item.chat;
+    var msgs = item.msgs || [];
+    var savedIds = item.savedPromptIds || [];
+    var copilot  = chat.copilot || {};
+
+    var msgsHtml = msgs
+      .filter(function(m){
+        var type = (m.type||'').toLowerCase();
+        var content = (m.content || m.selectedPrompt || m.value || m.text || m.prompt || '');
+        if(typeof content === 'object') content = content.text || content.label || JSON.stringify(content);
+        content = String(content||'').trim();
+        if(!content) return false;
+        if(['functionresult','copilotfunctionresponse'].indexOf(type) !== -1) return false;
+        return true;
+      })
+      .sort(function(a,b){ return (a.creationTimeStamp||'').localeCompare(b.creationTimeStamp||''); })
+      .map(function(m){
+        var type    = (m.type||'').toLowerCase();
+        var isUser  = type.includes('user') || type.includes('prompt');
+        var rawContent = m.content || m.selectedPrompt || m.value || m.text || m.prompt || '';
+        if(typeof rawContent === 'object') rawContent = rawContent.text || rawContent.label || JSON.stringify(rawContent);
+        var content = String(rawContent||'').trim();
+        var isStar  = savedIds.indexOf(m.id) !== -1;
+        var ts      = m.creationTimeStamp ? new Date(m.creationTimeStamp).toLocaleString() : '';
+        var roleLabel = isUser ? 'USER' : 'COPILOT';
+        var avatarBg  = isUser ? 'rgba(59,130,246,.15)' : 'rgba(6,182,212,.15)';
+        var avatarCol = isUser ? '#3b82f6' : '#06b6d4';
+        var icon      = isUser ? '&#128100;' : '&#129302;';
+        // Escape HTML in content then convert markdown-like newlines
+        // Render content as markdown — relative links get resolved against viyaUrl
+        // so chart links like /SASVisualAnalytics/... open correctly
+        var rendered = (typeof marked !== 'undefined')
+          ? marked.parse(content)
+          : content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+        return '<div style="display:flex;gap:12px;margin-bottom:18px;align-items:flex-start">'
+          +'<div style="width:32px;height:32px;border-radius:50%;background:'+avatarBg+';color:'+avatarCol
+            +';display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0">'+icon+'</div>'
+          +'<div style="flex:1;min-width:0">'
+            +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">'
+              +'<span style="font-size:10px;font-weight:700;letter-spacing:1px;color:'+avatarCol+'">'+roleLabel+'</span>'
+              +'<span style="font-size:10px;color:'+textMid+'">'+ts+'</span>'
+              +(isStar ? '<span style="font-size:12px" title="Saved prompt">&#11088;</span>' : '')
+            +'</div>'
+            +'<div style="font-size:13px;line-height:1.75;color:'+text+';word-break:break-word" class="md-export">'+rendered+'</div>'
+          +'</div>'
+        +'</div>';
+      }).join('');
+
+    var modTs = chat.modifiedTimeStamp ? new Date(chat.modifiedTimeStamp).toLocaleString() : '';
+    return '<div style="background:'+bg2+';border:1px solid '+border+';border-radius:12px;padding:24px;margin-bottom:28px">'
+      +'<div style="border-bottom:1px solid '+border+';padding-bottom:14px;margin-bottom:18px">'
+        +'<div style="font-size:10px;color:'+textMid+';font-family:monospace;margin-bottom:4px">'+chat.id+'</div>'
+        +'<div style="font-size:16px;font-weight:700;color:'+text+';margin-bottom:6px">'
+          +(chat.applicationName||'Unknown App')+' &middot; '+(chat.createdBy||'?')
+        +'</div>'
+        +'<div style="display:flex;gap:16px;font-size:11px;color:'+textMid+'">'
+          +'<span>Modified: '+modTs+'</span>'
+          +(copilot.id ? '<span>Copilot: '+copilot.id+(copilot.version?' v'+copilot.version:'')+'</span>' : '')
+        +'</div>'
+      +'</div>'
+      +(msgsHtml || '<p style="color:'+textMid+';font-style:italic;font-size:13px">No messages</p>')
+    +'</div>';
+  }).join('');
+
+  var exportDate = new Date().toLocaleString();
+  var cluster    = cfg.viyaUrl ? cfg.viyaUrl.replace(/^https?:\/\//,'') : 'Unknown cluster';
+  var user       = cfg.user || 'Unknown user';
+
+  return '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+    +'<meta name="viewport" content="width=device-width,initial-scale=1">'
+    +'<title>Viya GenAI Export &mdash; '+new Date().toLocaleDateString()+'</title>'
+    +'<style>'
+      +'*{box-sizing:border-box;margin:0;padding:0}'
+      +'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:'+bg+';color:'+text+';padding:32px 16px;font-size:14px;line-height:1.6}'
+      +'.container{max-width:860px;margin:0 auto}'
+      +'.md-export{font-size:13px;line-height:1.75}'
+      +'.md-export p{margin:0 0 8px}'
+      +'.md-export p:last-child{margin-bottom:0}'
+      +'.md-export h1,.md-export h2,.md-export h3,.md-export h4{font-weight:700;margin:12px 0 6px;color:'+text+'}'
+      +'.md-export h1{font-size:18px}.md-export h2{font-size:16px}.md-export h3{font-size:14px}'
+      +'.md-export ul,.md-export ol{padding-left:20px;margin:6px 0}'
+      +'.md-export li{margin:2px 0}'
+      +'.md-export code{font-family:"SFMono-Regular",Consolas,monospace;background:'+bg3+';padding:2px 6px;border-radius:4px;font-size:11.5px;color:'+text+'}'
+      +'.md-export pre{background:'+bg3+';border-radius:8px;padding:14px 16px;overflow-x:auto;margin:10px 0;border:1px solid '+border+'}'
+      +'.md-export pre code{background:none;padding:0;font-size:12px;line-height:1.6}'
+      +'.md-export blockquote{border-left:3px solid '+border+';padding-left:12px;color:'+textMid+';margin:8px 0}'
+      +'.md-export table{border-collapse:collapse;width:100%;margin:10px 0;font-size:12px}'
+      +'.md-export th,.md-export td{border:1px solid '+border+';padding:6px 10px;text-align:left}'
+      +'.md-export th{background:'+bg3+';font-weight:600}'
+      +'.md-export a{color:'+accent+';text-decoration:none}'
+      +'.md-export a:hover{text-decoration:underline}'
+      +'.md-export hr{border:none;border-top:1px solid '+border+';margin:12px 0}'
+      +'.md-export strong{font-weight:700}'
+      +'.md-export em{font-style:italic}'
+      +'</style>'
+    +'</head><body>'
+    +'<div class="container">'
+      +'<div style="border-bottom:2px solid '+accent+';padding-bottom:20px;margin-bottom:32px">'
+        +'<h1 style="font-size:22px;font-weight:800;color:'+accent+'">&#11088; Viya GenAI Monitor &mdash; Saved Prompts Export</h1>'
+        +'<div style="margin-top:8px;font-size:12px;color:'+textMid+'">'
+          +'Cluster: <strong>'+cluster+'</strong> &nbsp;&bull;&nbsp; '
+          +'User: <strong>'+user+'</strong> &nbsp;&bull;&nbsp; '
+          +'Exported: '+exportDate
+        +'</div>'
+      +'</div>'
+      +chatHtml
+      +'<div style="text-align:center;margin-top:40px;font-size:11px;color:'+textMid+'">Generated by Viya GenAI Monitor</div>'
+    +'</div>'
+    +'</body></html>';
+}
+
+function exportChatById(chatId){
+  // Export a full chat conversation as HTML (from card header button)
+  var chat = null;
+  for(var i=0;i<_cachedChats.length;i++){
+    if(_cachedChats[i].id===chatId){ chat=_cachedChats[i]; break; }
+  }
+  if(!chat){ toast('Chat not in cache - try Fetch first'); return; }
+  var msgs = _cachedMsgsMap[chatId] || [];
+  // Mark any saved prompts from this chat
+  var saved = loadSaved().filter(function(s){ return s.chatId===chatId; });
+  var savedIds = saved.map(function(s){ return s.id; });
+  var htmlStr = buildChatExportHtml([{ chat:chat, msgs:msgs, savedPromptIds:savedIds }]);
+  var appSlug = (chat.applicationName||'chat').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/-+$/,'');
+  var fname   = 'viya-'+appSlug+'-'+chatId.slice(0,8)+'-'+new Date().toISOString().slice(0,10)+'.html';
+  downloadBlob(new Blob([htmlStr],{type:'text/html'}), fname);
+  toast('&#8659; Exported: '+fname);
+}
+
+function exportSavedChat(id){
+  // Export a single saved prompt + its full chat
+  var items = loadSaved();
+  var s = null;
+  for(var i=0;i<items.length;i++){ if(items[i].id===id){ s=items[i]; break; } }
+  if(!s){ toast('Saved prompt not found'); return; }
+
+  // Find the full chat from cache
+  var chat = null;
+  for(var j=0;j<_cachedChats.length;j++){
+    if(_cachedChats[j].id===s.chatId){ chat=_cachedChats[j]; break; }
+  }
+  if(!chat){
+    toast('Chat not in cache - switch to All mode and Fetch first');
+    return;
+  }
+  var msgs = _cachedMsgsMap[s.chatId] || [];
+  var exportData = [{ chat: chat, msgs: msgs, savedPromptIds: [s.id] }];
+  var htmlStr = buildChatExportHtml(exportData);
+  var fname   = 'viya-export-'+s.chatId.slice(0,8)+'-'+new Date().toISOString().slice(0,10)+'.html';
+  downloadBlob(new Blob([htmlStr],{type:'text/html'}), fname);
+  toast('&#8659; Exported: '+fname);
+}
+
+function exportAllSavedChats(){
+  // Group saved prompts by chatId, export each unique chat with its saved prompts marked
+  var items = loadSaved();
+  if(!items.length){ toast('No saved prompts to export'); return; }
+
+  // Find all unique chatIds and map to chat objects
+  var chatMap = {};
+  _cachedChats.forEach(function(c){ chatMap[c.id]=c; });
+
+  var byChat = {};
+  items.forEach(function(s){
+    if(!byChat[s.chatId]) byChat[s.chatId] = { savedIds:[], msgs:[] };
+    byChat[s.chatId].savedIds.push(s.id);
+  });
+
+  var missing = [];
+  var exportData = Object.keys(byChat).map(function(chatId){
+    var chat = chatMap[chatId];
+    if(!chat){ missing.push(chatId.slice(0,8)); return null; }
+    return {
+      chat: chat,
+      msgs: _cachedMsgsMap[chatId] || [],
+      savedPromptIds: byChat[chatId].savedIds
+    };
+  }).filter(Boolean);
+
+  if(!exportData.length){
+    toast('No chats found in cache - switch to All mode and Fetch first');
+    return;
+  }
+
+  var htmlStr = buildChatExportHtml(exportData);
+  var fname   = 'viya-saved-chats-'+new Date().toISOString().slice(0,10)+'.html';
+  downloadBlob(new Blob([htmlStr],{type:'text/html'}), fname);
+  var note = missing.length ? ' ('+missing.length+' chats not in cache)' : '';
+  toast('&#8659; Exported '+exportData.length+' chat(s)'+note);
+}
+
+function copySaved(id){
+  var s = loadSaved().find(function(x){ return x.id===id; });
+  if(!s) return;
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(s.content).then(function(){ toast('⎘ Copied!'); });
+  } else {
+    var ta=document.createElement('textarea');
+    ta.value=s.content; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+    document.body.removeChild(ta); toast('⎘ Copied!');
+  }
+}
+
+function editSavedTags(id){
+  var items = loadSaved();
+  var s = items.find(function(x){ return x.id===id; });
+  if(!s) return;
+  var current = (s.tags||[]).join(', ');
+  var newTags = window.prompt('Edit tags (comma-separated):', current);
+  if(newTags===null) return;
+  s.tags = newTags.trim()
+    ? newTags.split(/[\s,]+/).map(function(t){ return t.replace(/^#/,'').trim(); }).filter(Boolean)
+    : [];
+  storeSaved(items);
+  renderSavedList();
+}
+
+function deleteSaved(id){
+  var items = loadSaved().filter(function(x){ return x.id!==id; });
+  storeSaved(items);
+  // Update bookmark button if visible
+  var msgEl = document.querySelector('[data-msg-id="'+id+'"]');
+  if(msgEl){
+    var btn = msgEl.querySelector('.msg-bookmark-btn');
+    if(btn){ btn.classList.remove('saved'); btn.title='Save this prompt'; }
+  }
+  updateSavedBadge();
+  renderSavedList();
+  toast('Removed from saved');
+}
+
+// ── Profile Export / Import ───────────────────────────────────────────────────
+
+// ── Collect all saved-prompts entries from localStorage ──────────────────────
+function collectAllChatCaches(){
+  // Cache is stored server-side — not included in JSON export
+  // Server cache persists automatically in cache/ folder
+  return {};
+}
+
+function collectAllSavedPrompts(){
+  // Returns { "key_suffix": [array], ... } for all saved-prompts entries
+  var result = {};
+  var prefix = SAVED_KEY_PREFIX + ':';
+  try {
+    Object.keys(localStorage).forEach(function(key){
+      if(key.startsWith(prefix)){
+        var suffix = key.slice(prefix.length);
+        if(suffix){
+          try{ result[suffix] = JSON.parse(localStorage.getItem(key)) || []; }
+          catch(e){ result[suffix] = []; }
+        }
+      }
+    });
+  } catch(e){}
+  return result;
+}
+
+function restoreSavedPrompts(savedPrompts, merge){
+  // savedPrompts = { "username": [...], ... }
+  if(!savedPrompts || typeof savedPrompts !== 'object') return 0;
+  var totalRestored = 0;
+  Object.keys(savedPrompts).forEach(function(user){
+    if(!user) return;
+    var key      = SAVED_KEY_PREFIX + ':' + user;
+    var incoming = savedPrompts[user] || [];
+    if(!incoming.length) return;
+
+    if(merge){
+      // Merge: keep existing, add new ones that don't already exist (by id)
+      var existing = [];
+      try{ existing = JSON.parse(localStorage.getItem(key)) || []; } catch(e){}
+      var existingIds = {};
+      existing.forEach(function(s){ if(s.id) existingIds[s.id]=true; });
+      var added = incoming.filter(function(s){ return s.id && !existingIds[s.id]; });
+      if(added.length){
+        localStorage.setItem(key, JSON.stringify(existing.concat(added)));
+        totalRestored += added.length;
+      }
+    } else {
+      // Replace
+      localStorage.setItem(key, JSON.stringify(incoming));
+      totalRestored += incoming.length;
+    }
+  });
+  return totalRestored;
+}
+
+function exportProfile(id){
+  var profiles = loadProfiles();
+  var p = profiles.find(function(x){ return x.id===id; });
+  if(!p){ toast('Profile not found'); return; }
+  var safe = JSON.parse(JSON.stringify(p));
+  // Include only the chat cache relevant to this profile's cluster
+  var allCaches = collectAllChatCaches();
+  var profileCaches = {};
+  var clusterKey = (safe.viyaUrl||'').replace(/^https?:\/\//,'').toLowerCase().replace(/\/+$/,'');
+  Object.keys(allCaches).forEach(function(k){
+    if(k.startsWith(clusterKey)) profileCaches[k] = allCaches[k];
+  });
+  var exportObj = {
+    viya4monitor: true,
+    version: 3,
+    exportedAt: new Date().toISOString(),
+    profiles: [safe],
+    savedPrompts: collectAllSavedPrompts(),
+    chatCaches: profileCaches,
+  };
+  var blob = new Blob([JSON.stringify(exportObj, null, 2)], {type:'application/json'});
+  downloadBlob(blob, (p.name||'profile').replace(/[^a-z0-9]/gi,'-').toLowerCase()+'.json');
+  toast('⬇ Profile + favorites exported');
+}
+
+function exportAllProfiles(){
+  var profiles = loadProfiles();
+  if(!profiles.length){ toast('No profiles to export'); return; }
+  var safe = profiles.map(function(p){
+    var s = JSON.parse(JSON.stringify(p));
+    return s;
+  });
+  var chatCaches = collectAllChatCaches();
+  var exportObj = {
+    viya4monitor: true,
+    version: 3,
+    exportedAt: new Date().toISOString(),
+    profiles: safe,
+    savedPrompts: collectAllSavedPrompts(),
+    chatCaches: chatCaches,
+  };
+  var exportStr = JSON.stringify(exportObj, null, 2);
+  var exportKB  = Math.round(exportStr.length / 1024);
+  var blob = new Blob([exportStr], {type:'application/json'});
+  downloadBlob(blob, 'viya4-profiles-'+new Date().toISOString().slice(0,10)+'.json');
+  var totalFavs = Object.values(collectAllSavedPrompts()).reduce(function(s,a){ return s+a.length; },0);
+  toast('⬇ '+profiles.length+' profile(s) + '+totalFavs+' favorite(s) exported');
+}
+
+function downloadBlob(blob, filename){
+  var url = URL.createObjectURL(blob);
+  var a   = document.createElement('a');
+  a.href  = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+}
+
+function importProfiles(evt){
+  var file = evt.target.files[0];
+  if(!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e){
+    processImport(e.target.result, file.name);
+  };
+  reader.readAsText(file);
+  evt.target.value = '';
+}
+
+function processImport(text, label){
+  try {
+    var data = JSON.parse(text);
+    if(!data.viya4monitor || !Array.isArray(data.profiles)){
+      toast('❌ Not a valid Viya Monitor export file', 3500);
+      return;
+    }
+
+    // ── Import profiles ───────────────────────────────────────────────────────
+    var incoming = data.profiles;
+    var existing = loadProfiles();
+    var added = 0, updated = 0;
+
+    incoming.forEach(function(p){
+      if(!p.id || !p.name){ return; }
+      var idx = -1;
+      for(var i=0;i<existing.length;i++){
+        if(existing[i].id===p.id){ idx=i; break; }
+      }
+      if(idx >= 0){
+          existing[idx] = p;
+        updated++;
+      } else {
+        existing.push(p);
+        added++;
+      }
+    });
+    saveProfiles(existing);
+    renderProfileList();
+
+    // ── Import saved prompts (merge — never overwrite existing) ───────────────
+    var favRestored = 0;
+    if(data.savedPrompts && typeof data.savedPrompts === 'object'){
+      favRestored = restoreSavedPrompts(data.savedPrompts, true);
+    }
+
+    // Import chat cache — speeds up first fetch on new browser
+    var cachedChatsRestored = 0;
+    if(data.chatCaches && typeof data.chatCaches === 'object'){
+      Object.keys(data.chatCaches).forEach(function(suffix){
+        var cacheData = data.chatCaches[suffix];
+        if(!cacheData || typeof cacheData !== 'object') return;
+        var valid = Object.keys(cacheData).filter(function(id){
+          var e = cacheData[id]; return e && e.modifiedTimeStamp && Array.isArray(e.msgs);
+        });
+        if(!valid.length) return;
+        // Send imported cache to server-side file cache
+        var parts = suffix.split(':');
+        var impCluster = parts[0]||'', impUser = parts[1]||'';
+        if(!impCluster || !impUser) return;
+        var toSave = {};
+        valid.forEach(function(id){ toSave[id] = cacheData[id]; cachedChatsRestored++; });
+        fetch(proxyUrl('/api/cache'), {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ action:'save', cluster:impCluster, user:impUser, data:toSave })
+        }).catch(function(){});
+      });
+    }
+
+    // Refresh badge if a user is already connected
+    updateSavedBadge();
+
+    // Build result message
+    var msg = '⬆ Imported: '+added+' new profile(s)';
+    if(updated)             msg += ', '+updated+' updated';
+    if(favRestored)         msg += ', '+favRestored+' favorite(s)';
+    if(cachedChatsRestored) msg += ', '+cachedChatsRestored+' chats cached';
+    toast(msg, 4500);
+
+  } catch(e){
+    toast('❌ Import failed: '+e.message, 4000);
+  }
+}
+
+// ── Drag-and-drop import anywhere on the login screen ────────────────────────
+(function setupImportDrop(){
+  var overlay = $('importDropOverlay');
+  if(!overlay) return;
+
+  // Show overlay when dragging a file over the login screen
+  document.addEventListener('dragenter', function(e){
+    if(e.dataTransfer && e.dataTransfer.types && e.dataTransfer.types.includes('Files')){
+      // Only show on login screen
+      if($('loginScreen').style.display !== 'none'){
+        overlay.classList.add('active');
+      }
+    }
+  });
+  document.addEventListener('dragleave', function(e){
+    if(!e.relatedTarget || e.relatedTarget===document.body){
+      overlay.classList.remove('active');
+    }
+  });
+  document.addEventListener('dragover',  function(e){ e.preventDefault(); });
+  document.addEventListener('drop', function(e){
+    e.preventDefault();
+    overlay.classList.remove('active');
+    var file = e.dataTransfer && e.dataTransfer.files[0];
+    if(!file || !file.name.endsWith('.json')) return;
+    var reader = new FileReader();
+    reader.onload = function(ev){ processImport(ev.target.result, file.name); };
+    reader.readAsText(file);
+  });
+})();
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+$('activeMinutesGroup').style.display='flex';
+if(location.hostname !== 'localhost' && !location.hostname.includes('127.0.0.1') && location.port){
+  proxyBase = `${location.protocol}//${location.host}`;
+}
+// Theme
+try{
+  var _savedTheme = localStorage.getItem('viya4-theme') || 'light';
+  document.documentElement.setAttribute('data-theme', _savedTheme);
+  $('themeBtn').textContent = _savedTheme === 'light' ? '☀️' : '🌙';
+} catch(e){ document.documentElement.setAttribute('data-theme','light'); }
+
+// Show login, render profile list
+$('loginScreen').style.display = 'flex';
+$('appShell').style.display    = 'none';
+window.addEventListener('resize', updateStickyOffsets);
+// Profiles load cleanly from localStorage
+renderProfileList();
+updateSavedBadge();
+</script>
+</div><!-- /appShell -->
+</body>
+</html>
