@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.6.04'
+version='get-k8s-info v1.6.05'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -913,51 +913,99 @@ function environmentDetails {
     if [[ -z $casCacheDirs ]]; then
 	    casCacheVolumeMounts=($($KUBECTLCMD -n $ARGNAMESPACE get casdeployment default -o jsonpath='{.spec.controllerTemplate.spec.containers[0].volumeMounts[?(@.mountPath=="/cas/cache")].name}' 2> /dev/null))
     else
+        casCacheDirCount=0
         for casCacheDir in ${casCacheDirs[@]}; do
-            casCacheVolumeMounts+=($($KUBECTLCMD -n $ARGNAMESPACE get casdeployment default -o jsonpath="{.spec.controllerTemplate.spec.containers[0].volumeMounts[?(@.mountPath=='$casCacheDir')].name}" 2> /dev/null))
+            while [[ -z ${casCacheVolumeMounts[$casCacheDirCount]} && ! -z $casCacheDir ]]; do
+                casCacheVolumeMounts[$casCacheDirCount]=$($KUBECTLCMD -n $ARGNAMESPACE get casdeployment default -o jsonpath="{.spec.controllerTemplate.spec.containers[0].volumeMounts[?(@.mountPath=='$casCacheDir')].name}" 2> /dev/null)
+                casCacheDir=${casCacheDir%/*}
+            done
+            casCacheDirCount=$[ $casCacheDirCount + 1 ]
         done
     fi
     casCacheVolumeTypes=()
-    for casCacheVolumeMount in ${casCacheVolumeMounts[@]}; do
-        casCacheVolumeTypes+=($($KUBECTLCMD -n $ARGNAMESPACE get casdeployment default -o jsonpath="{.spec.controllerTemplate.spec.volumes[?(@.name=='$casCacheVolumeMount')]}" 2> /dev/null | tr ',' '\n' | grep -v '"name":"' | head -1 | cut -d '"' -f2))
-    done
+    if [[ ! -z $casCacheVolumeMounts ]]; then
+        for casCacheVolumeMount in ${casCacheVolumeMounts[@]}; do
+            casCacheVolumeTypes+=($($KUBECTLCMD -n $ARGNAMESPACE get casdeployment default -o jsonpath="{.spec.controllerTemplate.spec.volumes[?(@.name=='$casCacheVolumeMount')]}" 2> /dev/null | tr ',' '\n' | grep -v '"name":"' | head -1 | cut -d '"' -f2))
+        done
+    else
+        casCacheVolumeTypes[0]='missing'
+    fi
     casCacheVolumeTypes="$(tr ' ' '\n' <<< ${casCacheVolumeTypes[@]} | sort -u | tr '\n' ' ')"
     # Work
     sharedConfigCm=($($KUBECTLCMD get cm -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' sas-shared-config-' | sort -k1 -t ' ' -r | awk '{print $2}'))
     allowAdminScripts=$($KUBECTLCMD -n $ARGNAMESPACE get cm ${sharedConfigCm[0]} -o jsonpath='{.data.SAS_ALLOW_ADMIN_SCRIPTS}' 2> /dev/null)
     if [[ $allowAdminScripts == 'true' ]]; then
-        # Look for SAS Work customizations
-        batchWork=$($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.batch.server/configuration_options/contents'" 2> /dev/null | grep -i '^-work ' | cut -d ' ' -f2)
-        computeWork=$($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server-0 -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.compute.server/configuration_options/contents'" 2> /dev/null | grep -i '^-work ' | cut -d ' ' -f2)
-        if [[ -z $computeWork ]]; then
-            computeWork=($($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server-0 -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.compute.server/startup_commands/contents'" 2> /dev/null | grep -v '^[[:space:]]*#' | grep -i 'COMPUTESERVER_TMP_PATH=' | cut -d '=' -f2 | sed 's/[ #].*//'))
+        # Look for SAS Work customizations in consul
+        batchWork=($($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.batch.server/startup_commands/contents'" 2> /dev/null | grep -v '^[[:space:]]*#' | grep 'SASWORKDIR=' | cut -d '=' -f2 | sed 's/[ #].*//'))
+        if [[ -z $batchWork ]]; then
+            batchWork=($($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.batch.server/startup_commands/contents'" 2> /dev/null | grep -v '^[[:space:]]*#' | grep 'SAS_SPRE_VAR_PATH=' | cut -d '=' -f2 | sed 's/[ #].*//'))
         fi
-        connectWork=$($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server-0 -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/batch/sas.connect.server/configuration_options/contents'" 2> /dev/null | grep -i '^-work ' | cut -d ' ' -f2)
+        computeWork=($($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/compute/sas.compute.server/startup_commands/contents'" 2> /dev/null | grep -v '^[[:space:]]*#' | grep 'COMPUTESERVER_TMP_PATH=' | cut -d '=' -f2 | sed 's/[ #].*//'))
+        connectWork=($($KUBECTLCMD -n $ARGNAMESPACE exec sas-consul-server-0 -c sas-consul-server -- bash -c "export CONSUL_HTTP_ADDR=\$SAS_URL_SERVICE_SCHEME://localhost:8500;/opt/sas/viya/home/bin/sas-bootstrap-config kv read 'config/connect-spawner-viya/sas.connect.server/startup_commands/contents'" 2> /dev/null | grep -v '^[[:space:]]*#' | grep 'CONNECTSERVER_TMP_PATH=' | cut -d '=' -f2 | sed 's/[ #].*//'))
+    fi
+    # Look for SAS Work customizations in PodTemplates
+    # sas.batch.server
+    if [[ -z $batchWork ]]; then
+        batchWork=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-batch-pod-template -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="SASWORKDIR")].value}' 2> /dev/null)
+    fi
+    if [[ -z $batchWork ]]; then
+        batchWork=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-batch-pod-template -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="SAS_SPRE_VAR_PATH")].value}' 2> /dev/null)
     fi
     if [[ -z $batchWork ]]; then
         batchWork='/opt/sas/viya/config/var'
-    elif [[ ${batchWork: -1} == '/' ]]; then
-        batchWork=${batchWork::-1}
+    elif [[ ${batchWork[-1]: -1} == '/' ]]; then
+        batchWork=${batchWork[-1]::-1}
+    else
+        batchWork=${batchWork[-1]}
     fi
+    # sas.compute.server
     if [[ -z $computeWork ]]; then
-        computeWork='/opt/sas/viya/config/var'
-    elif [[ ${computeWork[-1]: -1} == '/' ]]; then
+        computeWork=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-compute-job-config -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="COMPUTESERVER_VAR_PATH")].value}' 2> /dev/null)
+    fi
+    if [[ ${computeWork[-1]: -1} == '/' ]]; then
         computeWork=${computeWork[-1]::-1}
     else
         computeWork=${computeWork[-1]}
     fi
+    # sas.connect.server
+    if [[ -z $connectWork ]]; then
+        connectWork=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-connect-pod-template -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="CONNECTSERVER_TMP_PATH")].value}' 2> /dev/null)
+    fi
     if [[ -z $connectWork ]]; then
         connectWork='/opt/sas/viya/config/var'
-    elif [[ ${connectWork: -1} == '/' ]]; then
-        connectWork=${connectWork::-1}
+    elif [[ ${connectWork[-1]: -1} == '/' ]]; then
+        connectWork=${connectWork[-1]::-1}
+    else
+        connectWork=${connectWork[-1]}
     fi
-    batchWorkVolumeMount=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-batch-pod-template -o jsonpath="{.template.spec.containers[0].volumeMounts[?(@.mountPath=='$batchWork')].name}" 2> /dev/null)
-    computeWorkVolumeMount=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-compute-job-config -o jsonpath="{.template.spec.containers[0].volumeMounts[?(@.mountPath=='$computeWork')].name}" 2> /dev/null)
-    connectWorkVolumeMount=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-connect-pod-template -o jsonpath="{.template.spec.containers[0].volumeMounts[?(@.mountPath=='$connectWork')].name}" 2> /dev/null)
+    while [[ -z $batchWorkVolumeMount && ! -z $batchWork ]]; do
+        batchWorkVolumeMount=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-batch-pod-template -o jsonpath="{.template.spec.containers[0].volumeMounts[?(@.mountPath=='$batchWork')].name}" 2> /dev/null)
+        batchWork=${batchWork%/*}
+    done
+    while [[ -z $computeWorkVolumeMount && ! -z $computeWork ]]; do
+        computeWorkVolumeMount=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-compute-job-config -o jsonpath="{.template.spec.containers[0].volumeMounts[?(@.mountPath=='$computeWork')].name}" 2> /dev/null)
+        computeWork=${computeWork%/*}
+    done
+    while [[ -z $connectWorkVolumeMount && ! -z $connectWork ]]; do
+        connectWorkVolumeMount=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-connect-pod-template -o jsonpath="{.template.spec.containers[0].volumeMounts[?(@.mountPath=='$connectWork')].name}" 2> /dev/null)
+        connectWork=${connectWork%/*}
+    done
 
-    batchWorkVolumeType=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-batch-pod-template -o jsonpath="{.template.spec.volumes[?(@.name=='$batchWorkVolumeMount')]}" 2> /dev/null | tr ',' '\n' | grep -v '"name":"' | head -1 | cut -d '"' -f2)
-    computeWorkVolumeType=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-compute-job-config  -o jsonpath="{.template.spec.volumes[?(@.name=='$computeWorkVolumeMount')]}" 2> /dev/null | tr ',' '\n' | grep -v '"name":"' | head -1 | cut -d '"' -f2)
-    connectWorkVolumeType=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-connect-pod-template -o jsonpath="{.template.spec.volumes[?(@.name=='$connectWorkVolumeMount')]}" 2> /dev/null | tr ',' '\n' | grep -v '"name":"' | head -1 | cut -d '"' -f2)
+    if [[ ! -z $batchWorkVolumeMount ]]; then
+        batchWorkVolumeType=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-batch-pod-template -o jsonpath="{.template.spec.volumes[?(@.name=='$batchWorkVolumeMount')]}" 2> /dev/null | tr ',' '\n' | grep -v '"name":"' | head -1 | cut -d '"' -f2)
+    else
+        batchWorkVolumeType='missing'
+    fi
+    if [[ ! -z $computeWorkVolumeMount ]]; then
+        computeWorkVolumeType=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-compute-job-config  -o jsonpath="{.template.spec.volumes[?(@.name=='$computeWorkVolumeMount')]}" 2> /dev/null | tr ',' '\n' | grep -v '"name":"' | head -1 | cut -d '"' -f2)
+    else
+        computeWorkVolumeType='missing'
+    fi
+    if [[ ! -z $connectWorkVolumeMount ]]; then
+        connectWorkVolumeType=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-connect-pod-template -o jsonpath="{.template.spec.volumes[?(@.name=='$connectWorkVolumeMount')]}" 2> /dev/null | tr ',' '\n' | grep -v '"name":"' | head -1 | cut -d '"' -f2)
+    else
+        connectWorkVolumeType='missing'
+    fi
     # Certificate Generator
     certframeCm=($($KUBECTLCMD get cm -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' sas-certframe-user-config-' | sort -k1 -t ' ' -r | awk '{print $2}'))
     viyaCertGenerator=$($KUBECTLCMD -n $ARGNAMESPACE get cm ${certframeCm[0]} -o jsonpath='{.data.SAS_CERTIFICATE_GENERATOR}' 2> /dev/null)
