@@ -371,6 +371,95 @@
   .import-drop-box-icon{font-size:48px;margin-bottom:12px}
   .import-drop-box h3{font-family:var(--sans);font-size:18px;font-weight:700;color:var(--text);margin-bottom:6px}
   .import-drop-box p{font-size:12px;color:var(--text-dim)}
+
+  /* ── Graphs panel ── */
+  #graphsPanel{display:none;padding:0;flex-direction:column;gap:20px;min-height:0}
+  #graphsPanel.visible{display:flex;padding:24px 28px 40px}
+  /* When graphs mode is active: lock header+toolbar+statusbar, scroll only the graphs area */
+  body.graphs-mode .toolbar   { display:none !important }
+  body.graphs-mode .statusbar { position:sticky; top:56px; z-index:89 }
+  #graphsNav { display:none !important }
+  body.graphs-mode #graphsNav { display:block !important; position:sticky; top:calc(56px + 37px); z-index:88 }
+  body.graphs-mode #main      { display:none !important }
+  body.graphs-mode .search-bar{ display:none !important }
+  body.graphs-mode #graphsPanel.visible { display:flex }
+  .g-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  /* ── Responsive: smaller screens ── */
+  @media (max-width:1100px){
+    .g-grid { grid-template-columns:1fr }
+    .g-card-wide { grid-column:1 }
+  }
+  @media (max-width:900px){
+    .g-stats { grid-template-columns:repeat(3,1fr) !important }
+    #graphsPanel { padding:14px 14px 30px }
+  }
+  @media (max-width:520px){
+    .g-stats { grid-template-columns:repeat(2,1fr) !important }
+  }
+  .g-card{background:var(--bg2);border:1px solid var(--border2);border-radius:12px;
+    padding:22px;position:relative;overflow:visible}
+  .g-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
+    background:linear-gradient(90deg,var(--accent),var(--accent2))}
+  .g-card-wide{grid-column:1/-1}
+  .g-title{font-family:var(--sans);font-weight:700;font-size:12px;letter-spacing:.5px;
+    text-transform:uppercase;color:var(--text-dim);margin-bottom:3px;
+    display:flex;align-items:center;gap:7px}
+  .g-title .g-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);flex-shrink:0}
+  .g-sub{font-size:10px;color:var(--text-dim);margin-bottom:16px}
+  /* stat chips */
+  .g-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+  .g-chip{background:var(--bg3);border:1px solid var(--border2);border-radius:9px;padding:12px 14px}
+  .g-chip .gv{font-size:22px;font-weight:800;font-family:var(--sans);color:var(--accent)}
+  .g-chip .gl{font-size:10px;color:var(--text-dim);margin-top:2px}
+  /* bar chart */
+  .g-bar-wrap{display:flex;align-items:flex-end;gap:5px;height:200px;min-width:320px;
+    border-left:1px solid var(--border);border-bottom:1px solid var(--border);
+    padding:20px 6px 0 2px;position:relative}
+  .g-bar-col{display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;min-width:0}
+  .g-bar{width:100%;border-radius:4px 4px 0 0;min-height:2px;position:relative;
+    background:linear-gradient(180deg,var(--accent) 0%,rgba(59,130,246,.45) 100%);
+    cursor:pointer;transition:filter .15s}
+  .g-bar:hover{filter:brightness(1.3)}
+    .g-bar-tip{display:none;position:absolute;left:50%;
+    transform:translateX(-50%);background:var(--bg3);border:1px solid var(--border2);
+    border-radius:6px;padding:5px 10px;font-size:11px;white-space:nowrap;
+    color:var(--text);pointer-events:none;z-index:50;box-shadow:0 2px 8px rgba(0,0,0,.15)}
+  .g-bar-tip.tip-above{bottom:calc(100% + 6px);top:auto}
+  .g-bar-tip.tip-below{top:8px;bottom:auto}
+  .g-bar:hover .g-bar-tip{display:block}
+  .g-bar-lbl-h{font-size:9px;color:var(--text-dim);text-align:center;
+    margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+  .g-yaxis{position:absolute;left:0;top:20px;bottom:18px;width:34px;
+    display:flex;flex-direction:column;justify-content:space-between;
+    font-size:9px;color:var(--text-dim);text-align:right;padding-right:4px;pointer-events:none}
+  /* donut */
+  .g-donut-wrap{display:flex;align-items:center;gap:24px}
+  .g-legend{display:flex;flex-direction:column;gap:7px;flex:1;min-width:0;max-height:260px;overflow-y:auto}
+  .g-legend-item{display:flex;align-items:center;gap:8px}
+  .g-legend-dot{width:9px;height:9px;border-radius:3px;flex-shrink:0}
+  .g-legend-name{font-size:11px;color:var(--text);flex:1;min-width:0;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .g-legend-cnt{font-size:10px;color:var(--text-dim);font-family:var(--mono)}
+  .g-legend-pct{font-size:10px;color:var(--text-dim);font-family:var(--mono);min-width:30px;text-align:right}
+  /* word cloud */
+  .g-cloud{display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+    justify-content:center;padding:12px 4px;min-height:180px}
+  .g-word{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;
+    border-radius:20px;font-family:var(--mono);font-weight:500;
+    cursor:default;transition:transform .15s,filter .15s;
+    border:1px solid transparent;position:relative}
+  .g-word:hover{transform:scale(1.1);filter:brightness(1.25);z-index:5}
+  .g-word-tip{display:none;position:absolute;bottom:calc(100% + 6px);left:50%;
+    transform:translateX(-50%);background:var(--bg3);border:1px solid var(--border2);
+    border-radius:6px;padding:5px 10px;font-size:10px;white-space:nowrap;
+    color:var(--text);z-index:30;pointer-events:none}
+  .g-word:hover .g-word-tip{display:block}
+  .g-cloud-legend{width:100%;margin-top:14px;padding-top:12px;
+    border-top:1px solid var(--border);display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
+  .g-cloud-legend-item{display:inline-flex;align-items:center;gap:5px;
+    font-size:10px;color:var(--text-dim);font-family:var(--mono)}
+  .g-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;
+    padding:36px;color:var(--text-dim);font-size:12px;gap:8px;opacity:.6}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
 </head>
@@ -531,6 +620,7 @@
     <button class="seg-btn active" onclick="setMode('active')" id="btn-active">● Active</button>
     <button class="seg-btn"       onclick="setMode('all')"    id="btn-all">◎ All</button>
     <button class="seg-btn"       onclick="setMode('history')" id="btn-history">📋 History</button>
+    <button class="seg-btn"       onclick="setMode('graphs')"  id="btn-graphs">📊 Graphs</button>
   </div>
   <div class="input-group" id="activeMinutesGroup">
     <label>active window</label>
@@ -541,13 +631,13 @@
     <label>period</label>
     <select id="historyDays" onchange="applyHistoryFilter()">
       <option value="3">Last 3 days</option>
-      <option value="7" selected>Last 7 days</option>
+      <option value="7">Last 7 days</option>
       <option value="15">Last 15 days</option>
       <option value="30">Last 30 days</option>
-      <option value="0">All time</option>
+      <option value="0" selected>All time</option>
     </select>
   </div>
-  <div class="input-group">
+  <div class="input-group" id="chatFilterGroup">
     <label>chat id</label>
     <input type="text" id="chatFilter" placeholder="filter by chat id…" style="width:220px">
   </div>
@@ -557,25 +647,27 @@
       <option value="">all users</option>
     </select>
   </div>
-  <div class="input-group">
+  <div class="input-group" id="appFilterGroup">
     <label>app</label>
     <select id="appFilter" onchange="applyClientFilters()" style="width:160px">
       <option value="">all apps</option>
     </select>
   </div>
-  <div class="input-group">
+  <div class="input-group" id="searchGroup">
     <label>search</label>
     <input type="text" id="msgSearch" placeholder="search messages…" style="width:200px" oninput="debounceFilter()">
   </div>
   <button class="btn btn-ghost" onclick="clearFilters()" id="clearFiltersBtn" style="display:none">✕ Clear</button>
   <button class="btn" onclick="fetchNow()" id="fetchBtn">▶ Fetch</button>
   <button class="btn btn-ghost" id="liveBtn" onclick="toggleLive()">⏸ Pause</button>
-  <div class="seg">
+  <div class="seg" id="sortGroup">
     <button class="seg-btn active" onclick="setSort('newest')" id="btn-sort-newest">↓ Newest</button>
     <button class="seg-btn"       onclick="setSort('oldest')" id="btn-sort-oldest">↑ Oldest</button>
   </div>
-  <button class="btn btn-ghost" onclick="expandAll()">⊞ Expand All</button>
-  <button class="btn btn-ghost" onclick="collapseAll()">⊟ Collapse All</button>
+  <div id="expandCollapseGroup" style="display:flex;gap:6px">
+    <button class="btn btn-ghost" onclick="expandAll()">⊞ Expand All</button>
+    <button class="btn btn-ghost" onclick="collapseAll()">⊟ Collapse All</button>
+  </div>
 </div>
 
 <div class="statusbar">
@@ -590,6 +682,27 @@
     <span class="badge green-badge" id="activeCountBadge" style="display:none;font-size:10px">0 active</span>
   </div>
 </div>
+<!-- ── Graphs sticky nav bar ────────────────────────────────────────────────── -->
+<div id="graphsNav" style="position:sticky;top:calc(56px + 37px);z-index:90;
+  background:var(--bg2);border-bottom:1px solid var(--border);
+  padding:8px 28px;box-shadow:0 4px 0 var(--bg2)">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <div style="display:flex;gap:4px">
+      <button onclick="setMode('active')" style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text-mid);font-family:var(--mono);font-size:12px;padding:5px 12px;cursor:pointer" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background='var(--bg3)'">● Active</button>
+      <button onclick="setMode('all')"    style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text-mid);font-family:var(--mono);font-size:12px;padding:5px 12px;cursor:pointer" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background='var(--bg3)'">◎ All</button>
+      <button onclick="setMode('history')" style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text-mid);font-family:var(--mono);font-size:12px;padding:5px 12px;cursor:pointer" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background='var(--bg3)'">📋 History</button>
+      <button style="background:var(--accent);border:1px solid var(--accent);border-radius:6px;color:#fff;font-family:var(--mono);font-size:12px;padding:5px 12px;cursor:default">📊 Graphs</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;margin-left:8px">
+      <label style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px">user</label>
+      <select id="gNavUserFilter" onchange="gNavUserChanged()" style="background:var(--bg2);border:1px solid var(--border2);border-radius:6px;padding:5px 10px;font-size:12px;font-family:var(--mono);color:var(--text);cursor:pointer;min-width:120px">
+        <option value="">all users</option>
+      </select>
+    </div>
+    <button onclick="fetchForGraphs()" style="background:var(--accent);border:none;color:#fff;border-radius:6px;font-family:var(--mono);font-size:12px;padding:5px 14px;cursor:pointer;margin-left:auto">↺ Refresh</button>
+  </div>
+</div>
+
 <div class="search-bar" id="searchBar">
   <span>🔍 <strong id="searchMatchCount">0</strong> match(es) for "<span id="searchTerm"></span>"</span>
   <div class="search-nav">
@@ -602,6 +715,71 @@
 
 <main id="main">
 </main>
+
+<!-- ── Graphs Panel ──────────────────────────────────────────────────────────── -->
+<div id="graphsPanel">
+    <!-- Stat chips -->
+  <div class="g-card g-card-wide" style="padding:16px 22px">
+    <div class="g-stats" style="grid-template-columns:repeat(6,1fr)">
+      <div class="g-chip"><div class="gv" id="gStatChats">—</div><div class="gl">Total Chats</div></div>
+      <div class="g-chip"><div class="gv" id="gStatPrompts">—</div><div class="gl">Total Prompts</div></div>
+      <div class="g-chip"><div class="gv" id="gStatTokens" title="Estimated: counts words in user prompts + copilot responses">—</div><div class="gl">Est. Tokens ≈</div></div>
+      <div class="g-chip"><div class="gv" id="gStatApps">—</div><div class="gl">Applications</div></div>
+      <div class="g-chip"><div class="gv" id="gStatTopMonth">—</div><div class="gl">Busiest Month</div></div>
+      <div class="g-chip"><div class="gv" id="gStatTopApp">—</div><div class="gl">Top App</div></div>
+    </div>
+  </div>
+  <div class="g-grid">
+    <!-- Bar chart -->
+    <div class="g-card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
+        <div class="g-title"><span class="g-dot"></span><span id="gBarTitle">Prompts by Month</span></div>
+        <div style="display:flex;gap:6px">
+          <select id="gBarPeriod" onchange="gBarModeChanged()" style="
+            background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+            padding:4px 8px;font-size:11px;font-family:var(--mono);color:var(--text);cursor:pointer">
+            <option value="month">Monthly</option>
+            <option value="week">Weekly</option>
+            <option value="day">Daily</option>
+          </select>
+          <select id="gBarMode" onchange="gBarModeChanged()" style="
+            background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+            padding:4px 8px;font-size:11px;font-family:var(--mono);color:var(--text);cursor:pointer">
+            <option value="prompts">Prompts</option>
+            <option value="chats">Chats</option>
+          </select>
+        </div>
+      </div>
+      <div class="g-sub" id="gBarSub">User requests over time</div>
+      <div id="gBarChart" style="overflow-x:auto"></div>
+    </div>
+    <!-- Donut chart -->
+    <div class="g-card">
+      <div class="g-title"><span class="g-dot" style="background:var(--accent2)"></span>Usage by Application</div>
+      <div class="g-sub">Share of prompts per app</div>
+      <div class="g-donut-wrap">
+        <svg id="gDonutSvg" width="190" height="190" viewBox="0 0 190 190" style="flex-shrink:0;max-width:100%":0"></svg>
+        <div class="g-legend" id="gDonutLegend"></div>
+      </div>
+    </div>
+    <!-- Word cloud -->
+    <div class="g-card g-card-wide">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
+        <div class="g-title"><span class="g-dot" style="background:var(--yellow)"></span>Word Cloud — Top 30 Terms</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <label style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px">Filter by app</label>
+          <select id="gCloudAppFilter" onchange="gFilterCloud()" style="
+            background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+            padding:4px 8px;font-size:11px;font-family:var(--mono);color:var(--text);cursor:pointer">
+            <option value="">All applications</option>
+          </select>
+        </div>
+      </div>
+      <div class="g-sub">Most frequent words in user prompts · hover to see top application · color = app</div>
+      <div class="g-cloud" id="gCloud"></div>
+    </div>
+  </div>
+</div>
 
 <!-- Config panel -->
 <div class="config-panel" id="configPanel">
@@ -738,12 +916,19 @@ async function doLogin(){
 
     $('loginScreen').style.display='none';
     $('appShell').style.display='block';
+    // Hide graphs tab by default — shown only for SAS Administrators after check
+    $('btn-graphs').style.display='none';
     setConn('green','Authenticated as '+user+' @ '+url.replace(/^https?:\/\//,''));
     updateStickyOffsets();
     updateSavedBadge();
     if($('savedPanel').classList.contains('open')) renderSavedList();
     if(mode!=='history') startLive();
     fetchNow();
+
+    // Show Graphs tab only for SAS Administrators
+    _checkIsAdmin(url, token).then(function(isAdmin){
+      if(isAdmin) $('btn-graphs').style.display = '';
+    });
 
   } catch(e){
     showLoginError(e.message);
@@ -771,6 +956,34 @@ async function getToken(){
   token   = data.access_token;
   tokenAt = Date.now();
   setConn('green', `Authenticated as ${cfg.user}`);
+}
+
+// ── Admin check ───────────────────────────────────────────────────────────────
+// Check if the logged-in user is a member of SASAdministrators via Viya Identities API
+async function _checkIsAdmin(viyaUrl, bearerToken){
+  // sasboot is always an admin (built-in superuser, may not be in the group)
+  if((cfg.user||'').toLowerCase() === 'sasboot') return true;
+  try {
+    var r = await fetch(proxyUrl('/api/proxy'), {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        url:    viyaUrl,
+        token:  bearerToken,
+        method: 'GET',
+        path:   '/identities/users/' + encodeURIComponent(cfg.user) +
+                '/memberships?limit=100&filter=eq(name,"SASAdministrators")',
+        accept: 'application/vnd.sas.collection+json',
+      })
+    });
+    if(!r.ok) return false;
+    var data = await r.json();
+    return (data.items||[]).some(function(g){
+      return (g.name||'').toLowerCase() === 'sasadministrators';
+    });
+  } catch(e){
+    return false;  // fail-closed: deny on error
+  }
 }
 
 async function ensureToken(){
@@ -826,10 +1039,31 @@ var _cachedCutoff  = null;
 
 function setMode(m){
   mode=m;
-  ['active','all','history'].forEach(x=>$('btn-'+x).classList.toggle('active',x===m));
+  ['active','all','history','graphs'].forEach(x=>$('btn-'+x) && $('btn-'+x).classList.toggle('active',x===m));
   $('activeMinutesGroup').style.display = m==='active'?'flex':'none';
   $('historyDaysGroup').style.display   = m==='history'?'flex':'none';
-  $('modeBadge').textContent = m==='active'?'● ACTIVE': m==='all'?'◎ ALL':'📋 HISTORY';
+  $('modeBadge').textContent = m==='active'?'● ACTIVE': m==='all'?'◎ ALL': m==='graphs'?'📊 GRAPHS':'📋 HISTORY';
+  // Show/hide main vs graphs panel
+  $('main').style.display = m==='graphs' ? 'none' : '';
+  if(m !== 'graphs') $('graphsPanel').classList.remove('visible');
+  // Toggle sticky behavior — graphs mode gives toolbar/statusbar to flex layout
+  document.body.classList.toggle('graphs-mode', m==='graphs');
+  // Synchronously show/hide toolbar controls — avoids the blank-row flash
+  setGraphsToolbar(m==='graphs');
+  if(m==='graphs'){
+    // Guard: btn-graphs is hidden for non-admins — block direct access
+    if($('btn-graphs') && $('btn-graphs').style.display === 'none'){
+      setMode('active'); return;
+    }
+    stopLive(); $('liveBtn').style.display='none';
+    requestAnimationFrame(()=>{
+      $('graphsPanel').classList.add('visible');
+      fetchForGraphs();
+    });
+    return;
+  }
+  $('graphsPanel').classList.remove('visible');
+  setGraphsToolbar(false);
   if(m==='history'){ stopLive(); $('liveBtn').style.display='none'; }
   else { $('liveBtn').style.display=''; if(!isLive) startLive(); }
   setTimeout(updateStickyOffsets, 50);
@@ -1178,6 +1412,9 @@ async function fetchNow(){
     _cachedChats   = allItems;
     _cachedMsgsMap = msgsMap;
 
+    // If graphs tab is active and we got here via normal fetch, just re-render with fresh data
+    if(mode === 'graphs'){ renderGraphs(); return; }
+
     // Render when data changed OR when active list changed
     const activeIds     = allActive.map(c=>c.id).sort().join(',');
     const hashChanged   = hash !== lastHash;
@@ -1524,6 +1761,14 @@ function applyClientFilters(){
   const appVal    = $('appFilter').value.trim().toLowerCase();
   const searchVal = $('msgSearch').value.trim().toLowerCase();
 
+  // If graphs mode is active, just re-render charts with the new user filter
+  if(mode === 'graphs'){
+    // Keep nav filter in sync with toolbar filter
+    const gNav = $('gNavUserFilter');
+    if(gNav) gNav.value = ($('userFilter').value||'');
+    renderGraphs(); return;
+  }
+
   // Toggle clear button visibility
   $('clearFiltersBtn').style.display = (userVal||appVal||searchVal) ? '' : 'none';
 
@@ -1708,6 +1953,8 @@ function disconnect(){
   savedActiveTag='';
   $('nsBadge').style.display='none';
   $('appShell').style.display='none';
+  $('btn-graphs').style.display='none';  // reset — re-checked on next login
+  if(mode==='graphs') setMode('active'); // leave graphs mode if active
   $('loginScreen').style.display='flex';
   renderProfileList();
   showWelcome();
@@ -2721,6 +2968,496 @@ window.addEventListener('resize', updateStickyOffsets);
 // Profiles load cleanly from localStorage
 renderProfileList();
 updateSavedBadge();
+
+// IDs to hide in graphs mode (all toolbar controls except mode tabs + user filter)
+const GRAPHS_HIDE = ['activeMinutesGroup','historyDaysGroup','chatFilterGroup',
+  'appFilterGroup','searchGroup','fetchBtn','liveBtn','clearFiltersBtn',
+  'sortGroup','expandCollapseGroup'];
+
+function setGraphsToolbar(isGraphs){
+  GRAPHS_HIDE.forEach(id => {
+    const el = $(id);
+    if(el) el.style.display = isGraphs ? 'none' : '';
+  });
+  if(!isGraphs){
+    $('activeMinutesGroup').style.display = mode==='active' ? 'flex' : 'none';
+    $('historyDaysGroup').style.display   = mode==='history' ? 'flex' : 'none';
+    $('liveBtn').style.display = (mode==='history' || mode==='graphs') ? 'none' : '';
+  }
+}
+
+function gNavUserChanged(){
+  // Sync the graphs nav user filter → main userFilter → re-render
+  const val = $('gNavUserFilter').value;
+  $('userFilter').value = val;
+  renderGraphs();
+}
+
+function _populateGraphsUserDropdown(chats){
+  const users = new Set();
+  chats.forEach(c => {
+    const app = (c.applicationName||'').toLowerCase();
+    if(app.includes('embedding') || app.includes('expression')) return;
+    if(c.createdBy) users.add(c.createdBy);
+  });
+
+  // Populate both the main toolbar filter and the graphs nav filter
+  ['userFilter','gNavUserFilter'].forEach(id => {
+    const sel = $(id);
+    if(!sel) return;
+    const current = sel.value;
+    sel.innerHTML = '<option value="">all users</option>';
+    [...users].sort().forEach(u => {
+      const opt = document.createElement('option');
+      opt.value = u; opt.textContent = u;
+      if(u === current) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  });
+}
+
+// Dedicated fetch for graphs mode: pulls ALL chats (no date filter) and
+// fills in any missing messages before rendering charts.
+async function fetchForGraphs(){
+  // Show loading state immediately
+  ['gStatChats','gStatPrompts','gStatTokens','gStatApps','gStatTopMonth','gStatTopApp'].forEach(id=>{
+    const el=$(id); if(el) el.textContent='…';
+  });
+  $('gBarChart').innerHTML = '<div class="g-empty"><span style="font-size:20px">⏳</span>Loading all chat messages…</div>';
+  $('gCloud').innerHTML    = '<div class="g-empty"><span style="font-size:20px">⏳</span>Loading…</div>';
+  try {
+    await ensureToken();
+
+    // Step 1: fetch full chat list with no date filter
+    const chatsData = await proxyGetAll('/genAiGateway/v1/chats?sortBy=modifiedTimeStamp:descending');
+    const allChats  = chatsData.items || [];
+
+    // Merge into _lastAllItems so other modes benefit too
+    const freshIdSet = new Set(allChats.map(c=>c.id));
+    const keptOld    = _lastAllItems.filter(c => !freshIdSet.has(c.id));
+    _lastAllItems    = allChats.concat(keptOld).slice(0, 2000);
+
+    // Store as the authoritative source for graphs rendering
+    _gAllChats = allChats;
+
+    // Step 2: find which chats are missing messages in _chatCache
+    const missing = allChats.filter(c => {
+      const cached = _chatCache[c.id];
+      return !cached || !Array.isArray(cached.msgs) || cached.msgs.length === 0;
+    });
+
+    // Step 3: fetch missing messages in batches of 10
+    if(missing.length > 0){
+      setConn('yellow', `Graphs: loading ${missing.length} chat(s) messages…`);
+      const BATCH = 10;
+      for(let i=0; i<missing.length; i+=BATCH){
+        if(mode !== 'graphs') return; // user switched away — abort
+        const batch = missing.slice(i, i+BATCH);
+        await Promise.all(batch.map(async chat => {
+          try {
+            const mData = await proxyGetAll(`/genAiGateway/v1/chats/${chat.id}/messages`);
+            const msgs  = mData.items || [];
+            _chatCache[chat.id] = { modifiedTimeStamp: chat.modifiedTimeStamp, msgs };
+          } catch(e){ /* skip on error */ }
+        }));
+        // Update progress
+        const done = Math.min(i+BATCH, missing.length);
+        setConn('yellow', `Graphs: ${done}/${missing.length} loaded…`);
+      }
+    }
+
+    setConn('green', `Authenticated as ${cfg.user} @ ${cfg.viyaUrl.replace(/^https?:\/\//,'')}`);
+    if(mode === 'graphs'){
+      // Populate user dropdown from the full chat list so the filter works in graphs
+      _populateGraphsUserDropdown(allChats);
+      renderGraphs();
+    }
+
+  } catch(e){
+    setConn('red', 'Graphs fetch error: ' + e.message);
+    renderGraphs(); // render with whatever we have
+  }
+}
+
+const G_PALETTE = [
+  '#3b82f6','#06b6d4','#10b981','#f59e0b','#f43f5e',
+  '#8b5cf6','#ec4899','#14b8a6','#f97316','#a3e635',
+  '#60a5fa','#34d399','#fbbf24','#fb7185','#a78bfa',
+];
+
+// Stores raw per-word-per-app counts so the cloud can be re-filtered without re-parsing
+var _gRawWordMap = {};
+var _gAllChats   = [];  // full chat list fetched by fetchForGraphs — source of truth for graphs
+
+function gFmtMonth(s, includeYear){
+  if(!s||s==='Unknown') return s;
+  const [y,mo]=s.split('-');
+  const name = (['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(mo,10)-1]||mo);
+  return includeYear ? name+' '+y : name;
+}
+
+// Abbreviate app names: if > 14 chars, extract initial capital letters of each word
+// e.g. "SAS Visual Analytics" → "SAS VA",  "SAS Model Studio" → "SAS MS"
+function gAbbrevApp(name){
+  if(!name) return '—';
+  if(name.length <= 14) return name;
+  const words = name.split(/\s+/).filter(w => w.length > 0);
+  // Keep full all-caps words (e.g. "SAS") as tokens, abbreviate the rest to first letter
+  // Then merge consecutive single-letter tokens together: S, A, S → SAS; V, A → VA
+  const tokens = words.map(w => (w === w.toUpperCase() && w.length <= 4) ? w : w[0].toUpperCase());
+  // Group: merge adjacent single-char tokens into one abbreviation
+  const grouped = [];
+  let acc = '';
+  tokens.forEach(t => {
+    if(t.length === 1){
+      acc += t;
+    } else {
+      if(acc){ grouped.push(acc); acc=''; }
+      grouped.push(t);
+    }
+  });
+  if(acc) grouped.push(acc);
+  const result = grouped.join(' ').trim();
+  return result.length > 0 ? result : name.slice(0,12)+'…';
+}
+
+// Re-render word cloud for a specific app (or all if empty)
+function gFilterCloud(){
+  const app = $('gCloudAppFilter').value;
+  const words = gBuildTopWords(app);
+  gRenderCloud(words, app);
+}
+
+function gBuildTopWords(filterApp){
+  const entries = Object.entries(_gRawWordMap);
+  const filtered = entries.map(([word, apps]) => {
+    const count = filterApp
+      ? (apps[filterApp]||0)
+      : Object.values(apps).reduce((s,v)=>s+v, 0);
+    const topApp = Object.entries(apps).sort((a,b)=>b[1]-a[1])[0]?.[0]||'Unknown';
+    return { word, count, topApp };
+  }).filter(w => w.count > 0);
+  return filtered.sort((a,b)=>b.count-a.count).slice(0,30);
+}
+
+function renderGraphs(){
+  const USER_TYPES   = new Set(['userrequest','userpromptrequest']);
+  const HIDDEN_TYPES = new Set(['functionresult','copilotfunctionresponse']);
+  const STOP = new Set([
+    'a','an','the','and','or','but','in','on','at','to','for','of','with',
+    'is','are','was','were','be','been','have','has','had','do','does','did',
+    'will','would','could','should','may','might','can','i','you','he','she',
+    'it','we','they','me','him','her','us','them','my','your','his','its','our',
+    'their','this','that','these','those','what','which','who','how','when',
+    'where','why','if','then','than','so','as','by','from','up','about','into',
+    'not','only','just','very','also','get','let','make','use','using','used',
+    'like','want','know','tell','show','give','help','find','create','list',
+    's','t','re','ve','ll','d','m','please','need'
+  ]);
+
+  const byMonth={}, byApp={}, wordMap={}, byChat={};
+  const _rawPromptTs=[], _rawChatTs=[];
+  let totalTokens = 0;  // estimated tokens: words in user prompts + copilot responses
+
+  // Use _gAllChats (set by fetchForGraphs from the server) as the definitive source.
+  // Fall back to _lastAllItems then _cachedChats if graphs haven't been fetched yet.
+  const allChats = (_gAllChats.length ? _gAllChats : null)
+                || (_lastAllItems.length ? _lastAllItems : null)
+                || _cachedChats;
+
+  // Respect the user filter dropdown — empty = all users
+  const userFilterVal = ($('userFilter').value||'').trim().toLowerCase();
+
+  // Total Chats: count from the same source, excluding embedding/expression and anonymous
+  const processedChatCount = allChats.filter(c => {
+    if(userFilterVal && (c.createdBy||'').toLowerCase() !== userFilterVal) return false;
+    const a = (c.applicationName||'').toLowerCase();
+    return !a.includes('embedding') && !a.includes('expression')
+        && (c.modifiedBy||'').toLowerCase() !== 'anonymous';
+  }).length;
+
+  allChats.forEach(chat=>{
+    // Apply user filter if set
+    if(userFilterVal && (chat.createdBy||'').toLowerCase() !== userFilterVal) return;
+
+    // Skip system/copilot-internal app types and anonymous (generating) chats
+    const appLower = (chat.applicationName||'').toLowerCase();
+    if(appLower.includes('embedding') || appLower.includes('expression')) return;
+    if((chat.modifiedBy||'').toLowerCase() === 'anonymous') return;
+
+    // Count this chat in its creation month (for "Chats by Month" view)
+    const chatMonth = (chat.creationTimeStamp||'').slice(0,7) || 'Unknown';
+    byChat[chatMonth] = (byChat[chatMonth]||0) + 1;
+    if(chat.creationTimeStamp) _rawChatTs.push(chat.creationTimeStamp);
+
+    // Use _chatCache first (has messages for ALL fetched chats regardless of current mode/filter),
+    // fall back to _cachedMsgsMap for any chat only in the live map
+    const cached = _chatCache[chat.id];
+    const msgs = (cached ? cached.msgs : null) || _cachedMsgsMap[chat.id] || [];
+    const app=chat.applicationName||'Unknown';
+    msgs.forEach(m=>{
+      const type=(m.type||'').toLowerCase();
+
+      // Count copilot response tokens (output tokens) regardless of user filter on prompts
+      if(type.startsWith('copilot') && !HIDDEN_TYPES.has(type)){
+        function exC(v){if(!v)return '';if(typeof v==='string')return v;
+          if(typeof v==='object')return String(v.text||v.content||'');return String(v);}
+        const cText = exC(m.content||'').trim();
+        if(cText) totalTokens += cText.split(/\s+/).filter(w=>w.length>0).length;
+      }
+
+      if(HIDDEN_TYPES.has(type)||!USER_TYPES.has(type)) return;
+      function ex(v){if(!v)return '';if(typeof v==='string')return v;
+        if(typeof v==='object')return String(v.text||v.label||v.value||v.content||v.prompt||'');
+        return String(v);}
+      const text=ex(m.content||m.selectedPrompt||m.value||m.text||'').trim();
+      if(!text) return;
+      const month=(m.creationTimeStamp||chat.creationTimeStamp||'').slice(0,7)||'Unknown';
+      byMonth[month]=(byMonth[month]||0)+1;
+      if(m.creationTimeStamp) _rawPromptTs.push(m.creationTimeStamp);
+      byApp[app]=(byApp[app]||0)+1;
+      // Count input tokens (words in user prompt)
+      totalTokens += text.split(/\s+/).filter(w=>w.length>0).length;
+      text.toLowerCase().replace(/[^a-z0-9\s]/g,' ').split(/\s+/)
+        .filter(w=>w.length>2&&!STOP.has(w))
+        .forEach(w=>{
+          if(!wordMap[w])wordMap[w]={count:0,apps:{}};
+          wordMap[w].count++;
+          wordMap[w].apps[app]=(wordMap[w].apps[app]||0)+1;
+        });
+    });
+  });
+
+  const sortedMonths=Object.entries(byMonth).sort();
+  const sortedApps=Object.entries(byApp).sort((a,b)=>b[1]-a[1]);
+
+  // Store raw per-word-per-app map so the filter dropdown can re-slice without re-parsing
+  _gRawWordMap = {};
+  Object.entries(wordMap).forEach(([word,d])=>{ _gRawWordMap[word]=d.apps; });
+
+  // Populate app filter dropdown
+  const sel=$('gCloudAppFilter');
+  const prevApp=sel.value;
+  sel.innerHTML='<option value="">All applications</option>';
+  sortedApps.forEach(([app])=>{
+    const opt=document.createElement('option');
+    opt.value=app; opt.textContent=app;
+    if(app===prevApp) opt.selected=true;
+    sel.appendChild(opt);
+  });
+
+  const topWords=gBuildTopWords(sel.value);
+
+  const totalPrompts=sortedMonths.reduce((s,[,v])=>s+v,0);
+  const topMonth=sortedMonths.length?sortedMonths.reduce((a,b)=>b[1]>a[1]?b:a):null;
+  const topApp=sortedApps[0]||null;
+
+  // Stats — use processedChatCount which reflects exactly what was counted
+  // (after user filter + embedding/expression exclusion)
+  $('gStatChats').textContent=processedChatCount||'—';
+  $('gStatPrompts').textContent=totalPrompts||'—';
+  $('gStatTokens').textContent=totalTokens > 999999
+    ? (totalTokens/1000000).toFixed(1)+'M'
+    : totalTokens > 999
+    ? Math.round(totalTokens/1000)+'K'
+    : totalTokens||'—';
+  $('gStatApps').textContent=sortedApps.length||'—';
+  $('gStatTopMonth').textContent=topMonth?gFmtMonth(topMonth[0],true):'—';
+  const topAppFull = topApp ? topApp[0] : '';
+  $('gStatTopApp').textContent = topAppFull ? gAbbrevApp(topAppFull) : '—';
+  $('gStatTopApp').title = topAppFull || '';
+
+  // Store both month datasets and raw timestamps so period dropdown can re-bucket instantly
+  window._gByMonth    = sortedMonths;
+  window._gByChat     = Object.entries(byChat).sort();
+  window._gRawPrompts = _rawPromptTs;
+  window._gRawChats   = _rawChatTs;
+
+  gRenderBar(window._gByMonth, window._gByChat);
+  gRenderDonut(sortedApps, totalPrompts);
+  gRenderCloud(topWords);
+}
+
+function gBarModeChanged(){
+  if(window._gByMonth) gRenderBar(window._gByMonth, window._gByChat);
+}
+
+// ── Bucket raw timestamps by day/week/month with configurable window ──────────
+function gBucketTs(timestamps, period){
+  const now   = new Date();
+  const map   = {};
+  let slots, labelFn, keyFn;
+
+  if(period === 'day'){
+    // Last 7 days
+    slots = 7;
+    const msDay = 86400000;
+    keyFn = ts => {
+      const d = new Date(ts);
+      return d.toISOString().slice(0,10);  // YYYY-MM-DD
+    };
+    labelFn = key => {
+      const d = new Date(key+'T00:00:00');
+      return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    };
+    // Build all 7 day slots
+    const keys = [];
+    for(let i=slots-1; i>=0; i--){
+      const d = new Date(now - i*msDay);
+      keys.push(d.toISOString().slice(0,10));
+    }
+    keys.forEach(k => map[k]=0);
+    timestamps.forEach(ts => { const k=keyFn(ts); if(k in map) map[k]++; });
+    return keys.map(k => [k, map[k], labelFn(k)]);
+
+  } else if(period === 'week'){
+    // Last 8 weeks — bucket by ISO week start (Monday)
+    slots = 8;
+    const msDay = 86400000;
+    const getMon = d => {
+      const day = d.getDay()||7; // 1=Mon..7=Sun
+      return new Date(d - (day-1)*msDay);
+    };
+    keyFn = ts => {
+      const mon = getMon(new Date(ts));
+      return mon.toISOString().slice(0,10);
+    };
+    labelFn = key => {
+      const d = new Date(key+'T00:00:00');
+      return d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    };
+    const keys = [];
+    for(let i=slots-1; i>=0; i--){
+      const mon = getMon(new Date(now - i*7*msDay));
+      keys.push(mon.toISOString().slice(0,10));
+    }
+    keys.forEach(k => map[k]=0);
+    timestamps.forEach(ts => { const k=keyFn(ts); if(k in map) map[k]++; });
+    return keys.map(k => [k, map[k], labelFn(k)]);
+
+  } else {
+    // Monthly — last 12 months
+    slots = 12;
+    const keys = [];
+    for(let i=slots-1; i>=0; i--){
+      const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+      keys.push(d.toISOString().slice(0,7));  // YYYY-MM
+    }
+    keys.forEach(k => map[k]=0);
+    timestamps.forEach(ts => { const k=ts.slice(0,7); if(k in map) map[k]++; });
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    labelFn = key => { const [y,m]=key.split('-'); return months[parseInt(m,10)-1]+' '+y.slice(2); };
+    return keys.map(k => [k, map[k], labelFn(k)]);
+  }
+}
+
+function gRenderBar(byMonth, byChat){
+  const el=$('gBarChart');
+  const barMode  = ($('gBarMode')   ? $('gBarMode').value   : 'prompts');
+  const period   = ($('gBarPeriod') ? $('gBarPeriod').value : 'month');
+  const rawTs    = barMode === 'chats' ? (window._gRawChats||[]) : (window._gRawPrompts||[]);
+
+  // Bucket timestamps by selected period
+  const bucketed = gBucketTs(rawTs, period);
+
+  // Labels
+  const periodLabel = period==='day'?'Last 7 Days':period==='week'?'Last 8 Weeks':'Last 12 Months';
+  const typeLabel   = barMode==='chats'?'Chats':'Prompts';
+  const title       = typeLabel+' — '+periodLabel;
+  const sub         = barMode==='chats'?'New chats created over time':'User requests over time';
+  if($('gBarTitle')) $('gBarTitle').textContent = title;
+  if($('gBarSub'))   $('gBarSub').textContent   = sub;
+
+  if(!bucketed.length || bucketed.every(([,v])=>v===0)){
+    el.innerHTML='<div class="g-empty"><span>📅</span>No data for this period</div>';return;
+  }
+  const max=Math.max(...bucketed.map(([,v])=>v));
+  const H=175;
+  let yAxis='<div class="g-yaxis">';
+  for(let i=4;i>=0;i--) yAxis+=`<span>${Math.round(max*i/4)}</span>`;
+  yAxis+='</div>';
+  let bars='<div class="g-bar-wrap">';
+  bucketed.forEach(([key,count,label])=>{
+    const h=max>0?Math.max(count>0?3:0,Math.round((count/max)*H)):0;
+    bars+=`<div class="g-bar-col">
+      <div class="g-bar" style="height:${h}px;${count===0?'background:var(--bg3)':''}">
+        <div class="g-bar-tip ${h > 100 ? 'tip-below' : 'tip-above'}">${label}: <strong>${count}</strong></div>
+      </div>
+      <div class="g-bar-lbl-h">${label}</div>
+    </div>`;
+  });
+  bars+='</div>';
+  el.innerHTML=`<div style="position:relative;padding-left:38px">${yAxis}${bars}</div>`;
+}
+
+
+function gRenderDonut(byApp, total){
+  const svg=$('gDonutSvg'), legend=$('gDonutLegend');
+  if(!byApp.length){svg.innerHTML='';legend.innerHTML='<div class="g-empty"><span>🍩</span>No app data</div>';return;}
+  const cx=95,cy=95,R=75,r=42;
+  let plotData=byApp.slice(0,8);
+  if(byApp.length>8){
+    const oth=byApp.slice(8).reduce((s,[,v])=>s+v,0);
+    if(oth>0)plotData.push(['Other',oth]);
+  }
+  const pTotal=plotData.reduce((s,[,v])=>s+v,0);
+  let angle=-Math.PI/2, paths='', items='';
+  plotData.forEach(([app,count],idx)=>{
+    const sweep=(count/pTotal)*2*Math.PI;
+    const end=angle+sweep;
+    const x1=cx+R*Math.cos(angle),y1=cy+R*Math.sin(angle);
+    const x2=cx+R*Math.cos(end),  y2=cy+R*Math.sin(end);
+    const ix1=cx+r*Math.cos(angle),iy1=cy+r*Math.sin(angle);
+    const ix2=cx+r*Math.cos(end),  iy2=cy+r*Math.sin(end);
+    const lg=sweep>Math.PI?1:0;
+    const col=G_PALETTE[idx%G_PALETTE.length];
+    const pct=Math.round((count/pTotal)*100);
+    paths+=`<path fill="${col}" style="cursor:pointer;transition:opacity .15s" onmouseover="this.style.opacity='.75'" onmouseout="this.style.opacity='1'"
+      d="M ${ix1} ${iy1} L ${x1} ${y1} A ${R} ${R} 0 ${lg} 1 ${x2} ${y2} L ${ix2} ${iy2} A ${r} ${r} 0 ${lg} 0 ${ix1} ${iy1} Z">
+      <title>${app}: ${count} (${pct}%)</title></path>`;
+    items+=`<div class="g-legend-item">
+      <div class="g-legend-dot" style="background:${col}"></div>
+      <div class="g-legend-name" title="${app}">${app}</div>
+      <div class="g-legend-cnt">${count}</div>
+      <div class="g-legend-pct">${pct}%</div>
+    </div>`;
+    angle=end;
+  });
+  const center=`<text x="95" y="91" text-anchor="middle" fill="var(--text)"
+    font-family="var(--sans)" font-size="20" font-weight="800">${pTotal}</text>
+    <text x="95" y="104" text-anchor="middle" fill="var(--text-dim)"
+    font-family="var(--mono)" font-size="8" letter-spacing="1">PROMPTS</text>`;
+  svg.innerHTML=paths+center;
+  legend.innerHTML=items;
+}
+
+function gRenderCloud(words, filterApp){
+  const el=$('gCloud');
+  if(!words.length){el.innerHTML='<div class="g-empty"><span>💬</span>No word data yet</div>';return;}
+  const maxC=words[0].count, minC=words[words.length-1].count, range=Math.max(maxC-minC,1);
+  const appColors={};let ai=0;
+  words.forEach(w=>{if(!appColors[w.topApp])appColors[w.topApp]=G_PALETTE[ai++%G_PALETTE.length];});
+  let html='';
+  words.forEach(w=>{
+    const norm=(w.count-minC)/range;
+    const size=Math.round(11+norm*18);
+    const opacity=(0.55+norm*0.45).toFixed(2);
+    const col=appColors[w.topApp];
+    html+=`<span class="g-word" style="font-size:${size}px;color:${col};opacity:${opacity};background:${col}18;border-color:${col}30">
+      ${w.word}<span style="font-size:9px;opacity:.55;margin-left:1px">${w.count}</span>
+      <span class="g-word-tip">App: ${w.topApp}</span>
+    </span>`;
+  });
+  // legend
+  html+=`<div class="g-cloud-legend">`;
+  Object.entries(appColors).forEach(([app,col])=>{
+    html+=`<span class="g-cloud-legend-item">
+      <span style="width:8px;height:8px;border-radius:2px;background:${col};display:inline-block"></span>${app}
+    </span>`;
+  });
+  html+=`</div>`;
+  el.innerHTML=html;
+}
 </script>
 </div><!-- /appShell -->
 </body>

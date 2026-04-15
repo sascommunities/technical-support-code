@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.6.05'
+version='get-k8s-info v1.6.06'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -946,10 +946,10 @@ function environmentDetails {
     # Look for SAS Work customizations in PodTemplates
     # sas.batch.server
     if [[ -z $batchWork ]]; then
-        batchWork=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-batch-pod-template -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="SASWORKDIR")].value}' 2> /dev/null)
+        batchWork=($($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-batch-pod-template -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="SASWORKDIR")].value}' 2> /dev/null))
     fi
     if [[ -z $batchWork ]]; then
-        batchWork=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-batch-pod-template -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="SAS_SPRE_VAR_PATH")].value}' 2> /dev/null)
+        batchWork=($($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-batch-pod-template -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="SAS_SPRE_VAR_PATH")].value}' 2> /dev/null))
     fi
     if [[ -z $batchWork ]]; then
         batchWork='/opt/sas/viya/config/var'
@@ -960,7 +960,7 @@ function environmentDetails {
     fi
     # sas.compute.server
     if [[ -z $computeWork ]]; then
-        computeWork=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-compute-job-config -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="COMPUTESERVER_VAR_PATH")].value}' 2> /dev/null)
+        computeWork=($($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-compute-job-config -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="COMPUTESERVER_VAR_PATH")].value}' 2> /dev/null))
     fi
     if [[ ${computeWork[-1]: -1} == '/' ]]; then
         computeWork=${computeWork[-1]::-1}
@@ -969,7 +969,7 @@ function environmentDetails {
     fi
     # sas.connect.server
     if [[ -z $connectWork ]]; then
-        connectWork=$($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-connect-pod-template -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="CONNECTSERVER_TMP_PATH")].value}' 2> /dev/null)
+        connectWork=($($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-connect-pod-template -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="CONNECTSERVER_TMP_PATH")].value}' 2> /dev/null))
     fi
     if [[ -z $connectWork ]]; then
         connectWork='/opt/sas/viya/config/var'

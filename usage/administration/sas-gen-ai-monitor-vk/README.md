@@ -134,6 +134,7 @@ Import is always a **safe merge** — existing profiles and favorites are never 
 | **● Active** | Chats modified within the active window (default: last 10 minutes). In Active mode, you can adjust the window size to widen or narrow the time range. |
 | **◎ All** | Every chat from the API |
 | **📋 History** | Manual fetch only—polling is paused. In History mode, use the period dropdown to filter chats by date (Last 3 / 7 / 15 / 30 days, or All time), with instant re-filtering from cache and no additional network requests. |
+| **📊 Graphs** | Analytics view — see the [Graphs](#graphs) section below. |
 
 ## Filters
 
@@ -219,13 +220,79 @@ The exported file:
 
 ## Settings
 
-Click **⚙** in the top-right header while connected to open the Settings panel. You can update the URL, username, password, and poll interval without disconnecting. Click **Apply & Reconnect** to save.
+Click **⚙** in the top-right header while connected to open the Settings panel. You can update the **poll interval** without disconnecting. Click **Apply** to save.
 
-Click **Disconnect** to return to the profile picker.
+Click **Disconnect** to return to the profile picker. To change the Viya URL, username, or password, disconnect and reconnect using the profile picker.
 
 ## Theme
 
 Click **☀️ / 🌙** in the top-right to toggle between light and dark themes. The preference is saved automatically and persists across sessions.
+
+## Graphs
+
+The **📊 Graphs** tab provides a visual analytics overview of all GenAI activity on the cluster. It is accessible to **SAS Administrators only** — non-admin users will not see the tab.
+
+When you enter Graphs mode, the dashboard fetches the complete chat history from the server (all apps, all users, no date filter) and loads all message content into the local cache before rendering.
+
+> Embedding and expression chats are automatically excluded from all graphs — they are background system calls, not real user conversations.
+
+### Stat Panel
+
+Six summary bars are displayed at the top of the Graphs panel:
+
+| Panel | Description |
+|---|---|
+| **Total Chats** | Number of chats that passed all current filters |
+| **Total Prompts** | Total user messages (userRequest + userPromptRequest types) |
+| **Est. Tokens ≈** | Estimated token usage — counts every word (space-separated) in both user prompts and copilot responses as one token. Hover for the full tooltip. |
+| **Applications** | Number of distinct SAS applications used |
+| **Busiest Month** | The calendar month with the highest prompt count |
+| **Top App** | The application with the most prompts. Long names are abbreviated using initial capitals, e.g. `SAS Visual Analytics` → `SAS VA`. Hover to see the full name. |
+
+All charts will update instantly when you change the **User** filter.
+
+### Prompts / Chats by Period
+
+A bar chart showing activity over time. Two dropdowns in the chart header let you control what is displayed:
+
+**Period** (left dropdown):
+
+| Option | What it shows |
+|---|---|
+| **Monthly** | Last 12 calendar months |
+| **Weekly** | Last 8 weeks, each bucket starting on Monday |
+| **Daily** | Last 7 days |
+
+**Type** (right dropdown):
+
+| Option | What it shows |
+|---|---|
+| **Prompts** | Count of user messages per period |
+| **Chats** | Count of new chats created per period (by `creationTimeStamp`) |
+
+
+### Usage by Application (Donut Chart)
+
+Shows the share of total prompts per SAS application. Up to 8 applications are shown individually; any remaining ones are grouped as **Other**. Hover over a slice to see the exact count and percentage.
+
+### Word Cloud — Top 30 Terms
+
+Displays the 30 most frequent words found across all user prompt text, after removing common stop-words (the, and, is, etc.).
+
+- **Size** reflects frequency — larger words appear more often
+- **Color** indicates the application where the word appears most
+- **Hover** over any word to see which application it is associated with
+- A color legend at the bottom maps each color to its application
+
+A **Filter by app** dropdown in the chart header lets you narrow the word cloud to a single application's prompts. Select **All applications** to restore the full cross-app view.
+
+### User Filter
+
+The **User** dropdown in the sticky nav bar filters all three charts and all six stat chips simultaneously to show data for a single user. Select **all users** to restore the full view. The dropdown is populated automatically from the loaded chat data.
+
+### Refresh
+
+Click **↺ Refresh** to re-fetch the full chat history from the server and re-render all charts with fresh data.
 
 # Troubleshooting
 
