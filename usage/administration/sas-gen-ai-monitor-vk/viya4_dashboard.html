@@ -378,6 +378,9 @@
   /* When graphs mode is active: lock header+toolbar+statusbar, scroll only the graphs area */
   body.graphs-mode .toolbar   { display:none !important }
   body.graphs-mode .statusbar { position:sticky; top:56px; z-index:89 }
+  body.graphs-mode #chatCountBadge,
+  body.graphs-mode #displayedCountBadge,
+  body.graphs-mode #activeCountBadge { display:none !important }
   #graphsNav { display:none !important }
   body.graphs-mode #graphsNav { display:block !important; position:sticky; top:calc(56px + 37px); z-index:88 }
   body.graphs-mode #main      { display:none !important }
@@ -631,10 +634,10 @@
     <label>period</label>
     <select id="historyDays" onchange="applyHistoryFilter()">
       <option value="3">Last 3 days</option>
-      <option value="7">Last 7 days</option>
+      <option value="7" selected>Last 7 days</option>
       <option value="15">Last 15 days</option>
       <option value="30">Last 30 days</option>
-      <option value="0" selected>All time</option>
+      <option value="0">All time</option>
     </select>
   </div>
   <div class="input-group" id="chatFilterGroup">
@@ -699,7 +702,7 @@
         <option value="">all users</option>
       </select>
     </div>
-    <button onclick="fetchForGraphs()" style="background:var(--accent);border:none;color:#fff;border-radius:6px;font-family:var(--mono);font-size:12px;padding:5px 14px;cursor:pointer;margin-left:auto">↺ Refresh</button>
+    <button onclick="refreshGraphs()" style="background:var(--accent);border:none;color:#fff;border-radius:6px;font-family:var(--mono);font-size:12px;padding:5px 14px;cursor:pointer;margin-left:auto">↺ Refresh</button>
   </div>
 </div>
 
@@ -1058,18 +1061,29 @@ function setMode(m){
     stopLive(); $('liveBtn').style.display='none';
     requestAnimationFrame(()=>{
       $('graphsPanel').classList.add('visible');
-      fetchForGraphs();
+      // Fast path: if we already have graphs data and no new chats, just re-render
+      if(_gAllChats.length > 0 && _lastFetchWasFull){
+        _populateGraphsUserDropdown(_gAllChats);
+        renderGraphs();
+        // Still refresh in background to pick up any new messages
+        fetchForGraphs();
+      } else {
+        fetchForGraphs();
+      }
     });
     return;
   }
   $('graphsPanel').classList.remove('visible');
   setGraphsToolbar(false);
-  if(m==='history'){ stopLive(); $('liveBtn').style.display='none'; }
+  if(m==='history'){
+    stopLive(); $('liveBtn').style.display='none';
+    // Always reset to Last 7 days when entering History tab
+    $('historyDays').value = '7';
+  }
   else { $('liveBtn').style.display=''; if(!isLive) startLive(); }
   setTimeout(updateStickyOffsets, 50);
 
-  //   // Helper: build msgsMap from _chatCache for any list of items
-  // (avoids needing _cachedMsgsMap which is mode-scoped)
+  // Helper: build msgsMap from _chatCache for any list of items
   function _msgsFromCache(items){
     const m = {};
     items.forEach(c => { m[c.id] = _chatCache[c.id] ? _chatCache[c.id].msgs : null; });
@@ -1082,10 +1096,17 @@ function setMode(m){
     return;
   }
 
-  // Re-render immediately from _lastAllItems + _chatCache — no network fetch needed.
-  // _lastAllItems is a superset across all modes so switching never loses data.
+  // Always trigger a fetch when switching tabs — ensures data is fresh.
+  // If we have cached data, render it immediately as a preview while the fetch runs.
   const fullItems = _lastAllItems.length ? _lastAllItems : _cachedChats;
-  if(fullItems.length && Object.keys(_chatCache).length > 0){
+  const hasCachedData = fullItems.length > 0 && (
+    m === 'active'  ||   // Active can always use its date window on fullItems
+    m === 'history' ||   // History date-filters fullItems
+    _lastFetchWasFull    // ALL is only valid if we fetched the complete list before
+  );
+
+  if(hasCachedData){
+    // Render instantly from cache so the tab feels responsive
     const activeMins = parseInt($('activeMinutes').value)||10;
     const cutoff     = new Date(Date.now()-activeMins*60*1000);
     const allActive  = fullItems.filter(i=>new Date(i.modifiedTimeStamp)>=cutoff && isVisibleChat(i));
@@ -1101,9 +1122,12 @@ function setMode(m){
     applyClientFilters();
     $('activeCountBadge').textContent=`${allActive.length} active`;
     $('activeCountBadge').style.display=allActive.length?'':'none';
-    if(m !== 'history') return;
-    return;
+    // For Active mode, the live poller handles refresh — no extra fetch needed
+    if(m === 'active') return;
   }
+
+  // Always fetch fresh data on tab switch (non-Active modes)
+  // Active mode uses its own live-polling loop instead
   fetchNow();
 }
 
@@ -1179,6 +1203,7 @@ var _chatCache      = {};  // in-memory: { chatId: { modifiedTimeStamp, msgs } }
 var _activeGraceSet = {};  // { chatId: timestampMs } — keeps chats visible while copilot generates
 var _lastRenderedIds = '';  // IDs of chats rendered last cycle — grace set is seeded from these
 var _lastAllItems    = [];  // full chat list from previous cycle — merged to cover API gaps during generation
+var _lastFetchWasFull = false; // true after an ALL/History/Graphs fetch (not Active's date-filtered subset)
 
 // ── Persistent chat cache (localStorage) ─────────────────────────────────────
 // Keyed by cluster+user so different profiles never mix data
@@ -1344,7 +1369,7 @@ async function fetchNow(){
     // ── Step 3: Fetch messages only for new/changed chats ────────────────────
     console.log('[GenAI Monitor] Step 2 result — toFetch:', toFetch.length, '/ unchanged:', unchanged.length, '/ total:', allItems.length, '| _chatCache entries:', Object.keys(_chatCache).length);
     const newMsgs = {};
-    const CONCURRENCY = 8;
+    const CONCURRENCY = 16;  // increased for better throughput
     if(toFetch.length > 0){
       const pct = allItems.length > 0 ? Math.round(toFetch.length/allItems.length*100) : 0;
       setConn('yellow', `Fetching ${toFetch.length} of ${allItems.length} chats (${pct}% updated)…`);
@@ -1390,8 +1415,8 @@ async function fetchNow(){
         .forEach(id => delete _chatCache[id]);
     }
 
-    // ── Step 5b: Persist updated cache to server ──────────────────────────────
-    await _savePersistedCache();
+    // ── Step 5b: Persist updated cache to server (fire-and-forget — never blocks render) ──
+    _savePersistedCache().catch(e => console.warn('[GenAI Monitor] Cache persist error:', e.message));
 
     // ── Step 6: Hash and render ───────────────────────────────────────────────
     // Hash over ALL items so mode-switch re-renders aren't skipped
@@ -1411,6 +1436,8 @@ async function fetchNow(){
     // Always update the in-memory cache so mode-switch re-renders are instant
     _cachedChats   = allItems;
     _cachedMsgsMap = msgsMap;
+    // Mark that we have the full server list — ALL and History can render without re-fetching
+    if(mode !== 'active') _lastFetchWasFull = true;
 
     // If graphs tab is active and we got here via normal fetch, just re-render with fresh data
     if(mode === 'graphs'){ renderGraphs(); return; }
@@ -1946,7 +1973,7 @@ function disconnect(){
   token=null; tokenAt=0; lastHash='';
   cfg={viyaUrl:'',user:'',pass:'',interval:5};
   editingProfileId = null;  // reset so next profile selection starts fresh
-  _cachedChats = []; _cachedMsgsMap = {}; _chatCache = {}; _activeGraceSet = {}; _lastRenderedIds = ''; _lastAllItems = []; _lastDropdownUsers = ''; _lastDropdownApps = ''; lastHash='';
+  _cachedChats = []; _cachedMsgsMap = {}; _chatCache = {}; _activeGraceSet = {}; _lastRenderedIds = ''; _lastAllItems = []; _lastDropdownUsers = ''; _lastDropdownApps = ''; lastHash=''; _lastFetchWasFull=false; _gAllChats=[];
   // Note: persisted localStorage cache is intentionally kept — reused on next login
   // Clear saved panel so next profile's prompts load fresh
   $('savedPanel').classList.remove('open');
@@ -2993,6 +3020,14 @@ function gNavUserChanged(){
   renderGraphs();
 }
 
+function refreshGraphs(){
+  // Force a full re-fetch by resetting the cache flags
+  // so fetchForGraphs doesn't skip the list fetch
+  _gAllChats = [];
+  _lastFetchWasFull = false;
+  fetchForGraphs();
+}
+
 function _populateGraphsUserDropdown(chats){
   const users = new Set();
   chats.forEach(c => {
@@ -3019,37 +3054,52 @@ function _populateGraphsUserDropdown(chats){
 // Dedicated fetch for graphs mode: pulls ALL chats (no date filter) and
 // fills in any missing messages before rendering charts.
 async function fetchForGraphs(){
-  // Show loading state immediately
-  ['gStatChats','gStatPrompts','gStatTokens','gStatApps','gStatTopMonth','gStatTopApp'].forEach(id=>{
-    const el=$(id); if(el) el.textContent='…';
-  });
-  $('gBarChart').innerHTML = '<div class="g-empty"><span style="font-size:20px">⏳</span>Loading all chat messages…</div>';
-  $('gCloud').innerHTML    = '<div class="g-empty"><span style="font-size:20px">⏳</span>Loading…</div>';
   try {
     await ensureToken();
 
-    // Step 1: fetch full chat list with no date filter
-    const chatsData = await proxyGetAll('/genAiGateway/v1/chats?sortBy=modifiedTimeStamp:descending');
-    const allChats  = chatsData.items || [];
+    // ── Fast path: if we already have the full list and all messages cached, just render ──
+    // Check if _gAllChats is fresh by comparing timestamps with _lastAllItems
+    const canSkipListFetch = _gAllChats.length > 0 && _lastFetchWasFull;
+    let allChats;
 
-    // Merge into _lastAllItems so other modes benefit too
-    const freshIdSet = new Set(allChats.map(c=>c.id));
-    const keptOld    = _lastAllItems.filter(c => !freshIdSet.has(c.id));
-    _lastAllItems    = allChats.concat(keptOld).slice(0, 2000);
+    if(canSkipListFetch){
+      // Re-use the existing full list — just check for any new/changed chats
+      allChats = _gAllChats;
+    } else {
+      // Show loading only when we really need to fetch
+      ['gStatChats','gStatPrompts','gStatTokens','gStatApps','gStatTopMonth','gStatTopApp'].forEach(id=>{
+        const el=$(id); if(el) el.textContent='…';
+      });
+      $('gBarChart').innerHTML = '<div class="g-empty"><span style="font-size:20px">⏳</span>Loading chat list…</div>';
+      $('gCloud').innerHTML    = '<div class="g-empty"><span style="font-size:20px">⏳</span>Loading…</div>';
 
-    // Store as the authoritative source for graphs rendering
-    _gAllChats = allChats;
+      // Step 1: fetch full chat list with no date filter
+      const chatsData = await proxyGetAll('/genAiGateway/v1/chats?sortBy=modifiedTimeStamp:descending');
+      allChats = chatsData.items || [];
+
+      // Merge into _lastAllItems so other modes benefit too
+      const freshIdSet = new Set(allChats.map(c=>c.id));
+      const keptOld    = _lastAllItems.filter(c => !freshIdSet.has(c.id));
+      _lastAllItems    = allChats.concat(keptOld).slice(0, 2000);
+
+      // Store as the authoritative source for graphs rendering
+      _gAllChats = allChats;
+      _lastFetchWasFull = true;  // graphs fetches the full list
+    }
 
     // Step 2: find which chats are missing messages in _chatCache
+    // Also detect stale entries (modifiedTimeStamp changed)
     const missing = allChats.filter(c => {
       const cached = _chatCache[c.id];
-      return !cached || !Array.isArray(cached.msgs) || cached.msgs.length === 0;
+      if(!cached || !Array.isArray(cached.msgs) || cached.msgs.length === 0) return true;
+      // Re-fetch if the chat was updated since we last cached it
+      return cached.modifiedTimeStamp !== c.modifiedTimeStamp;
     });
 
-    // Step 3: fetch missing messages in batches of 10
+    // Step 3: fetch missing messages — higher concurrency for speed
     if(missing.length > 0){
       setConn('yellow', `Graphs: loading ${missing.length} chat(s) messages…`);
-      const BATCH = 10;
+      const BATCH = 20;  // increased from 10 for better throughput
       for(let i=0; i<missing.length; i+=BATCH){
         if(mode !== 'graphs') return; // user switched away — abort
         const batch = missing.slice(i, i+BATCH);
@@ -3060,7 +3110,6 @@ async function fetchForGraphs(){
             _chatCache[chat.id] = { modifiedTimeStamp: chat.modifiedTimeStamp, msgs };
           } catch(e){ /* skip on error */ }
         }));
-        // Update progress
         const done = Math.min(i+BATCH, missing.length);
         setConn('yellow', `Graphs: ${done}/${missing.length} loaded…`);
       }
@@ -3068,7 +3117,6 @@ async function fetchForGraphs(){
 
     setConn('green', `Authenticated as ${cfg.user} @ ${cfg.viyaUrl.replace(/^https?:\/\//,'')}`);
     if(mode === 'graphs'){
-      // Populate user dropdown from the full chat list so the filter works in graphs
       _populateGraphsUserDropdown(allChats);
       renderGraphs();
     }
