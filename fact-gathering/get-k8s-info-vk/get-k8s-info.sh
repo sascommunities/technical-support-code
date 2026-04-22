@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.6.06'
+version='get-k8s-info v1.6.11'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -1584,9 +1584,10 @@ function performanceTasks {
 }
 
 function captureCasLogs {
-    namespace=$1
-    casDefaultControllerPod=$2
+    local namespace=$1
+    local casDefaultControllerPod=$2
     logFinished='false'
+    mkdir -p $TEMPDIR/kubernetes/$namespace/logs
     echo "INFO: The sas-cas-server-default-controller from the $namespace namespace has recently started. Capturing logs on the background for up to 2 minutes..." | tee -a $logfile
     containerList=($($KUBECTLCMD -n $namespace get casdeployment default -o=jsonpath='{.spec.controllerTemplate.spec.initContainers[*].name} {.spec.controllerTemplate.spec.containers[*].name}' 2>> $logfile))
     podUid=$($KUBECTLCMD -n $namespace get pod $casDefaultControllerPod -o=jsonpath='{.metadata.uid}' 2>> $logfile)
@@ -1646,6 +1647,26 @@ function waitForCas {
     else
         echo "WARNING: The sas-cas-server-default-controller did not start" | tee -a $logfile
     fi
+}
+function captureGridmon() {
+    local ns="$1"
+
+    # Look for CASDeployments
+    casDeployments=($("$KUBECTLCMD" -n "$ns" get casdeployment -o name | cut -d '/' -f2))
+
+    for casDeployment in "${casDeployments[@]}"; do
+        # Look for CAS pods
+        casPods=($("$KUBECTLCMD" -n "$ns" get pod -l casoperator.sas.com/server="$casDeployment" -o name | cut -d '/' -f2))
+        for casPod in "${casPods[@]}"; do
+            echo "      - $casPod" | tee -a $logfile
+            $KUBECTLCMD -n "$ns" exec -it "$casPod" -c sas-cas-server -- bash -c "timeout 10 echo 'Q' | /opt/sas/viya/home/SASFoundation/utilities/bin/gridmon.sh -record /tmp/get-k8s-info_gridmon.out" > /dev/null 2>> "$logfile"
+            if [[ $? -eq 0 ]]; then
+                mkdir -p "$TEMPDIR/kubernetes/$ns/exec/$casPod"
+                $KUBECTLCMD -n "$ns" cp "$casPod:/tmp/get-k8s-info_gridmon.out" "$TEMPDIR/kubernetes/$ns/exec/$casPod/sas-cas-server_gridmon_-record.out" -c sas-cas-server >> "$logfile" 2>&1
+            fi
+            $timeoutCmd 10 $KUBECTLCMD -n "$ns" exec -it "$casPod" -c sas-cas-server -- rm -f /tmp/get-k8s-info_gridmon.out /tmp/gridmon.hosts > /dev/null 2>> "$logfile"
+        done
+    done
 }
 function createTask() {
     printf "%s\x1F%s\n" "$1" "$2" >> $TEMPDIR/.get-k8s-info/taskmanager/tasks
@@ -2173,6 +2194,12 @@ function getNamespaceData() {
                 createTask "$KUBECTLCMD -n $namespace adm top pod" "$TEMPDIR/kubernetes/$namespace/top/pods.txt"
             fi
             unset podList
+
+            # Capture gridmon from CAS nodes
+            if  [[ $isViyaNs == 'true' ]]; then
+                echo "    - Capturing gridmon from CAS pods" | tee -a $logfile
+                captureGridmon $namespace
+            fi
         fi
     done
 }
