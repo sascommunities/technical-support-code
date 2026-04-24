@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.6.11'
+version='get-k8s-info v1.6.12'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -1664,7 +1664,7 @@ function captureGridmon() {
                 mkdir -p "$TEMPDIR/kubernetes/$ns/exec/$casPod"
                 $KUBECTLCMD -n "$ns" cp "$casPod:/tmp/get-k8s-info_gridmon.out" "$TEMPDIR/kubernetes/$ns/exec/$casPod/sas-cas-server_gridmon_-record.out" -c sas-cas-server >> "$logfile" 2>&1
             fi
-            $timeoutCmd 10 $KUBECTLCMD -n "$ns" exec -it "$casPod" -c sas-cas-server -- rm -f /tmp/get-k8s-info_gridmon.out /tmp/gridmon.hosts > /dev/null 2>> "$logfile"
+            $timeoutCmd 10 $KUBECTLCMD -n "$ns" exec "$casPod" -c sas-cas-server -- rm -f /tmp/get-k8s-info_gridmon.out /tmp/gridmon.hosts > /dev/null 2>> "$logfile"
         done
     done
 }
