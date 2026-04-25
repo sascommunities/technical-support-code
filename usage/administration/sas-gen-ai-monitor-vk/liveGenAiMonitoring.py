@@ -33,6 +33,8 @@ from socketserver import ThreadingMixIn
 SSL_CTX        = ssl._create_unverified_context()
 DASHBOARD_HTML = Path(__file__).parent / "viya4_dashboard.html"
 CACHE_DIR      = Path(__file__).parent / "cache"
+SUMMARY_DIR    = Path(__file__).parent / "summaries"
+SUMMARY_CONFIG = Path(__file__).parent / "summary-config.json"
 
 # -- Cache filename helper ----------------------------------------------------
 def _cache_filename(cluster: str, user: str) -> Path:
@@ -54,7 +56,251 @@ def get_dashboard():
             _dash_cache["mtime"] = mtime
     return _dash_cache["data"]
 
-# -- Threaded server: each request handled in its own thread ------------------
+
+# =============================================================================
+# Summary Engine
+# =============================================================================
+
+def _load_summary_config():
+    """Load SMTP + recipient config from summary-config.json.
+    Returns {} if file does not exist (email is optional)."""
+    if not SUMMARY_CONFIG.exists():
+        return {}
+    try:
+        return json.loads(SUMMARY_CONFIG.read_text(encoding="utf-8"))
+    except Exception as e:
+        print("  [summary] config read error: %s" % e)
+        return {}
+
+
+def _build_digest(period: str) -> dict:
+    """Aggregate all cache files and compute usage statistics.
+
+    Returns a dict with:
+        period, generated_at, clusters, stats (per cluster+user),
+        global_stats, plain_text (the formatted digest string).
+    """
+    import re
+    from datetime import datetime, timezone, timedelta
+
+    now      = datetime.now(timezone.utc)
+    cutoff   = now - (timedelta(days=1) if period == "daily" else timedelta(days=7))
+    cutoff_s = cutoff.isoformat()
+
+    # Collect all cache files
+    CACHE_DIR.mkdir(exist_ok=True)
+    cache_files = list(CACHE_DIR.glob("*.json"))
+
+    # We need: per-cluster aggregated stats
+    # Cache filename pattern: cluster__user.json  (sanitised)
+    clusters = {}   # { cluster_label: { users, chats, prompts, apps, hours, incomplete } }
+
+    USER_TYPES   = {"userrequest", "userpromptrequest"}
+    HIDDEN_TYPES = {"functionresult", "copilotfunctionresponse"}
+
+    for cf in cache_files:
+        # Reverse-engineer cluster+user from filename (best effort)
+        stem  = cf.stem   # e.g. "viya4-lab-aks_viyacloud_sas_com__sasboot"
+        parts = stem.split("__", 1)
+        cluster_key = parts[0] if len(parts) == 2 else stem
+        user_key    = parts[1] if len(parts) == 2 else "unknown"
+
+        try:
+            data = json.loads(cf.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        if cluster_key not in clusters:
+            clusters[cluster_key] = {
+                "users":      set(),
+                "chats":      0,
+                "prompts":    0,
+                "apps":       {},
+                "hours":      [0]*24,
+                "incomplete": 0,
+                "canceled":   0,
+            }
+        c = clusters[cluster_key]
+
+        for chat_id, entry in data.items():
+            ts  = entry.get("modifiedTimeStamp") or entry.get("creationTimeStamp") or ""
+            if ts < cutoff_s:
+                continue   # outside the period window
+
+            msgs = entry.get("msgs") or []
+            # Application name — guess from first message context or skip
+            app = entry.get("applicationName", "")
+
+            c["chats"] += 1
+
+            for m in msgs:
+                mtype = (m.get("type") or "").lower()
+                mts   = m.get("creationTimeStamp") or ""
+
+                if mtype in HIDDEN_TYPES:
+                    continue
+
+                # Track incomplete / canceled
+                if m.get("complete") is False:
+                    c["incomplete"] += 1
+                if m.get("canceled"):
+                    c["canceled"] += 1
+
+                if mtype not in USER_TYPES:
+                    continue
+
+                # Only count prompts within the window
+                if mts and mts < cutoff_s:
+                    continue
+
+                c["prompts"] += 1
+
+                # Created-by from chat-level field stored in msgs? Fall back to user_key
+                creator = m.get("createdBy") or user_key
+                c["users"].add(creator)
+
+                # Hour-of-day breakdown (local UTC offset ignored — use UTC)
+                if mts:
+                    try:
+                        hour = int(mts[11:13])
+                        c["hours"][hour] += 1
+                    except Exception:
+                        pass
+
+    # Convert sets to counts for serialisation
+    for cl in clusters.values():
+        cl["user_count"] = len(cl["users"])
+        cl["users"]      = sorted(cl["users"])
+
+    # ── Plain-text digest ─────────────────────────────────────────────────────
+    period_label = "Last 24 Hours" if period == "daily" else "Last 7 Days"
+    lines = []
+    lines.append("=" * 58)
+    lines.append("  Viya GenAI Monitor — %s Digest" % ("Daily" if period == "daily" else "Weekly"))
+    lines.append("  Period : %s  (UTC)" % period_label)
+    lines.append("  Generated : %s" % now.strftime("%Y-%m-%d %H:%M UTC"))
+    lines.append("=" * 58)
+
+    if not clusters:
+        lines.append("")
+        lines.append("  No cached data found.")
+        lines.append("  Open the dashboard and fetch chats first.")
+    else:
+        for cl_name, c in sorted(clusters.items()):
+            lines.append("")
+            lines.append("  Cluster : %s" % cl_name.replace("_", "."))
+            lines.append("  " + "-" * 54)
+            lines.append("  Total chats    : %d" % c["chats"])
+            lines.append("  Total prompts  : %d" % c["prompts"])
+            lines.append("  Active users   : %d" % c["user_count"])
+
+            if c["users"]:
+                lines.append("")
+                lines.append("  Users active:")
+                for u in c["users"][:10]:
+                    lines.append("    • %s" % u)
+                if len(c["users"]) > 10:
+                    lines.append("    … and %d more" % (len(c["users"]) - 10))
+
+            # Peak hour
+            peak_hour = c["hours"].index(max(c["hours"])) if any(c["hours"]) else None
+            if peak_hour is not None and c["hours"][peak_hour] > 0:
+                h = peak_hour
+                ampm = "%d%s" % (h if h <= 12 else h-12, "am" if h < 12 else "pm")
+                lines.append("")
+                lines.append("  Peak hour      : %s UTC (%d prompts)" % (ampm, c["hours"][peak_hour]))
+
+            if c["incomplete"] or c["canceled"]:
+                lines.append("")
+                lines.append("  ⚠  Attention:")
+                if c["incomplete"]:
+                    lines.append("    %d incomplete response(s) detected" % c["incomplete"])
+                if c["canceled"]:
+                    lines.append("    %d canceled response(s) detected" % c["canceled"])
+
+    lines.append("")
+    lines.append("=" * 58)
+    lines.append("  Generated by Viya GenAI Monitor")
+    lines.append("  https://github.com/sascommunities/technical-support-code")
+    lines.append("=" * 58)
+
+    return {
+        "period":       period,
+        "generated_at": now.isoformat(),
+        "clusters":     clusters,
+        "plain_text":   "\n".join(lines),
+    }
+
+
+def _save_digest(digest: dict) -> Path:
+    """Write digest plain-text to summaries/ folder. Returns file path."""
+    SUMMARY_DIR.mkdir(exist_ok=True)
+    from datetime import datetime, timezone
+    ts    = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+    fname = "summary-%s-%s.txt" % (digest["period"], ts)
+    fpath = SUMMARY_DIR / fname
+    fpath.write_text(digest["plain_text"], encoding="utf-8")
+    print("  [summary] saved → %s" % fpath.name)
+    return fpath
+
+
+def _send_email(digest: dict, cfg: dict) -> dict:
+    """Send digest via SMTP. Returns {sent, error}."""
+    import smtplib
+    import email.mime.text
+    import email.mime.multipart
+    from datetime import datetime, timezone
+
+    smtp_host = cfg.get("smtp_host", "")
+    smtp_port = int(cfg.get("smtp_port", 587))
+    smtp_user = cfg.get("smtp_user", "")
+    smtp_pass = cfg.get("smtp_pass", "")
+    use_tls   = cfg.get("smtp_tls", True)
+    from_addr = cfg.get("from", smtp_user)
+    to_addrs  = cfg.get("to", [])
+
+    if not smtp_host:
+        return {"sent": False, "error": "smtp_host not configured"}
+    if not to_addrs:
+        return {"sent": False, "error": "no recipients configured"}
+
+    period_label = "Daily" if digest["period"] == "daily" else "Weekly"
+    subject = "Viya GenAI Monitor — %s Digest (%s UTC)" % (
+        period_label,
+        datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+    )
+
+    msg = email.mime.multipart.MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = from_addr
+    msg["To"]      = ", ".join(to_addrs)
+    msg.attach(email.mime.text.MIMEText(digest["plain_text"], "plain", "utf-8"))
+
+    try:
+        if use_tls:
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+        else:
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=15)
+
+        if smtp_user and smtp_pass:
+            server.login(smtp_user, smtp_pass)
+
+        server.sendmail(from_addr, to_addrs, msg.as_string())
+        server.quit()
+        print("  [summary] email sent to %s" % ", ".join(to_addrs))
+        return {"sent": True, "recipients": to_addrs}
+
+    except Exception as e:
+        print("  [summary] email error: %s" % e)
+        return {"sent": False, "error": str(e)}
+
+
+# =============================================================================
+# Threaded server: each request handled in its own thread
+# =============================================================================
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
@@ -255,6 +501,35 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.send_json(200, {"saved": True, "entries": len(data), "size_kb": kb})
                 except Exception as e:
                     self.send_json(500, {"error": str(e)})
+            elif action == "patch":
+                # Incremental update: merge only changed/new entries into existing file
+                delta = payload.get("data", {})
+                if not isinstance(delta, dict):
+                    self.send_json(400, {"error": "data must be an object"}); return
+                try:
+                    CACHE_DIR.mkdir(exist_ok=True)
+                    # Load existing cache file (or start fresh)
+                    existing = {}
+                    if cf.exists():
+                        try:
+                            existing = json.loads(cf.read_text(encoding="utf-8"))
+                        except Exception:
+                            existing = {}
+                    # Merge delta into existing
+                    existing.update(delta)
+                    text = json.dumps(existing, separators=(",", ":"))
+                    cf.write_text(text, encoding="utf-8")
+                    kb = round(len(json.dumps(delta, separators=(",",":"))) / 1024, 1)
+                    print("  [cache] patch %s  patched=%d  total=%d  sent=%.1f KB" % (
+                        cf.name, len(delta), len(existing), kb))
+                    self.send_json(200, {
+                        "saved":   True,
+                        "patched": len(delta),
+                        "total":   len(existing),
+                        "size_kb": kb,
+                    })
+                except Exception as e:
+                    self.send_json(500, {"error": str(e)})
             elif action == "clear":
                 try:
                     if cf.exists(): cf.unlink()
@@ -263,6 +538,34 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.send_json(500, {"error": str(e)})
             else:
                 self.send_json(400, {"error": "unknown action: " + action})
+            return
+
+        # -- /api/summary: generate digest, save to file, optionally email -----
+        if path == "/api/summary":
+            period = payload.get("period", "daily")   # "daily" or "weekly"
+            if period not in ("daily", "weekly"):
+                self.send_json(400, {"error": "period must be 'daily' or 'weekly'"}); return
+
+            try:
+                digest   = _build_digest(period)
+                saved    = _save_digest(digest)
+                cfg_smtp = _load_summary_config()
+                email_result = _send_email(digest, cfg_smtp) if cfg_smtp.get("smtp_host") else \
+                               {"sent": False, "error": "no smtp_host in summary-config.json"}
+
+                self.send_json(200, {
+                    "ok":           True,
+                    "period":       period,
+                    "generated_at": digest["generated_at"],
+                    "saved_to":     str(saved.name),
+                    "email":        email_result,
+                    "plain_text":   digest["plain_text"],
+                    "clusters":     list(digest["clusters"].keys()),
+                })
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.send_json(500, {"error": str(e)})
             return
 
         self.send_json(404, {"error": "unknown route"})

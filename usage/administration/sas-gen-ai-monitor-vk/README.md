@@ -142,7 +142,7 @@ All filters combine with each other. Use the **✕ Clear** button to reset all a
 
 | Filter | Description |
 |---|---|
-| **Chat ID** | Paste a specific chat UUID to show only that conversation |
+| **Chat ID** | Type or paste any part of a chat UUID — partial matches are supported and results update instantly. Click any chat UUID in a card header to copy it to the clipboard. |
 | **User** | Filter to one user's chats (populated automatically from live data) |
 | **App** | Filter by application, e.g. `SAS Visual Analytics`, `SAS Landing` |
 | **Search** | Full-text search across all message content — highlights matches, auto-expands cards, shows match count with next/previous navigation |
@@ -151,7 +151,20 @@ All filters combine with each other. Use the **✕ Clear** button to reset all a
 
 Cards are collapsed by default and can be expanded individually from the header or globally using Expand All / Collapse All.
 
-The header shows application, user, timestamps, status badge, message count, and an ⬇ export button. Messages are ordered chronologically (oldest first) and display role, timestamp, message ID, full Markdown content, status flags, and a ⭐ bookmark option.
+The header shows the **application name** as the primary title, the **creator** (`by username`) on the secondary line, followed by creation and modification timestamps. The right side displays the status badge (● ACTIVE / ○ idle), message count chip, and action buttons (📌 pin, ▶ replay, ⬇ export, 📝 note).
+
+**Click the grey chat UUID** at the top of any card to copy it to the clipboard.
+
+Messages are ordered chronologically (oldest first) and display role, timestamp, message ID, full Markdown content, status flags, and a ⭐ bookmark option.
+
+## Pinned Chats
+
+Pin any chat to keep it permanently at the top of the list, regardless of sort order or polling updates.
+
+- Click **📌** in the card header to pin or unpin
+- Pinned chats are separated from the rest by a `📌 Pinned above · other chats below` divider
+- Pins persist across sessions (stored in `localStorage`, scoped per cluster and user)
+- Pinned chats remain at the top even when switching between **↓ New** and **↑ Old** sort order
 
 ## Toolbar Controls
 
@@ -159,8 +172,10 @@ The header shows application, user, timestamps, status badge, message count, and
 |---|---|
 | **▶ Fetch** | Manually trigger a fetch (also resets the poll countdown) |
 | **⏸ Pause / ▶ Resume** | Pause or resume automatic polling |
-| **↓ Newest / ↑ Oldest** | Sort chat cards by modified timestamp |
+| **↓ Newest / ↑ Oldest** | Sort chat cards by modified timestamp. Pinned chats always remain at the top regardless of sort order. |
 | **Expand All / Collapse All** | Expand or collapse all visible chat cards |
+
+> **Background tab behaviour** — polling is automatically paused when you switch to another browser tab and resumes immediately when you return, triggering an instant fetch. The status bar shows `tab hidden` while paused. This saves CPU and network on machines where the dashboard runs all day in a background tab.
 
 ## Status Bar
 
@@ -218,16 +233,6 @@ The exported file:
 
 > The chat must be loaded in memory (fetched in All or History mode). If not yet cached, a toast will prompt you to fetch first.
 
-## Settings
-
-Click **⚙** in the top-right header while connected to open the Settings panel. You can update the **poll interval** without disconnecting. Click **Apply** to save.
-
-Click **Disconnect** to return to the profile picker. To change the Viya URL, username, or password, disconnect and reconnect using the profile picker.
-
-## Theme
-
-Click **☀️ / 🌙** in the top-right to toggle between light and dark themes. The preference is saved automatically and persists across sessions.
-
 ## Graphs
 
 The **📊 Graphs** tab provides a visual analytics overview of all GenAI activity on the cluster. It is accessible to **SAS Administrators only** — non-admin users will not see the tab.
@@ -275,6 +280,8 @@ A bar chart showing activity over time. Two dropdowns in the chart header let yo
 
 Shows the share of total prompts per SAS application. Up to 8 applications are shown individually; any remaining ones are grouped as **Other**. Hover over a slice to see the exact count and percentage.
 
+The legend on the right lists each application with its prompt count and percentage share (`42 | 35%`), vertically aligned for easy scanning.
+
 ### Word Cloud — Top 30 Terms
 
 Displays the 30 most frequent words found across all user prompt text, after removing common stop-words (the, and, is, etc.).
@@ -284,7 +291,7 @@ Displays the 30 most frequent words found across all user prompt text, after rem
 - **Hover** over any word to see which application it is associated with
 - A color legend at the bottom maps each color to its application
 
-A **Filter by app** dropdown in the chart header lets you narrow the word cloud to a single application's prompts. Select **All applications** to restore the full cross-app view.
+A **Filter by app** dropdown in the chart header lets you narrow the word cloud to a single application's prompts — all words, sizes, colors, and the legend will reflect only that application. Select **All applications** to restore the full cross-app view.
 
 ### User Filter
 
@@ -293,6 +300,17 @@ The **User** dropdown in the sticky nav bar filters all three charts and all six
 ### Refresh
 
 Click **↺ Refresh** to re-fetch the full chat history from the server and re-render all charts with fresh data.
+
+## Settings
+
+Click **⚙** in the top-right header while connected to open the Settings panel. You can update the **poll interval** without disconnecting. Click **Apply** to save.
+
+Click **Disconnect** to return to the profile picker. To change the Viya URL, username, or password, disconnect and reconnect using the profile picker.
+
+## Theme
+
+Click **☀️ / 🌙** in the top-right to toggle between light and dark themes. The preference is saved automatically and persists across sessions.
+
 
 # Troubleshooting
 

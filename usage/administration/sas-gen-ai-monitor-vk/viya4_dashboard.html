@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Viya · GenAI Monitor</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Reddit+Mono:wght@300;400;500;600;700&family=Reddit+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
   /* Light theme is default (:root) */
@@ -20,6 +22,12 @@
     --code-color:#1e40af;
     --invert-icon:invert(1) hue-rotate(180deg);
     --card-bg:#ffffff;
+    /* Graph chart colours */
+    --g-bar-top:rgba(37,99,235,1);     --g-bar-bot:rgba(37,99,235,0.35);
+    --g-bar-empty:#e8edf7;
+    --g-heat-base:37,99,235;           /* RGB for heatmap interpolation */
+    --g-donut-center:#1a2540;
+    --g-palette-opacity:1;
   }
   [data-theme="dark"] {
     --bg:#0a0c10; --bg2:#0f1219; --bg3:#151a24;
@@ -33,46 +41,68 @@
     --code-color:#93c5fd;
     --invert-icon:invert(0);
     --card-bg:#0f1219;
+    /* Graph chart colours */
+    --g-bar-top:rgba(96,165,250,1);    --g-bar-bot:rgba(96,165,250,0.25);
+    --g-bar-empty:#1e2636;
+    --g-heat-base:96,165,250;          /* lighter blue for dark mode */
+    --g-donut-center:#c8d4e8;
+    --g-palette-opacity:0.9;
   }
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
   html{transition:background-color .25s,color .2s}
   body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13px;line-height:1.6;min-height:100vh;overflow-x:hidden}
   body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(var(--grid-color) 1px,transparent 1px),linear-gradient(90deg,var(--grid-color) 1px,transparent 1px);background-size:32px 32px;pointer-events:none;z-index:0}
 
-  header{position:sticky;top:0;z-index:100;background:var(--header-bg);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:0 28px;display:flex;align-items:center;justify-content:space-between;height:56px;box-shadow:0 2px 0 var(--bg)}
-  .logo{font-family:var(--sans);font-weight:800;font-size:17px;letter-spacing:-.5px;color:var(--text);display:flex;align-items:center;gap:10px}
-  .logo-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px var(--accent);animation:blink 2s infinite}
+  header{position:sticky;top:0;z-index:100;background:var(--header-bg);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);padding:0 28px;display:flex;align-items:center;justify-content:space-between;height:56px}
+  .logo{font-family:var(--sans);font-weight:800;font-size:15px;letter-spacing:-.3px;color:var(--text-dim);display:flex;align-items:center;gap:8px}
+  .logo-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);animation:blink 2s infinite;flex-shrink:0}
   @keyframes blink{0%,100%{opacity:1;box-shadow:0 0 10px var(--accent)}50%{opacity:.4;box-shadow:0 0 3px var(--accent)}}
-  .header-right{display:flex;align-items:center;gap:12px}
+  .header-center{flex:1;display:flex;align-items:center;justify-content:center;padding:0 16px}
+  .header-right{display:flex;align-items:center;gap:2px}
 
-  .toolbar{position:sticky;top:56px;z-index:90;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 28px;border-bottom:1px solid var(--border);background:var(--bg2);box-shadow:0 4px 0 var(--bg2)}
+  /* Cluster identity chip — populated by JS on connect */
+  .cluster-chip{display:none;align-items:center;gap:8px;padding:4px 12px 4px 6px;border:1px solid var(--border);border-radius:8px;background:var(--bg3);cursor:default;max-width:340px}
+  .cluster-chip.visible{display:flex}
+  .cluster-chip-avatar{width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0;border:1px solid rgba(0,0,0,.08)}
+  .cluster-chip-info{display:flex;flex-direction:column;gap:1px;min-width:0}
+  .cluster-chip-name{font-family:var(--sans);font-size:12px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
+  .cluster-chip-env{font-family:var(--mono);font-size:9px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.3px}
+  .cluster-chip-live{width:6px;height:6px;border-radius:50%;background:var(--text-dim);flex-shrink:0}
+  .cluster-chip-live.green{background:var(--green);box-shadow:0 0 5px var(--green);animation:blink 2s infinite}
 
-  .seg{display:flex;border:1px solid var(--border2);border-radius:6px;overflow:hidden}
-  .seg-btn{background:transparent;border:none;color:var(--text-mid);font-family:var(--mono);font-size:12px;padding:6px 14px;cursor:pointer;transition:all .15s;border-right:1px solid var(--border2);white-space:nowrap}
-  .seg-btn:last-child{border-right:none}
-  .seg-btn:hover{background:var(--bg3);color:var(--text)}
-  .seg-btn.active{background:var(--accent);color:#fff}
+  .toolbar{position:sticky;top:calc(56px + var(--statusbar-h, 36px));z-index:89;height:88px;display:flex;flex-direction:column;justify-content:center;overflow:hidden;padding:0 28px;border-bottom:1px solid var(--border);background:var(--bg2)}
+  .toolbar-sep{width:1px;height:24px;background:var(--border);margin:0 2px;flex-shrink:0;align-self:center}
+  .toolbar-row{display:flex;align-items:center;gap:8px;height:44px;flex-shrink:0;overflow:hidden}
 
-  .input-group{display:flex;align-items:center;gap:6px}
-  .input-group label{color:var(--text-dim);font-size:11px;white-space:nowrap}
+  .seg{display:flex;align-items:center;gap:2px;padding:3px;background:var(--bg3);border-radius:9px;border:1px solid var(--border)}
+  .seg-btn{background:transparent;border:none;color:var(--text-dim);font-family:var(--sans);font-size:12px;font-weight:600;padding:5px 13px;cursor:pointer;transition:all .15s;white-space:nowrap;border-radius:6px;text-align:center}
+  .seg-btn:hover{background:var(--bg2);color:var(--text)}
+  .seg-btn.active{background:var(--bg2);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.06)}
+
+  .input-group{display:flex;align-items:center;gap:6px;background:var(--bg3);border:1px solid var(--border);border-radius:7px;padding:3px 10px;flex-shrink:0}
+  .input-group label{color:var(--text-dim);font-size:10px;white-space:nowrap;letter-spacing:.3px;text-transform:uppercase}
   input[type=text],input[type=number],input[type=password]{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;padding:6px 10px;outline:none;transition:border-color .15s}
+  .input-group input[type=text],.input-group input[type=number],.input-group select{background:transparent;border:none;padding:0;font-size:12px;color:var(--text);font-family:var(--mono);outline:none;min-width:0;text-align:center}
   input:focus{border-color:var(--accent)}
   input[type=number]{width:64px}
 
   .btn{background:var(--accent);border:none;border-radius:6px;color:#fff;font-family:var(--mono);font-size:12px;font-weight:600;padding:7px 16px;cursor:pointer;transition:all .15s;white-space:nowrap}
-  .btn:hover{background:#2563eb}
+  .btn:hover{filter:brightness(1.1)}
   .btn:disabled{opacity:.4;cursor:not-allowed}
-  .btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--text-mid)}
-  .btn-ghost:hover{background:var(--bg3);border-color:var(--text-mid);color:var(--text)}
+  .btn-ghost{background:transparent;border:1px solid var(--border);color:var(--text-mid)}
+  .btn-ghost:hover{background:var(--bg3);border-color:var(--border2);color:var(--text)}
 
-  .statusbar{position:sticky;top:calc(56px + var(--toolbar-h, 52px));z-index:89;display:flex;align-items:center;gap:20px;padding:8px 28px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:11px;color:var(--text-dim);flex-wrap:wrap;box-shadow:0 4px 0 var(--bg2)}
-  .status-item{display:flex;align-items:center;gap:6px}
-  .status-dot{width:6px;height:6px;border-radius:50%;background:var(--text-dim)}
+  .statusbar{position:sticky;top:56px;z-index:91;height:36px;display:flex;align-items:stretch;gap:0;padding:0 28px;background:var(--bg2);border-bottom:1px solid var(--border);font-size:11px;color:var(--text-dim);flex-wrap:nowrap;overflow-x:auto}
+  .status-item{display:flex;align-items:center;gap:5px;padding:0 16px 0 0;border-right:1px solid var(--border);margin-right:16px;white-space:nowrap}
+  .status-item:last-child{border-right:none;margin-right:0;margin-left:auto;padding-right:0;flex-shrink:0}
+  .status-item strong{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--text-mid);font-weight:600}
+  .status-dot{width:6px;height:6px;border-radius:50%;background:var(--text-dim);flex-shrink:0}
+  .status-label{font-size:9px;text-transform:uppercase;letter-spacing:.6px;opacity:.55}
   .status-dot.green{background:var(--green);box-shadow:0 0 6px var(--green);animation:blink 2s infinite}
   .status-dot.yellow{background:var(--yellow)}
   .status-dot.red{background:var(--red)}
 
-  .badge{display:inline-flex;align-items:center;gap:4px;background:var(--bg3);border:1px solid var(--border2);border-radius:4px;padding:1px 7px;font-size:11px;color:var(--text-mid)}
+  .badge{display:inline-flex;align-items:center;gap:4px;background:var(--bg3);border:1px solid var(--border2);border-radius:20px;padding:3px 10px;font-size:10px;font-weight:600;color:var(--text-mid);letter-spacing:.04em}
   .badge.green-badge{border-color:var(--green);color:var(--green)}
   .badge.blue-badge{border-color:var(--accent);color:#60a5fa}
 
@@ -80,6 +110,17 @@
   .empty{text-align:center;padding:80px 20px;color:var(--text-dim)}
   .empty-icon{font-size:48px;margin-bottom:12px}
   .empty h3{font-family:var(--sans);font-size:18px;color:var(--text-mid);margin-bottom:8px}
+
+  /* ── Pinned chats ── */
+  .chat-card.is-pinned{ border-color:var(--yellow);box-shadow:0 0 0 1px rgba(180,83,9,.2) }
+  .pin-btn{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;cursor:pointer;font-size:12px;padding:0;width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;opacity:.45;transition:all .15s;flex-shrink:0}
+  .pin-btn:hover,.pin-btn.pinned{opacity:1;background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.4)}
+  .pin-btn.pinned{transform:rotate(-45deg)}
+  .pinned-divider{display:flex;align-items:center;gap:10px;padding:6px 0 4px;
+    font-size:10px;font-family:var(--mono);color:var(--text-dim);letter-spacing:.5px;
+    text-transform:uppercase}
+  .pinned-divider::after{content:'';flex:1;height:1px;background:var(--border)}
+  .tag-pin{background:rgba(180,83,9,.1);border-color:rgba(180,83,9,.3);color:var(--yellow)}
 
   .chat-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;overflow:hidden;transition:border-color .2s;animation:slideIn .25s ease both}
   @keyframes slideIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
@@ -89,17 +130,19 @@
   .chat-header{display:flex;align-items:flex-start;justify-content:space-between;padding:14px 18px 12px;border-bottom:1px solid var(--border);cursor:pointer;user-select:none;gap:12px}
   .chat-header:hover{background:var(--bg3)}
   .chat-meta{flex:1;min-width:0}
-  .chat-id{font-size:10px;color:var(--text-dim);letter-spacing:.5px;margin-bottom:3px}
-  .chat-title{font-family:var(--sans);font-size:14px;font-weight:600;color:var(--text)}
-  .chat-sub{font-size:11px;color:var(--text-dim);margin-top:3px;display:flex;gap:12px;flex-wrap:wrap}
-  .chat-badges{display:flex;gap:6px;align-items:center;flex-shrink:0}
-  .tag{display:inline-flex;align-items:center;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:600;letter-spacing:.5px;border:1px solid}
+  .chat-id{display:inline-block;font-size:10px;color:var(--text-dim);letter-spacing:.5px;margin-bottom:3px;cursor:pointer;transition:color .15s}
+  .chat-id:hover{color:var(--accent)}
+  .chat-title{font-family:var(--sans);font-size:14px;font-weight:700;color:var(--text);line-height:1.2}
+  .chat-creator{font-size:11px;color:var(--text-mid);margin-top:2px;font-family:var(--mono)}
+  .chat-sub{font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;gap:12px;flex-wrap:wrap}
+  .chat-badges{display:flex;gap:5px;align-items:center;flex-shrink:0;flex-wrap:wrap}
+  .tag{display:inline-flex;align-items:center;border-radius:20px;padding:2px 9px;font-size:10px;font-weight:600;letter-spacing:.03px;border:1px solid}
   .tag-green{background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.3);color:var(--green)}
   .tag-blue{background:rgba(59,130,246,.1);border-color:rgba(59,130,246,.3);color:#60a5fa}
   .tag-purple{background:rgba(167,139,250,.1);border-color:rgba(167,139,250,.3);color:var(--purple)}
   .tag-dim{background:rgba(74,90,120,.1);border-color:rgba(74,90,120,.3);color:var(--text-dim)}
   .tag-yellow{background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.3);color:var(--yellow)}
-  .chevron{color:var(--text-dim);font-size:14px;transition:transform .2s;flex-shrink:0;padding-top:2px}
+  .chevron{color:var(--text-dim);font-size:16px;transition:transform .2s;flex-shrink:0;padding:0;background:none;border:none;cursor:pointer;width:24px;height:26px;display:inline-flex;align-items:center;justify-content:center;opacity:.5}
   .chat-card.collapsed .chevron{transform:rotate(-90deg)}
   .messages-wrap{overflow:hidden;transition:max-height .3s ease}
   .chat-card.collapsed .messages-wrap{max-height:0!important}
@@ -160,8 +203,33 @@
   /* blockquote */
   .msg-content blockquote{border-left:3px solid var(--accent);margin:6px 0;padding:4px 12px;color:var(--text-mid);background:rgba(59,130,246,.05);border-radius:0 4px 4px 0}
   .msg-providers{margin-top:8px;font-size:10px;color:var(--text-dim);display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-  .card-export-btn{background:none;border:1px solid var(--border2);border-radius:4px;color:var(--text-mid);cursor:pointer;font-size:11px;padding:2px 7px;line-height:1.4;transition:all .15s;flex-shrink:0}
-  .card-export-btn:hover{background:var(--accent);border-color:var(--accent);color:#fff}
+  /* ── Chat Notes ── */
+  .note-btn{ background:var(--bg3);border:1px solid var(--border2);border-radius:6px;cursor:pointer;font-size:12px;padding:0;width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;opacity:.45;transition:all .15s;flex-shrink:0;color:var(--text) }
+  .note-btn:hover,.note-btn.has-note{ opacity:1 }
+  .note-btn.has-note{ background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.4) }
+  .note-btn.has-note{ color:var(--yellow) }
+  .note-panel{ display:none;padding:8px 14px 10px;background:rgba(245,158,11,.06);
+    border-top:1px solid rgba(245,158,11,.2);animation:slideIn .15s ease }
+  .note-panel.open{ display:block }
+  .note-textarea{ width:100%;box-sizing:border-box;background:var(--bg3);
+    border:1px solid rgba(245,158,11,.3);border-radius:6px;padding:7px 10px;
+    font-family:var(--mono);font-size:12px;color:var(--text);resize:vertical;
+    min-height:56px;outline:none;line-height:1.5 }
+  .note-textarea:focus{ border-color:var(--yellow) }
+  .note-actions{ display:flex;gap:6px;margin-top:6px;align-items:center }
+  .note-save-btn{ background:var(--yellow);border:none;color:#fff;border-radius:5px;
+    font-family:var(--mono);font-size:11px;padding:3px 12px;cursor:pointer;font-weight:700 }
+  .note-del-btn{ background:none;border:1px solid var(--border2);border-radius:5px;
+    font-family:var(--mono);font-size:11px;padding:3px 10px;cursor:pointer;
+    color:var(--text-dim) }
+  .note-del-btn:hover{ color:var(--red);border-color:var(--red) }
+  .note-hint{ font-size:10px;color:var(--text-dim);font-family:var(--mono);margin-left:auto }
+  .note-preview{ font-size:10px;font-family:var(--mono);color:var(--yellow);
+    max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    cursor:pointer;padding:2px 4px;border-radius:3px;background:rgba(245,158,11,.08) }
+
+  .card-export-btn{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text-dim);cursor:pointer;font-size:12px;padding:0;width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0}
+  .card-export-btn:hover{background:var(--bg2);border-color:var(--border2);color:var(--text)}
   .counter-chip{background:var(--accent);color:#fff;border-radius:10px;padding:1px 7px;font-size:10px;font-weight:700;min-width:20px;text-align:center}
   .counter-chip.green-chip{background:var(--green)}
 
@@ -181,7 +249,7 @@
 
   #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:10px 20px;font-size:12px;color:var(--text);opacity:0;transition:opacity .2s;pointer-events:none;z-index:999;white-space:nowrap}
   #toast.show{opacity:1}
-  .icon-btn{background:none;border:1px solid var(--border2);border-radius:6px;color:var(--text-mid);cursor:pointer;padding:6px 10px;font-size:14px;transition:all .15s}
+  .icon-btn{background:none;border:none;border-radius:8px;color:var(--text-dim);cursor:pointer;padding:6px 8px;font-size:15px;transition:all .15s;width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center}
   .icon-btn:hover{background:var(--bg3);color:var(--text);border-color:var(--text-mid)}
   ::-webkit-scrollbar{width:6px}
   ::-webkit-scrollbar-track{background:var(--bg)}
@@ -196,7 +264,156 @@
   mark.hl-focus{background:rgba(245,158,11,.7);color:#fff}
 
   /* Search result bar */
-  .search-bar{position:sticky;top:calc(56px + var(--toolbar-h, 52px) + var(--statusbar-h, 36px));z-index:88;display:none;align-items:center;gap:12px;padding:7px 28px;background:var(--bg2);border-top:1px solid rgba(245,158,11,.3);border-bottom:2px solid rgba(245,158,11,.4);font-size:11px;color:var(--yellow);box-shadow:0 4px 0 var(--bg2)}
+  /* ── Conversation Replay ── */
+  #replayModal{
+    position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.5);
+    backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center
+  }
+  #replayModal.open{ display:flex }
+  .replay-box{
+    background:var(--bg2);border:1px solid var(--border2);border-radius:16px;
+    width:min(700px,95vw);max-height:85vh;display:flex;flex-direction:column;
+    box-shadow:0 16px 48px rgba(0,0,0,.3);overflow:hidden
+  }
+  .replay-header{
+    padding:16px 20px 12px;border-bottom:1px solid var(--border);
+    display:flex;align-items:center;justify-content:space-between;flex-shrink:0
+  }
+  .replay-title{ font-family:var(--sans);font-weight:800;font-size:14px;color:var(--text) }
+  .replay-subtitle{ font-size:11px;color:var(--text-dim);font-family:var(--mono);margin-top:2px }
+  .replay-messages{
+    flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:0
+  }
+  .replay-msg{
+    opacity:0;transform:translateY(8px);
+    transition:opacity .4s ease,transform .4s ease
+  }
+  .replay-msg.visible{ opacity:1;transform:translateY(0) }
+  .replay-controls{
+    padding:12px 20px;border-top:1px solid var(--border);
+    display:flex;align-items:center;gap:10px;flex-shrink:0;flex-wrap:wrap
+  }
+  .replay-btn{
+    background:var(--accent);border:none;color:#fff;border-radius:8px;
+    font-family:var(--mono);font-size:12px;padding:6px 16px;cursor:pointer;
+    transition:opacity .15s;font-weight:600
+  }
+  .replay-btn:disabled{ opacity:.4;cursor:default }
+  .replay-btn.ghost{
+    background:var(--bg3);border:1px solid var(--border2);color:var(--text);
+  }
+  .replay-progress{
+    flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden
+  }
+  .replay-progress-bar{
+    height:100%;background:var(--accent);border-radius:2px;
+    transition:width .3s ease
+  }
+  .replay-counter{
+    font-size:11px;color:var(--text-dim);font-family:var(--mono);white-space:nowrap
+  }
+  .replay-speed{
+    background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+    padding:4px 8px;font-size:11px;font-family:var(--mono);color:var(--text);cursor:pointer
+  }
+  .replay-ts{
+    font-size:10px;color:var(--text-dim);font-family:var(--mono);
+    text-align:center;margin:6px 0 2px;opacity:.6
+  }
+
+  /* ── User Journey View ── */
+  #gJourneyPanel{ margin-top:20px }
+  .gj-header{ display:flex;align-items:center;justify-content:space-between;
+    margin-bottom:14px;flex-wrap:wrap;gap:8px }
+  .gj-title{ font-family:var(--sans);font-weight:800;font-size:14px;color:var(--text) }
+  .gj-subtitle{ font-size:11px;color:var(--text-dim);font-family:var(--mono);margin-top:2px }
+  .gj-close{ background:none;border:1px solid var(--border2);border-radius:6px;
+    color:var(--text-dim);font-family:var(--mono);font-size:11px;padding:3px 10px;cursor:pointer }
+  .gj-close:hover{ color:var(--text);border-color:var(--accent) }
+  .gj-stats{ display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px }
+  .gj-stat{ background:var(--bg3);border:1px solid var(--border2);border-radius:8px;
+    padding:8px 14px;font-family:var(--mono);min-width:100px }
+  .gj-stat .gjv{ font-size:16px;font-weight:800;color:var(--accent);font-family:var(--sans) }
+  .gj-stat .gjl{ font-size:9px;color:var(--text-dim);margin-top:2px;text-transform:uppercase;
+    letter-spacing:.5px }
+  .gj-timeline-wrap{ overflow-x:auto;padding-bottom:8px }
+  .gj-timeline{ position:relative;min-height:60px }
+  .gj-axis{ display:flex;justify-content:space-between;font-size:9px;
+    color:var(--text-dim);font-family:var(--mono);padding:0 2px;
+    margin-bottom:6px;pointer-events:none;height:14px;align-items:center }
+  .gj-axis span{ flex:1;text-align:center;overflow:hidden;white-space:nowrap }
+  .gj-axis span:first-child{ text-align:left }
+  .gj-axis span:last-child{ text-align:right;flex:0 0 auto }
+  .gj-row{ display:grid;grid-template-columns:110px 1fr;align-items:center;margin-bottom:4px }
+  .gj-row-label{ font-size:9px;font-family:var(--mono);color:var(--text-dim);
+    white-space:nowrap;text-align:right;padding-right:8px;
+    box-sizing:border-box;
+    position:sticky;left:0;background:var(--bg2);z-index:10;
+    height:22px;display:flex;align-items:center;justify-content:flex-end }
+  .gj-axis{ margin-left:0 !important }
+  .gj-track{ position:relative;width:100%;height:22px;background:var(--bg3);
+    border-radius:4px;overflow:visible;z-index:1 }
+  .gj-block{ position:absolute;height:100%;border-radius:4px;min-width:4px;
+    cursor:pointer;transition:opacity .15s;top:0 }
+  .gj-block:hover{ opacity:.75;z-index:10 }
+  .gj-tooltip{ position:fixed;background:var(--bg2);border:1px solid var(--border2);
+    border-radius:8px;padding:10px 14px;font-size:11px;color:var(--text);
+    pointer-events:none;z-index:2100;box-shadow:0 4px 16px rgba(0,0,0,.2);
+    font-family:var(--mono);white-space:nowrap;display:none }
+  .gj-legend{ display:flex;flex-wrap:wrap;gap:8px;margin-top:12px }
+  .gj-legend-item{ display:flex;align-items:center;gap:5px;font-size:10px;
+    font-family:var(--mono);color:var(--text-mid) }
+  .gj-legend-dot{ width:10px;height:10px;border-radius:3px;flex-shrink:0 }
+  .gj-empty{ padding:32px;text-align:center;color:var(--text-dim);font-size:13px }
+  /* ── Journey fullscreen overlay ── */
+  #gjFullscreen{
+    position:fixed;inset:0;z-index:2000;background:var(--bg);
+    overflow-y:auto;display:none;flex-direction:column;pointer-events:none
+  }
+  #gjFullscreen.open{ display:flex;pointer-events:auto }
+  .gjfs-inner{
+    width:100%;padding:28px 48px 60px;flex:1;box-sizing:border-box
+  }
+  .gjfs-inner .gj-track{ height:28px }
+  .gjfs-inner .gj-row-label{ width:110px;font-size:10px;background:var(--bg);height:28px }
+  .gjfs-inner .gj-timeline-wrap{ overflow-x:hidden }
+  .gjfs-inner .gj-stats{ flex-wrap:nowrap }
+  .gjfs-inner .gj-title{ font-size:18px }
+  .gjfs-inner .gj-subtitle{ font-size:12px }
+
+  /* ── Global Search Results ── */
+  #globalSearchPanel{ background:var(--bg) }
+  .gs-header{ display:flex;align-items:center;justify-content:space-between;
+    padding:6px 0 10px;border-bottom:1px solid var(--border);margin-bottom:4px;
+    font-size:12px;color:var(--text-dim);font-family:var(--mono) }
+  .gs-header strong{ color:var(--accent) }
+  .gs-card{ background:var(--bg2);border:1px solid var(--border2);border-radius:10px;
+    padding:14px 18px;cursor:pointer;transition:border-color .15s }
+  .gs-card:hover{ border-color:var(--accent) }
+  .gs-card-meta{ display:flex;gap:10px;align-items:center;margin-bottom:6px;flex-wrap:wrap }
+  .gs-app{ font-size:10px;font-weight:700;letter-spacing:.4px;color:var(--accent);
+    font-family:var(--mono);text-transform:uppercase }
+  .gs-user{ font-size:10px;color:var(--text-dim);font-family:var(--mono) }
+  .gs-ts{ font-size:10px;color:var(--text-dim);margin-left:auto }
+  .gs-hit{ background:var(--bg3);border-radius:6px;padding:7px 10px;
+    font-size:12px;color:var(--text-mid);line-height:1.5;margin-top:5px;
+    border-left:3px solid var(--accent);word-break:break-word }
+  .gs-hit mark.hl{ background:rgba(245,158,11,.35);color:inherit;border-radius:2px;padding:0 1px }
+  .gs-more{ font-size:10px;color:var(--text-dim);margin-top:3px;font-family:var(--mono) }
+  .gs-empty{ padding:40px;text-align:center;color:var(--text-dim);font-size:13px }
+
+  kbd{
+    display:inline-block;padding:2px 7px;border:1px solid var(--border2);
+    border-radius:4px;font-family:var(--mono);font-size:11px;font-weight:600;
+    background:var(--bg3);color:var(--text);box-shadow:0 1px 0 var(--border2);
+    line-height:1.5;white-space:nowrap
+  }
+  #shortcutHelp{
+    position:fixed;inset:0;z-index:2000;display:flex;align-items:center;
+    justify-content:center;background:rgba(0,0,0,.4);backdrop-filter:blur(3px)
+  }
+
+  .search-bar{position:sticky;top:calc(56px + var(--toolbar-h, 88px) + var(--statusbar-h, 36px));z-index:88;display:none;align-items:center;gap:12px;padding:7px 28px;background:var(--bg2);border-top:1px solid rgba(245,158,11,.3);border-bottom:2px solid rgba(245,158,11,.4);font-size:11px;color:var(--yellow);box-shadow:0 4px 0 var(--bg2)}
   .search-bar.visible{display:flex}
   .search-nav{display:flex;align-items:center;gap:4px}
   .search-nav button{background:none;border:1px solid rgba(245,158,11,.3);border-radius:4px;color:var(--yellow);cursor:pointer;padding:2px 8px;font-family:var(--mono);font-size:11px;transition:all .15s}
@@ -213,80 +430,82 @@
   .chat-card.hidden-card{display:none}
 
   /* ── Login wizard ── */
-  #loginScreen{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;background:var(--bg);overflow-y:auto;padding:24px}
-  #loginScreen::before{content:'';position:fixed;inset:0;background-image:linear-gradient(var(--grid-color) 1px,transparent 1px),linear-gradient(90deg,var(--grid-color) 1px,transparent 1px);background-size:32px 32px;pointer-events:none}
-  .login-box{position:relative;background:var(--bg2);border:1px solid var(--border2);border-radius:14px;padding:36px 40px;width:100%;max-width:520px;box-shadow:0 24px 60px rgba(0,0,0,.5)}
-  .login-logo{display:flex;align-items:center;gap:12px;margin-bottom:6px}
-  .login-logo-dot{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 14px var(--accent);animation:blink 2s infinite}
-  .login-logo-text{font-family:var(--sans);font-weight:800;font-size:20px;color:var(--text)}
-  .login-subtitle{font-size:11px;color:var(--text-dim);margin-bottom:22px}
-  /* Step indicator */
-  .login-step-item.active{color:var(--accent)}
-  .login-step-item.done{color:var(--green)}
+  .login-section-label{font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1.2px;font-weight:700;margin:18px 0 12px;display:flex;align-items:center;gap:8px}
+  .login-section-label::after{content:'';flex:1;height:1px;background:var(--border)}
+  .login-step{font-size:9px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1.2px;font-weight:700;margin:20px 0 14px;display:flex;align-items:center;gap:10px}
+  .login-step-num{width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:var(--sans);letter-spacing:0}
+  .login-step::after{content:'';flex:1;height:1px;background:var(--border)}
   /* Fields */
-  .login-fields{display:flex;flex-direction:column;gap:14px}
-  .login-field{display:flex;flex-direction:column;gap:5px}
-  .login-field label{font-size:11px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.8px;font-weight:600}
-  .login-field input,.login-field select,.login-field textarea{width:100%;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-family:var(--mono);font-size:13px;padding:10px 14px;outline:none;transition:border-color .15s,box-shadow .15s}
+  .login-fields{display:flex;flex-direction:column;gap:12px}
+  .login-field{display:flex;flex-direction:column;gap:4px}
+  .login-field label{font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;font-weight:700}
+  .login-field input,.login-field select,.login-field textarea{width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:7px;color:var(--text);font-family:var(--mono);font-size:13px;padding:9px 12px;outline:none;transition:border-color .15s,box-shadow .15s}
   .login-field textarea{resize:vertical;min-height:90px;font-size:11.5px;line-height:1.5}
-  .login-field input:focus,.login-field select:focus,.login-field textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(59,130,246,.15)}
-  .login-field small{font-size:10px;color:var(--text-dim);line-height:1.5}
-  /* Upload zone */
-  /* Context selector */
-  /* Connection method tabs */
+  .login-field input:focus,.login-field select:focus,.login-field textarea:focus{border-color:var(--accent);box-shadow:0 0 0 2px rgba(59,130,246,.12)}
+  .login-field small{font-size:10px;color:var(--text-dim);line-height:1.5;opacity:.8}
   /* Buttons */
-  .login-btn{margin-top:16px;width:100%;background:var(--accent);border:none;border-radius:8px;color:#fff;font-family:var(--sans);font-size:14px;font-weight:700;padding:12px;cursor:pointer;transition:all .15s;letter-spacing:.3px}
-  .login-btn:hover{background:#2563eb;transform:translateY(-1px);box-shadow:0 4px 14px rgba(59,130,246,.4)}
-  .login-btn:active{transform:translateY(0)}
-  .login-btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+  .login-btn{margin-top:20px;width:100%;background:var(--accent);border:none;border-radius:8px;color:#fff;font-family:var(--sans);font-size:13px;font-weight:700;padding:11px;cursor:pointer;transition:all .15s;letter-spacing:.3px}
+  .login-btn:hover{filter:brightness(1.1)}
+  .login-btn:active{filter:brightness(.95)}
+  .login-btn:disabled{opacity:.4;cursor:not-allowed;filter:none}
   .login-btn-back{background:transparent;border:1px solid var(--border2);color:var(--text-mid);margin-top:8px}
-  .login-btn-back:hover{background:var(--bg3);border-color:var(--text-mid);color:var(--text);transform:none;box-shadow:none}
-  .login-error{display:none;margin-top:10px;padding:10px 14px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;font-size:12px;color:var(--red);line-height:1.5}
+  .login-btn-back:hover{background:var(--bg3);border-color:var(--text-mid);color:var(--text)}
+  .login-error{display:none;margin-top:10px;padding:9px 12px;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:7px;font-size:11px;color:var(--red);line-height:1.5}
   .login-error.show{display:block}
-  .login-divider{border:none;border-top:1px solid var(--border);margin:18px 0}
-  .login-note{font-size:11px;color:var(--text-dim);line-height:1.6;text-align:center}
+  .login-divider{border:none;border-top:1px solid var(--border);margin:16px 0}
+  .login-note{font-size:10px;color:var(--text-dim);line-height:1.6;text-align:center;opacity:.75}
   .login-note code{color:var(--accent2);background:var(--bg3);border-radius:3px;padding:1px 5px}
   #appShell{display:none}
 
   /* ── Profile picker (Freelens-style) ── */
   #loginScreen{position:fixed;inset:0;z-index:1000;display:flex;background:var(--bg);overflow:hidden}
-  #loginScreen::before{content:'';position:fixed;inset:0;background-image:linear-gradient(var(--grid-color) 1px,transparent 1px),linear-gradient(90deg,var(--grid-color) 1px,transparent 1px);background-size:32px 32px;pointer-events:none}
+  #loginScreen::before{content:'';position:fixed;inset:0;background-image:linear-gradient(var(--grid-color) 1px,transparent 1px),linear-gradient(90deg,var(--grid-color) 1px,transparent 1px);background-size:32px 32px;pointer-events:none;z-index:0}
 
   /* Sidebar */
-  .profile-sidebar{position:relative;z-index:1;width:260px;min-width:260px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;height:100%}
-  .profile-sidebar-header{padding:20px 18px 14px;border-bottom:1px solid var(--border)}
-  .profile-sidebar-logo{display:flex;align-items:center;gap:9px;margin-bottom:4px}
-  .profile-sidebar-logo-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);animation:blink 2s infinite}
-  .profile-sidebar-logo-text{font-family:var(--sans);font-weight:800;font-size:15px;color:var(--text)}
-  .profile-sidebar-sub{font-size:10px;color:var(--text-dim);margin-top:1px}
-  .profile-list{flex:1;overflow-y:auto;padding:10px 8px}
-  .profile-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;transition:all .15s;margin-bottom:4px;border:1px solid transparent}
-  .profile-item:hover{background:var(--bg3);border-color:var(--border)}
-  .profile-item.active{background:rgba(37,99,235,.08);border-color:rgba(37,99,235,.3)}
-  .profile-avatar{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;font-weight:700;font-family:var(--sans)}
+  .profile-sidebar{position:relative;z-index:1;width:240px;min-width:240px;background:var(--bg2);border-right:1px solid var(--border);display:flex;flex-direction:column;height:100%}
+  .profile-sidebar-header{padding:18px 16px 12px;border-bottom:1px solid var(--border)}
+  .profile-sidebar-logo{display:flex;align-items:center;gap:8px;margin-bottom:3px}
+  .profile-sidebar-logo-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 7px var(--accent);animation:blink 2s infinite;flex-shrink:0}
+  .profile-sidebar-logo-text{font-family:var(--sans);font-weight:800;font-size:14px;color:var(--text)}
+  .profile-sidebar-sub{font-size:10px;color:var(--text-dim);margin-top:2px;letter-spacing:.2px}
+  .profile-list{flex:1;overflow-y:auto;padding:8px 6px}
+  /* --c is set inline per item; drives the left-border accent on active */
+  .profile-item{display:flex;align-items:center;gap:10px;padding:9px 10px 9px 12px;border-radius:8px;cursor:pointer;transition:background .12s,border-color .12s;margin-bottom:3px;border:1px solid transparent;border-left:3px solid transparent;position:relative}
+  .profile-item:hover{background:var(--bg3)}
+  .profile-item.active{background:var(--bg3);border-color:var(--border);border-left-color:var(--c, var(--accent))}
+  .profile-avatar{width:32px;height:32px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
   .profile-info{flex:1;min-width:0}
-  .profile-name{font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .profile-meta{font-size:10px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
-  .profile-actions{display:flex;gap:4px;opacity:0;transition:opacity .15s}
+  .profile-name{font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--sans)}
+  .profile-meta{font-size:10px;color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;font-family:var(--mono)}
+  .profile-actions{display:flex;gap:3px;opacity:0;transition:opacity .12s;flex-shrink:0}
   .profile-item:hover .profile-actions{opacity:1}
-  .profile-action-btn{background:none;border:none;cursor:pointer;color:var(--text-dim);font-size:13px;padding:2px 5px;border-radius:4px;line-height:1;transition:all .15s}
-  .profile-action-btn:hover{background:var(--border2);color:var(--red)}
-  .profile-sidebar-footer{padding:12px 8px;border-top:1px solid var(--border)}
-  .profile-new-btn{width:100%;background:var(--accent);border:none;border-radius:8px;color:#fff;font-family:var(--sans);font-size:13px;font-weight:700;padding:10px;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:7px}
-  .profile-new-btn:hover{background:#1d4ed8}
-  .profile-empty{text-align:center;padding:32px 16px;color:var(--text-dim);font-size:12px}
-  .profile-empty-icon{font-size:32px;margin-bottom:8px}
+  .profile-action-btn{background:none;border:none;cursor:pointer;color:var(--text-dim);font-size:12px;padding:2px 5px;border-radius:4px;line-height:1;transition:all .12s}
+  .profile-action-btn:hover{background:var(--bg2);color:var(--red)}
+  .profile-sidebar-footer{padding:10px 6px;border-top:1px solid var(--border)}
+  .profile-new-btn{width:100%;background:var(--accent);border:none;border-radius:8px;color:#fff;font-family:var(--sans);font-size:12px;font-weight:700;padding:9px;cursor:pointer;transition:filter .15s;display:flex;align-items:center;justify-content:center;gap:6px;letter-spacing:.3px}
+  .profile-new-btn:hover{filter:brightness(1.1)}
+  .profile-empty{text-align:center;padding:28px 14px;color:var(--text-dim);font-size:11px;line-height:1.7}
+  .profile-empty-icon{font-size:28px;margin-bottom:8px;opacity:.5}
 
   /* Wizard panel */
-  .profile-wizard{flex:1;position:relative;z-index:1;overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:32px 24px}
-  .login-box{background:var(--bg2);border:1px solid var(--border2);border-radius:14px;padding:36px 40px;width:100%;max-width:500px;box-shadow:0 8px 32px rgba(0,0,0,.08)}
+  .profile-wizard{flex:1;position:relative;z-index:1;overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:28px 24px;background:var(--bg)}
+  .login-box{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:26px 28px;width:100%;max-width:460px}
+  /* Wizard header */
+  .login-logo{display:flex;align-items:center;gap:9px;margin-bottom:3px}
+  .login-logo-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);animation:blink 2s infinite;flex-shrink:0}
+  .login-logo-text{font-family:var(--sans);font-weight:800;font-size:17px;color:var(--text)}
+  .login-subtitle{font-size:11px;color:var(--text-dim);margin-bottom:14px;font-family:var(--mono);letter-spacing:.2px}
 
   /* Welcome screen (shown when no profile selected) */
-  .profile-welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;color:var(--text-dim);padding:40px}
-  .profile-welcome-icon{font-size:56px;margin-bottom:16px}
-  .profile-welcome h2{font-family:var(--sans);font-size:20px;font-weight:700;color:var(--text-mid);margin-bottom:8px}
-  .profile-welcome p{font-size:12px;line-height:1.7;max-width:300px}
-  .profile-welcome .profile-new-btn{margin-top:20px;width:auto;padding:10px 24px}
+  .profile-welcome{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;padding:48px 40px;gap:0}
+  .profile-welcome-mark{position:relative;width:64px;height:64px;margin-bottom:22px;flex-shrink:0}
+  .profile-welcome-mark-ring{position:absolute;inset:0;border-radius:50%;border:1.5px solid var(--accent);opacity:.25}
+  .profile-welcome-mark-dot{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:18px;height:18px;border-radius:50%;background:var(--accent);box-shadow:0 0 18px var(--accent);animation:blink 2s infinite}
+  .profile-welcome-name{font-family:var(--sans);font-size:20px;font-weight:800;color:var(--text);letter-spacing:-.3px;margin-bottom:6px}
+  .profile-welcome-tagline{font-family:var(--mono);font-size:11px;color:var(--text-dim);line-height:1.7;max-width:300px;margin-bottom:24px}
+  .profile-welcome-features{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:28px}
+  .profile-welcome-feat{background:var(--bg3);border:1px solid var(--border);border-radius:20px;padding:4px 12px;font-size:10px;color:var(--text-mid);font-family:var(--mono);white-space:nowrap}
+  .profile-welcome .profile-new-btn{width:auto;padding:10px 28px;font-size:13px}
 
   /* ── Saved Prompts Panel ── */
   #savedPanel{position:fixed;top:0;right:0;bottom:0;width:420px;background:var(--bg2);border-left:1px solid var(--border);z-index:150;transform:translateX(100%);transition:transform .25s ease;display:flex;flex-direction:column;overflow:hidden;box-shadow:-4px 0 20px rgba(0,0,0,.08)}
@@ -361,7 +580,7 @@
 
   /* ── Profile import/export ── */
   .profile-io-row{display:flex;gap:6px;margin-top:8px}
-  .profile-io-btn{flex:1;background:transparent;border:1px solid var(--border2);border-radius:7px;color:var(--text-mid);font-family:var(--sans);font-size:11px;font-weight:600;padding:8px 6px;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:5px}
+  .profile-io-btn{flex:1;background:transparent;border:1px solid var(--border2);border-radius:8px;color:var(--text-dim);font-family:var(--sans);font-size:11px;font-weight:500;padding:7px 6px;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:4px;opacity:.75}
   .profile-io-btn:hover{background:var(--bg3);border-color:var(--text-mid);color:var(--text)}
   .profile-action-btn.export-btn:hover{background:rgba(37,99,235,.08);color:var(--accent);border-color:rgba(37,99,235,.3)}
   /* Import drop overlay */
@@ -377,15 +596,30 @@
   #graphsPanel.visible{display:flex;padding:24px 28px 40px}
   /* When graphs mode is active: lock header+toolbar+statusbar, scroll only the graphs area */
   body.graphs-mode .toolbar   { display:none !important }
-  body.graphs-mode .statusbar { position:sticky; top:56px; z-index:89 }
-  body.graphs-mode #chatCountBadge,
-  body.graphs-mode #displayedCountBadge,
+  body.graphs-mode .statusbar { position:sticky; top:56px; z-index:91 }
   body.graphs-mode #activeCountBadge { display:none !important }
   #graphsNav { display:none !important }
-  body.graphs-mode #graphsNav { display:block !important; position:sticky; top:calc(56px + 37px); z-index:88 }
+  body.graphs-mode #graphsNav { display:flex !important; position:sticky; top:calc(56px + var(--statusbar-h, 37px)); z-index:90 }
   body.graphs-mode #main      { display:none !important }
   body.graphs-mode .search-bar{ display:none !important }
   body.graphs-mode #graphsPanel.visible { display:flex }
+  /* ── Heatmap ── */
+  .g-heat-wrap{overflow-x:auto;padding-bottom:4px}
+  .g-heat-grid{display:grid;grid-template-columns:44px repeat(24,1fr);gap:2px;min-width:520px}
+  .g-heat-cell{
+    height:26px;border-radius:3px;position:relative;cursor:default;
+    transition:opacity .15s;
+  }
+  .g-heat-cell:hover{opacity:.75;z-index:10}
+  .g-heat-lbl{height:26px;display:flex;align-items:center;
+    font-size:9px;color:var(--text-dim);font-family:var(--mono);white-space:nowrap;padding-right:6px;justify-content:flex-end}
+  .g-heat-hdr{height:18px;display:flex;align-items:center;justify-content:center;
+    font-size:8px;color:var(--text-dim);font-family:var(--mono)}
+  /* tooltip now rendered as a shared fixed-position div via gHeatTip() — no per-cell CSS needed */
+  .g-heat-legend{display:flex;align-items:center;gap:6px;margin-top:10px;
+    font-size:9px;color:var(--text-dim);font-family:var(--mono)}
+  .g-heat-legend-bar{display:flex;gap:2px}
+  .g-heat-legend-swatch{width:14px;height:10px;border-radius:2px}
   .g-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
   /* ── Responsive: smaller screens ── */
   @media (max-width:1100px){
@@ -401,6 +635,16 @@
   }
   .g-card{background:var(--bg2);border:1px solid var(--border2);border-radius:12px;
     padding:22px;position:relative;overflow:visible}
+  /* Dark mode graph card refinements */
+  [data-theme="dark"] .g-chip{ background:var(--bg3); border-color:var(--border2) }
+  [data-theme="dark"] .g-chip .gv{ color:#60a5fa }
+  [data-theme="dark"] .g-bar-wrap{ border-color:var(--border2) }
+  [data-theme="dark"] .g-yaxis{ color:var(--text-dim) }
+  [data-theme="dark"] .g-bar-lbl-h{ color:var(--text-dim) }
+  [data-theme="dark"] .g-legend-name{ color:var(--text-mid) }
+  [data-theme="dark"] .g-legend-cnt{ color:var(--text-mid) }
+  [data-theme="dark"] .g-heat-lbl{ color:var(--text-mid) }
+  [data-theme="dark"] .g-heat-hdr{ color:var(--text-dim) }
   .g-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
     background:linear-gradient(90deg,var(--accent),var(--accent2))}
   .g-card-wide{grid-column:1/-1}
@@ -411,7 +655,7 @@
   .g-sub{font-size:10px;color:var(--text-dim);margin-bottom:16px}
   /* stat chips */
   .g-stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
-  .g-chip{background:var(--bg3);border:1px solid var(--border2);border-radius:9px;padding:12px 14px}
+  .g-chip{background:var(--bg3);border:1px solid var(--border2);border-radius:9px;padding:12px 14px;text-align:center}
   .g-chip .gv{font-size:22px;font-weight:800;font-family:var(--sans);color:var(--accent)}
   .g-chip .gl{font-size:10px;color:var(--text-dim);margin-top:2px}
   /* bar chart */
@@ -420,7 +664,7 @@
     padding:20px 6px 0 2px;position:relative}
   .g-bar-col{display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;min-width:0}
   .g-bar{width:100%;border-radius:4px 4px 0 0;min-height:2px;position:relative;
-    background:linear-gradient(180deg,var(--accent) 0%,rgba(59,130,246,.45) 100%);
+    background:linear-gradient(180deg,var(--g-bar-top) 0%,var(--g-bar-bot) 100%);
     cursor:pointer;transition:filter .15s}
   .g-bar:hover{filter:brightness(1.3)}
     .g-bar-tip{display:none;position:absolute;left:50%;
@@ -442,12 +686,13 @@
   .g-legend-dot{width:9px;height:9px;border-radius:3px;flex-shrink:0}
   .g-legend-name{font-size:11px;color:var(--text);flex:1;min-width:0;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .g-legend-cnt{font-size:10px;color:var(--text-dim);font-family:var(--mono)}
-  .g-legend-pct{font-size:10px;color:var(--text-dim);font-family:var(--mono);min-width:30px;text-align:right}
+  .g-legend-cnt{font-size:10px;color:var(--text-dim);font-family:var(--mono);min-width:28px;text-align:right;flex-shrink:0}
+  .g-legend-sep{font-size:10px;color:var(--text-dim);opacity:.35;flex-shrink:0;padding:0 3px}
+  .g-legend-pct{font-size:10px;color:var(--text-dim);font-family:var(--mono);min-width:34px;text-align:right;flex-shrink:0}
   /* word cloud */
   .g-cloud{display:flex;flex-wrap:wrap;gap:8px;align-items:center;
     justify-content:center;padding:12px 4px;min-height:180px}
-  .g-word{display:inline-flex;align-items:center;gap:4px;padding:4px 10px;
+  .g-word{display:inline-flex;align-items:center;gap:0;padding:4px 10px;
     border-radius:20px;font-family:var(--mono);font-weight:500;
     cursor:default;transition:transform .15s,filter .15s;
     border:1px solid transparent;position:relative}
@@ -511,10 +756,18 @@
 
     <!-- Welcome state (no profile selected / no profiles exist) -->
     <div class="profile-welcome" id="profileWelcome">
-      <div class="profile-welcome-icon">🖥️</div>
-      <h2>No cluster selected</h2>
-      <p>Create a profile for each of your Viya environments. Each profile stores its cluster connection and credentials separately.</p>
-      <button class="profile-new-btn" onclick="newProfile()">＋ Add your first cluster</button>
+      <div class="profile-welcome-mark">
+        <div class="profile-welcome-mark-ring"></div>
+        <div class="profile-welcome-mark-dot"></div>
+      </div>
+      <div class="profile-welcome-name">Viya Monitor</div>
+      <div class="profile-welcome-tagline">Real-time GenAI usage monitoring<br>for SAS Viya 4 environments</div>
+      <div class="profile-welcome-features">
+        <span class="profile-welcome-feat">● Active sessions</span>
+        <span class="profile-welcome-feat">📋 Full history</span>
+        <span class="profile-welcome-feat">📊 Usage graphs</span>
+      </div>
+      <button class="profile-new-btn" onclick="newProfile()">＋ Connect your first cluster</button>
     </div>
 
     <!-- Wizard (shown when editing/creating a profile) -->
@@ -525,6 +778,8 @@
         <div class="login-logo-text" id="wizardTitle">New Profile</div>
       </div>
       <div class="login-subtitle" id="wizardSubtitle">Configure your cluster connection</div>
+
+      <div class="login-step"><span class="login-step-num">1</span> Profile</div>
 
       <!-- Profile icon + name -->
       <div class="icon-picker-row" style="position:relative">
@@ -543,12 +798,13 @@
           <label class="icon-picker-label">Profile Name</label>
           <input type="text" id="profileName" placeholder="e.g. Production, Dev, Lab…"
                  autocomplete="off" oninput="updateWizardTitle()"
-                 style="background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--text);font-family:var(--mono);font-size:13px;padding:9px 12px;outline:none;width:100%;transition:border-color .15s">
-          <small style="font-size:10px;color:var(--text-dim)">Click the icon to change it</small>
+                 style="background:var(--bg);border:1px solid var(--border2);border-radius:7px;color:var(--text);font-family:var(--mono);font-size:13px;padding:9px 12px;outline:none;width:100%;transition:border-color .15s,box-shadow .15s">
+          <small style="font-size:10px;color:var(--text-dim);opacity:.75">Click the icon to change it</small>
         </div>
       </div>
 
-      <div class="login-fields" style="margin-top:16px">
+      <div class="login-step"><span class="login-step-num">2</span> Connection</div>
+      <div class="login-fields">
         <div class="login-field">
           <label>Viya Ingress URL</label>
           <input type="text" id="login-url" placeholder="https://your-viya4.example.com"
@@ -565,18 +821,17 @@
           <input type="password" id="login-pass" placeholder="&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;"
                  autocomplete="current-password">
         </div>
+      </div>
+      <div class="login-step"><span class="login-step-num">3</span> Options</div>
+      <div class="login-fields">
         <div class="login-field">
-          <label>Poll interval <span style="text-transform:none;letter-spacing:0">(seconds)</span></label>
-          <input type="number" id="login-interval" value="5" min="3" max="300" style="width:100px">
+          <label>Poll interval <span style="text-transform:none;letter-spacing:0;font-size:9px">(seconds)</span></label>
+          <input type="number" id="login-interval" value="5" min="3" max="300" style="width:90px">
         </div>
       </div>
       <div class="login-error" id="loginError"></div>
-      <button class="login-btn" id="loginBtn" onclick="doLogin()">Connect &#8594;</button>
-
-      <hr class="login-divider">
-      <p class="login-note">
-        Profiles are saved locally in your browser. Passwords are stored only in memory.
-      </p>
+      <button class="login-btn" id="loginBtn" onclick="doLogin()">Connect &rarr;</button>
+      <p class="login-note" style="margin-top:12px">Profiles saved locally &middot; passwords in memory only</p>
     </div>
   </div>
 </div>
@@ -586,13 +841,24 @@
 <header>
   <div class="logo">
     <div class="logo-dot" id="liveDot"></div>
-    Viya · GenAI Monitor
+    Viya Monitor
+  </div>
+  <div class="header-center">
+    <div class="cluster-chip" id="clusterChip">
+      <div class="cluster-chip-avatar" id="clusterChipAvatar">🖥️</div>
+      <div class="cluster-chip-info">
+        <div class="cluster-chip-name" id="clusterChipName">—</div>
+        <div class="cluster-chip-env" id="clusterChipEnv">—</div>
+      </div>
+      <div class="cluster-chip-live" id="clusterChipLive"></div>
+    </div>
   </div>
   <div class="header-right">
     <span class="badge blue-badge" id="modeBadge">● ACTIVE</span>
     <span class="badge" id="nsBadge" style="display:none;border-color:var(--purple);color:var(--purple)">ns</span>
     <button class="icon-btn saved-panel-open-btn" onclick="toggleSavedPanel()" title="Saved Prompts">⭐<span class="saved-panel-badge" id="savedPanelBadge"></span></button>
     <button class="icon-btn" id="themeBtn" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
+    <button class="icon-btn" onclick="toggleShortcutHelp()" title="Keyboard shortcuts (?)">⌨</button>
     <button class="icon-btn" onclick="toggleConfig()" title="Settings">⚙</button>
   </div>
 </header>
@@ -618,103 +884,120 @@
   </div>
 </div>
 
-<div class="toolbar">
-  <div class="seg">
-    <button class="seg-btn active" onclick="setMode('active')" id="btn-active">● Active</button>
-    <button class="seg-btn"       onclick="setMode('all')"    id="btn-all">◎ All</button>
-    <button class="seg-btn"       onclick="setMode('history')" id="btn-history">📋 History</button>
-    <button class="seg-btn"       onclick="setMode('graphs')"  id="btn-graphs">📊 Graphs</button>
-  </div>
-  <div class="input-group" id="activeMinutesGroup">
-    <label>active window</label>
-    <input type="number" id="activeMinutes" value="10" min="1" max="1440" onchange="fetchNow()">
-    <label>min</label>
-  </div>
-  <div class="input-group" id="historyDaysGroup" style="display:none">
-    <label>period</label>
-    <select id="historyDays" onchange="applyHistoryFilter()">
-      <option value="3">Last 3 days</option>
-      <option value="7" selected>Last 7 days</option>
-      <option value="15">Last 15 days</option>
-      <option value="30">Last 30 days</option>
-      <option value="0">All time</option>
-    </select>
-  </div>
-  <div class="input-group" id="chatFilterGroup">
-    <label>chat id</label>
-    <input type="text" id="chatFilter" placeholder="filter by chat id…" style="width:220px">
-  </div>
-  <div class="input-group">
-    <label>user</label>
-    <select id="userFilter" onchange="applyClientFilters()" style="width:140px">
-      <option value="">all users</option>
-    </select>
-  </div>
-  <div class="input-group" id="appFilterGroup">
-    <label>app</label>
-    <select id="appFilter" onchange="applyClientFilters()" style="width:160px">
-      <option value="">all apps</option>
-    </select>
-  </div>
-  <div class="input-group" id="searchGroup">
-    <label>search</label>
-    <input type="text" id="msgSearch" placeholder="search messages…" style="width:200px" oninput="debounceFilter()">
-  </div>
-  <button class="btn btn-ghost" onclick="clearFilters()" id="clearFiltersBtn" style="display:none">✕ Clear</button>
-  <button class="btn" onclick="fetchNow()" id="fetchBtn">▶ Fetch</button>
-  <button class="btn btn-ghost" id="liveBtn" onclick="toggleLive()">⏸ Pause</button>
-  <div class="seg" id="sortGroup">
-    <button class="seg-btn active" onclick="setSort('newest')" id="btn-sort-newest">↓ Newest</button>
-    <button class="seg-btn"       onclick="setSort('oldest')" id="btn-sort-oldest">↑ Oldest</button>
-  </div>
-  <div id="expandCollapseGroup" style="display:flex;gap:6px">
-    <button class="btn btn-ghost" onclick="expandAll()">⊞ Expand All</button>
-    <button class="btn btn-ghost" onclick="collapseAll()">⊟ Collapse All</button>
-  </div>
-</div>
-
 <div class="statusbar">
   <div class="status-item"><div class="status-dot" id="connDot"></div><span id="connStatus">Not connected</span></div>
-  <div class="status-item">🔄 Cycle: <strong id="cycleNum">—</strong></div>
-  <div class="status-item">🕐 Checked: <strong id="lastChecked">—</strong></div>
-  <div class="status-item">📡 Changed: <strong id="lastChange">—</strong></div>
-  <div class="status-item">⏱ Next: <strong id="nextPoll">—</strong></div>
-  <div class="status-item" style="margin-left:auto;display:flex;gap:6px;align-items:center">
+  <div class="status-item"><span class="status-label">cycle</span><strong id="cycleNum">—</strong></div>
+  <div class="status-item"><span class="status-label">checked</span><strong id="lastChecked">—</strong></div>
+  <div class="status-item"><span class="status-label">changed</span><strong id="lastChange">—</strong></div>
+  <div class="status-item"><span class="status-label">next</span><strong id="nextPoll">—</strong></div>
+  <div class="status-item">
     <span class="badge" id="chatCountBadge" style="font-size:10px">— chats</span>
     <span class="badge" id="displayedCountBadge" style="display:none;border-color:var(--accent);color:var(--accent);font-size:10px">— shown</span>
     <span class="badge green-badge" id="activeCountBadge" style="display:none;font-size:10px">0 active</span>
   </div>
 </div>
-<!-- ── Graphs sticky nav bar ────────────────────────────────────────────────── -->
-<div id="graphsNav" style="position:sticky;top:calc(56px + 37px);z-index:90;
-  background:var(--bg2);border-bottom:1px solid var(--border);
-  padding:8px 28px;box-shadow:0 4px 0 var(--bg2)">
-  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-    <div style="display:flex;gap:4px">
-      <button onclick="setMode('active')" style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text-mid);font-family:var(--mono);font-size:12px;padding:5px 12px;cursor:pointer" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background='var(--bg3)'">● Active</button>
-      <button onclick="setMode('all')"    style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text-mid);font-family:var(--mono);font-size:12px;padding:5px 12px;cursor:pointer" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background='var(--bg3)'">◎ All</button>
-      <button onclick="setMode('history')" style="background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text-mid);font-family:var(--mono);font-size:12px;padding:5px 12px;cursor:pointer" onmouseover="this.style.background='var(--bg2)'" onmouseout="this.style.background='var(--bg3)'">📋 History</button>
-      <button style="background:var(--accent);border:1px solid var(--accent);border-radius:6px;color:#fff;font-family:var(--mono);font-size:12px;padding:5px 12px;cursor:default">📊 Graphs</button>
+<div class="toolbar">
+  <!-- Row 1: mode tabs + filters -->
+  <div class="toolbar-row">
+    <div class="seg">
+      <button class="seg-btn active" onclick="setMode('active')" id="btn-active">● Active</button>
+      <button class="seg-btn"       onclick="setMode('all')"    id="btn-all">◎ All</button>
+      <button class="seg-btn"       onclick="setMode('history')" id="btn-history">📋 History</button>
+      <button class="seg-btn"       onclick="setMode('graphs')"  id="btn-graphs">📊 Graphs</button>
     </div>
-    <div style="display:flex;align-items:center;gap:6px;margin-left:8px">
-      <label style="font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px">user</label>
-      <select id="gNavUserFilter" onchange="gNavUserChanged()" style="background:var(--bg2);border:1px solid var(--border2);border-radius:6px;padding:5px 10px;font-size:12px;font-family:var(--mono);color:var(--text);cursor:pointer;min-width:120px">
+    <div class="toolbar-sep"></div>
+    <div class="input-group" id="activeMinutesGroup">
+      <label>window</label>
+      <input type="number" id="activeMinutes" value="10" min="1" max="1440" onchange="fetchNow()">
+      <label>min</label>
+    </div>
+    <div class="input-group" id="historyDaysGroup" style="display:none">
+      <label>period</label>
+      <select id="historyDays" onchange="applyHistoryFilter()">
+        <option value="3">Last 3 days</option>
+        <option value="7" selected>Last 7 days</option>
+        <option value="15">Last 15 days</option>
+        <option value="30">Last 30 days</option>
+        <option value="0">All time</option>
+      </select>
+    </div>
+    <div class="input-group" id="chatFilterGroup">
+      <label>chat</label>
+      <input type="text" id="chatFilter" placeholder="filter by id…" style="width:160px" oninput="applyClientFilters()">
+    </div>
+    <div class="input-group">
+      <label>user</label>
+      <select id="userFilter" onchange="applyClientFilters()" style="width:130px">
+        <option value="">all</option>
+      </select>
+    </div>
+    <div class="input-group" id="appFilterGroup">
+      <label>app</label>
+      <select id="appFilter" onchange="applyClientFilters()" style="width:150px">
+        <option value="">all</option>
+      </select>
+    </div>
+    <div class="input-group" id="searchGroup">
+      <label>search</label>
+      <input type="text" id="msgSearch" placeholder="messages…" style="width:160px" oninput="debounceFilter()">
+    </div>
+    <button class="btn btn-ghost" onclick="clearFilters()" id="clearFiltersBtn" style="display:none">✕ Clear</button>
+  </div>
+  <!-- Row 2: action buttons — always on the second line -->
+  <div class="toolbar-row">
+    <button class="btn" onclick="fetchNow()" id="fetchBtn">▶ Fetch</button>
+    <button class="btn btn-ghost" id="liveBtn" onclick="toggleLive()">⏸ Pause</button>
+    <div class="seg" id="sortGroup">
+      <button class="seg-btn active" onclick="setSort('newest')" id="btn-sort-newest">↓ New</button>
+      <button class="seg-btn"       onclick="setSort('oldest')" id="btn-sort-oldest">↑ Old</button>
+    </div>
+    <div class="toolbar-sep"></div>
+    <div id="expandCollapseGroup" style="display:flex;gap:6px">
+      <button class="btn btn-ghost" onclick="expandAll()">⊞ Expand All</button>
+      <button class="btn btn-ghost" onclick="collapseAll()">⊟ Collapse All</button>
+      <button class="btn btn-ghost" onclick="exportChatListCSV()" title="Export current chat list as CSV">⬇ CSV</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Graphs sticky nav bar ────────────────────────────────────────────────── -->
+<div id="graphsNav" style="position:sticky;top:calc(56px + var(--statusbar-h,36px));z-index:91;height:88px;background:var(--bg2);border-bottom:1px solid var(--border);padding:0 28px;display:flex;flex-direction:column;justify-content:center;overflow:hidden">
+  <!-- Row 1: mode tabs + user filter -->
+  <div class="toolbar-row">
+    <div class="seg">
+      <button class="seg-btn" onclick="setMode('active')">● Active</button>
+      <button class="seg-btn" onclick="setMode('all')">◎ All</button>
+      <button class="seg-btn" onclick="setMode('history')">📋 History</button>
+      <button class="seg-btn active" onclick="setMode('graphs')">📊 Graphs</button>
+    </div>
+    <div class="toolbar-sep" style="background:var(--border2)"></div>
+    <div class="input-group">
+      <label>user</label>
+      <select id="gNavUserFilter" onchange="gNavUserChanged()" style="min-width:100px">
         <option value="">all users</option>
       </select>
     </div>
-    <button onclick="refreshGraphs()" style="background:var(--accent);border:none;color:#fff;border-radius:6px;font-family:var(--mono);font-size:12px;padding:5px 14px;cursor:pointer;margin-left:auto">↺ Refresh</button>
+  </div>
+  <!-- Row 2: action buttons -->
+  <div class="toolbar-row">
+    <button onclick="refreshGraphs()" class="btn">↺ Refresh</button>
+    <button onclick="exportGraphsReport()" id="gExportBtn" class="btn btn-ghost" title="Download report as PNG or PDF">⬇ Export</button>
   </div>
 </div>
 
 <div class="search-bar" id="searchBar">
   <span>🔍 <strong id="searchMatchCount">0</strong> match(es) for "<span id="searchTerm"></span>"</span>
-  <div class="search-nav">
+  <span id="searchScopeNote" style="color:var(--text-dim);font-size:10px"></span>
+  <div class="search-nav" id="searchNavGroup">
     <button onclick="navSearch(-1)">▲ prev</button>
     <span id="searchPos">0 / 0</span>
     <button onclick="navSearch(1)">▼ next</button>
   </div>
   <span id="hiddenChatsNote" style="color:var(--text-dim)"></span>
 </div>
+
+<!-- ── Global Search Results ─────────────────────────────────────────────────── -->
+<div id="globalSearchPanel" style="display:none;padding:16px 28px;flex-direction:column;gap:8px"></div>
 
 <main id="main">
 </main>
@@ -749,7 +1032,7 @@
             background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
             padding:4px 8px;font-size:11px;font-family:var(--mono);color:var(--text);cursor:pointer">
             <option value="prompts">Prompts</option>
-            <option value="chats">Chats</option>
+            <option value="chats" selected>Chats</option>
           </select>
         </div>
       </div>
@@ -763,6 +1046,34 @@
       <div class="g-donut-wrap">
         <svg id="gDonutSvg" width="190" height="190" viewBox="0 0 190 190" style="flex-shrink:0;max-width:100%":0"></svg>
         <div class="g-legend" id="gDonutLegend"></div>
+      </div>
+    </div>
+    <!-- Peak usage heatmap -->
+    <div class="g-card g-card-wide" id="gHeatmapCard">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
+        <div class="g-title"><span class="g-dot" style="background:var(--accent)"></span>Peak Usage Heatmap</div>
+        <div style="display:flex;gap:6px">
+          <select id="gHeatmapWeek" onchange="gRenderHeatmap()" style="
+            background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+            padding:4px 8px;font-size:11px;font-family:var(--mono);color:var(--text);cursor:pointer">
+          </select>
+          <select id="gHeatmapMode" onchange="gRenderHeatmap()" style="
+            background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+            padding:4px 8px;font-size:11px;font-family:var(--mono);color:var(--text);cursor:pointer">
+            <option value="chats" selected>Chats</option>
+            <option value="prompts">Prompts</option>
+          </select>
+        </div>
+      </div>
+      <div class="g-sub">Activity by day of week × hour of day (local time)</div>
+      <div id="gHeatmap"></div>
+    </div>
+
+    <!-- User Journey (replaces heatmap) -->
+    <div class="g-card g-card-wide" style="padding:0;overflow:hidden" id="gJourneyCard">
+      <div id="gJourneyPanel" style="padding:22px"></div>
+      <div id="gJourneyPrompt" style="padding:32px;text-align:center;color:var(--text-dim);font-size:13px;display:none">
+        👤 Select a user from the <strong>User</strong> dropdown above to see their journey
       </div>
     </div>
     <!-- Word cloud -->
@@ -782,9 +1093,42 @@
       <div class="g-cloud" id="gCloud"></div>
     </div>
   </div>
+
+</div>
+
+<!-- Journey fullscreen overlay -->
+<div id="gjFullscreen">
+  <div class="gjfs-inner" id="gjFullscreenInner"></div>
+</div>
+
+<!-- Conversation Replay Modal -->
+<div id="replayModal">
+  <div class="replay-box">
+    <div class="replay-header">
+      <div>
+        <div class="replay-title" id="replayTitle">Conversation Replay</div>
+        <div class="replay-subtitle" id="replaySubtitle"></div>
+      </div>
+      <button class="replay-btn ghost" onclick="closeReplay()" style="padding:4px 10px">&times;</button>
+    </div>
+    <div class="replay-messages" id="replayMessages"></div>
+    <div class="replay-controls">
+      <button class="replay-btn" id="replayPlayBtn" onclick="replayToggle()">&#9646;&#9646; Pause</button>
+      <button class="replay-btn ghost" onclick="replayRestart()">&#8635; Restart</button>
+      <select class="replay-speed" id="replaySpeed" onchange="replaySetSpeed(this.value)" title="Playback speed">
+        <option value="3000">0.5&times;</option>
+        <option value="1500" selected>1&times;</option>
+        <option value="750">2&times;</option>
+        <option value="300">4&times;</option>
+      </select>
+      <div class="replay-progress"><div class="replay-progress-bar" id="replayBar"></div></div>
+      <span class="replay-counter" id="replayCounter">0 / 0</span>
+    </div>
+  </div>
 </div>
 
 <!-- Config panel -->
+<div id="gjTooltip" class="gj-tooltip"></div>
 <div class="config-panel" id="configPanel">
   <div class="config-header">Settings <button class="icon-btn" onclick="toggleConfig()">X</button></div>
   <div class="config-body">
@@ -832,12 +1176,18 @@ function toast(msg, dur=2500){
   const el=$('toast'); el.textContent=msg; el.classList.add('show');
   setTimeout(()=>el.classList.remove('show'),dur);
 }
+function copyChatId(id){
+  navigator.clipboard.writeText(id).catch(()=>{});
+  toast('📋 ID copied to clipboard');
+}
 const _fmtTsOpts = {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'};
 function fmtTs(ts){ return ts ? new Date(ts).toLocaleString(undefined,_fmtTsOpts) : '—'; }
 function setConn(color,msg){ $('connDot').className=`status-dot ${color}`; $('connStatus').textContent=msg; }
 function isVisibleChat(c){
   // Embedding chats are always hidden — permanent system calls
   if((c.applicationName||'').toLowerCase().includes('embedding')) return false;
+  // Must have both applicationName and createdBy, and be on/after history start
+  if(!isQualifiedChat(c)) return false;
   // Anonymous filter: skip for grace-set chats — the API temporarily sets modifiedBy=anonymous
   // while the copilot is generating. If we recently rendered this chat, keep it visible.
   if((c.modifiedBy||'').toLowerCase() === 'anonymous'){
@@ -847,17 +1197,9 @@ function isVisibleChat(c){
   return true;
 }
 
-function updateChatBadges(displayed, total){
-  // chatCountBadge = what is actually shown (period/filter applied)
+function updateChatBadges(displayed){
   $('chatCountBadge').textContent = displayed + (displayed===1?' chat':' chats');
-  // displayedCountBadge = total from server, shown only when different from displayed
-  const badge = $('displayedCountBadge');
-  if(total !== null && total !== undefined && displayed !== total){
-    badge.textContent = total + ' total';
-    badge.style.display = '';
-  } else {
-    badge.style.display = 'none';
-  }
+  $('displayedCountBadge').style.display = 'none';
 }
 
 function copyCode(id){
@@ -922,6 +1264,28 @@ async function doLogin(){
     // Hide graphs tab by default — shown only for SAS Administrators after check
     $('btn-graphs').style.display='none';
     setConn('green','Authenticated as '+user+' @ '+url.replace(/^https?:\/\//,''));
+    // Populate cluster chip with current profile identity
+    (function(){
+      var profiles = loadProfiles();
+      var p = null;
+      for(var i=0;i<profiles.length;i++){ if(profiles[i].id===editingProfileId){ p=profiles[i]; break; } }
+      var color = p ? (p.color || profileColor(profiles.indexOf(p))) : '#3b82f6';
+      var emoji = p ? (p.emoji || '🖥️') : '🖥️';
+      var name  = p ? (p.name  || url.replace(/^https?:\/\//,'')) : url.replace(/^https?:\/\//,'');
+      var chip  = $('clusterChip');
+      var avatarEl = $('clusterChipAvatar');
+      var nameEl   = $('clusterChipName');
+      var envEl    = $('clusterChipEnv');
+      var liveEl   = $('clusterChipLive');
+      avatarEl.textContent = emoji;
+      avatarEl.style.background = color+'22';
+      avatarEl.style.border = '1.5px solid '+color+'55';
+      nameEl.textContent = name;
+      envEl.textContent  = url.replace(/^https?:\/\//,'');
+      liveEl.className   = 'cluster-chip-live green';
+      chip.style.borderColor = color+'55';
+      chip.classList.add('visible');
+    })();
     updateStickyOffsets();
     updateSavedBadge();
     if($('savedPanel').classList.contains('open')) renderSavedList();
@@ -942,7 +1306,85 @@ async function doLogin(){
 function showLoginError(msg){ const el=$('loginError'); el.textContent='Error: '+msg; el.classList.add('show'); }
 
 document.addEventListener('keydown',function(e){
-  if(e.key==='Enter') doLogin();
+  // Login screen: Enter submits
+  if(e.key==='Enter' && $('loginScreen').style.display !== 'none'){
+    doLogin(); return;
+  }
+
+  // App shortcuts — only when connected, not typing in input/textarea/select
+  if($('appShell').style.display === 'none') return;
+  const tag = (document.activeElement||{}).tagName||'';
+  if(['INPUT','TEXTAREA','SELECT'].includes(tag)) {
+    // Esc still works even inside inputs — clears search / closes panels
+    if(e.key === 'Escape'){
+      const searchEl = $('msgSearch');
+      if(searchEl && searchEl.value){
+        searchEl.value = '';
+        clearGlobalSearch();
+        applyClientFilters();
+        searchEl.blur();
+        e.preventDefault(); return;
+      }
+      if($('savedPanel').classList.contains('open')){ toggleSavedPanel(); e.preventDefault(); return; }
+      if($('configPanel').classList.contains('open')){ toggleConfig();    e.preventDefault(); return; }
+      if($('replayModal').classList.contains('open')){ closeReplay();     e.preventDefault(); return; }
+    }
+    return;
+  }
+
+  // Don't fire if a modifier key is held (except Shift for Esc etc.)
+  if(e.ctrlKey || e.altKey || e.metaKey) return;
+
+  switch(e.key){
+    // ── Tab switching ─────────────────────────────────────────────────────────
+    case 'a': case 'A':
+      if(mode !== 'active')  setMode('active');  e.preventDefault(); break;
+    case 'l': case 'L':
+      if(mode !== 'all')     setMode('all');     e.preventDefault(); break;
+    case 'h': case 'H':
+      if(mode !== 'history') setMode('history'); e.preventDefault(); break;
+    case 'g': case 'G':
+      if($('btn-graphs') && $('btn-graphs').style.display !== 'none')
+        { if(mode !== 'graphs') setMode('graphs'); }
+      e.preventDefault(); break;
+
+    case 'r': case 'R':
+      if(mode === 'graphs'){ refreshGraphs(); e.preventDefault(); }
+      break;
+
+    // ── Sort ──────────────────────────────────────────────────────────────────
+    case 'n': case 'N':
+      setSort('newest'); e.preventDefault(); break;
+    case 'o': case 'O':
+      setSort('oldest'); e.preventDefault(); break;
+
+    // ── Search focus ──────────────────────────────────────────────────────────
+    case '/':
+      if(mode !== 'graphs'){
+        const s = $('msgSearch');
+        if(s){ s.focus(); s.select(); }
+        e.preventDefault();
+      }
+      break;
+
+    // ── Esc — clear / close ───────────────────────────────────────────────────
+    case 'Escape':
+      if($('globalSearchPanel').style.display !== 'none'){
+        $('msgSearch').value = ''; clearGlobalSearch(); applyClientFilters();
+        e.preventDefault(); break;
+      }
+      if($('replayModal').classList.contains('open')){ closeReplay(); e.preventDefault(); break; }
+      if($('savedPanel').classList.contains('open')){ toggleSavedPanel(); e.preventDefault(); break; }
+      if($('configPanel').classList.contains('open')){ toggleConfig();    e.preventDefault(); break; }
+      if(($('userFilter').value||$('appFilter').value||$('msgSearch').value)){
+        clearFilters(); e.preventDefault(); break;
+      }
+      break;
+
+    // ── Help ──────────────────────────────────────────────────────────────────
+    case '?':
+      toggleShortcutHelp(); e.preventDefault(); break;
+  }
 });
 
 function proxyUrl(path){ return (proxyBase || '') + path; }
@@ -1048,10 +1490,15 @@ function setMode(m){
   $('modeBadge').textContent = m==='active'?'● ACTIVE': m==='all'?'◎ ALL': m==='graphs'?'📊 GRAPHS':'📋 HISTORY';
   // Show/hide main vs graphs panel
   $('main').style.display = m==='graphs' ? 'none' : '';
+  // Clear any active global search when switching modes
+  if($('globalSearchPanel').style.display !== 'none') clearGlobalSearch();
+  // Hide journey panel when leaving graphs mode
+  if(m !== 'graphs') gHideJourney();
   if(m !== 'graphs') $('graphsPanel').classList.remove('visible');
   // Toggle sticky behavior — graphs mode gives toolbar/statusbar to flex layout
   document.body.classList.toggle('graphs-mode', m==='graphs');
   // Synchronously show/hide toolbar controls — avoids the blank-row flash
+  setTimeout(updateStickyOffsets, 50);
   setGraphsToolbar(m==='graphs');
   if(m==='graphs'){
     // Guard: btn-graphs is hidden for non-admins — block direct access
@@ -1113,7 +1560,8 @@ function setMode(m){
     const histDays   = m==='history' ? parseInt($('historyDays').value) : 0;
     const histCutoff = m==='history' && histDays>0 ? new Date(Date.now()-histDays*24*60*60*1000) : null;
     const displayed  = m==='active' ? allActive
-                     : histCutoff   ? fullItems.filter(c=>new Date(c.modifiedTimeStamp)>=histCutoff)
+                     : histCutoff   ? fullItems.filter(c=>
+                         new Date(c.modifiedTimeStamp)>=histCutoff || loadPinned().has(c.id))
                      : fullItems;
     const msgsMap = _msgsFromCache(displayed);
     render(displayed, msgsMap, activeMins, cutoff);
@@ -1137,8 +1585,9 @@ function applyHistoryFilter(){
   if(!_cachedChats.length || !Object.keys(_cachedMsgsMap).length) return;
   const days     = parseInt($('historyDays').value);
   const cutoff   = days > 0 ? new Date(Date.now() - days*24*60*60*1000) : null;
+  const pins     = loadPinned();
   const displayed = cutoff
-    ? _cachedChats.filter(c => new Date(c.modifiedTimeStamp) >= cutoff)
+    ? _cachedChats.filter(c => new Date(c.modifiedTimeStamp) >= cutoff || pins.has(c.id))
     : _cachedChats;
   const activeMins = parseInt($('activeMinutes').value)||10;
   const activeCutoff = new Date(Date.now()-activeMins*60*1000);
@@ -1152,15 +1601,25 @@ function applyHistoryFilter(){
 function setSort(s){
   sortOrder = s;
   ['newest','oldest'].forEach(x=>$('btn-sort-'+x).classList.toggle('active', x===s));
-  // Re-render with existing data if we have it — just re-apply sort client-side
   const cards = [...document.querySelectorAll('.chat-card')];
   if(!cards.length) return;
   const main = $('main');
+  // Remove divider before reordering so it doesn't land in the wrong position
+  const divider = main.querySelector('.pinned-divider');
+  if(divider) divider.remove();
+  // Pinned-first (mirrors render() logic), then by timestamp
   cards.sort((a,b)=>{
+    const ap = a.classList.contains('is-pinned'), bp = b.classList.contains('is-pinned');
+    if(ap !== bp) return ap ? -1 : 1;
     const ta = a.dataset.modified||'', tb = b.dataset.modified||'';
     return sortOrder==='newest' ? tb.localeCompare(ta) : ta.localeCompare(tb);
   });
   cards.forEach(c=>main.appendChild(c));
+  // Re-insert divider before the first non-pinned card (only when pinned items exist)
+  if(divider && cards.some(c=>c.classList.contains('is-pinned'))){
+    const firstNonPinned = cards.find(c=>!c.classList.contains('is-pinned'));
+    if(firstNonPinned) main.insertBefore(divider, firstNonPinned);
+  }
   applyClientFilters();
 }
 
@@ -1178,7 +1637,26 @@ function stopLive(){
   $('nextPoll').textContent='paused';
 }
 function toggleLive(){ isLive?stopLive():startLive(); }
+
+// ── Page Visibility: pause polling when tab is hidden, resume on return ────────
+let _hiddenPaused = false;
+document.addEventListener('visibilitychange', function(){
+  if(document.visibilityState === 'hidden'){
+    if(isLive && liveTimer){
+      clearTimeout(liveTimer); liveTimer=null;
+      clearInterval(countdownTimer); countdownTimer=null;
+      $('nextPoll').textContent='tab hidden';
+      _hiddenPaused=true;
+    }
+  } else if(_hiddenPaused){
+    _hiddenPaused=false;
+    $('nextPoll').textContent='…';
+    fetchNow().then(()=>{ if(isLive && mode!=='history') scheduleNext(); });
+  }
+});
+
 function scheduleNext(){
+  if(document.visibilityState==='hidden') return;
   clearInterval(countdownTimer); countdownTimer=null;
   nextPollSecs = cfg.interval;
   $('nextPoll').textContent = cfg.interval+'s';
@@ -1200,10 +1678,20 @@ var _isFetching   = false;
 var _fetchPromise = null;
 // Per-chat cache: { [chatId]: { modifiedTimeStamp, msgs } }
 var _chatCache      = {};  // in-memory: { chatId: { modifiedTimeStamp, msgs } }
+var _cacheServerState = {}; // tracks { chatId: modifiedTimeStamp } of what server already has — enables incremental sync
 var _activeGraceSet = {};  // { chatId: timestampMs } — keeps chats visible while copilot generates
 var _lastRenderedIds = '';  // IDs of chats rendered last cycle — grace set is seeded from these
 var _lastAllItems    = [];  // full chat list from previous cycle — merged to cover API gaps during generation
 var _lastFetchWasFull = false; // true after an ALL/History/Graphs fetch (not Active's date-filtered subset)
+
+// ── History start boundary ────────────────────────────────────────────────────
+// Only chats on/after this date with both applicationName and createdBy are shown.
+const _HISTORY_START = '2026-03-01T00:00:00.000Z';
+function isQualifiedChat(c){
+  if(!c || !c.applicationName || !c.createdBy || !c.modifiedBy) return false;
+  if((c.modifiedTimeStamp || '') < _HISTORY_START) return false;
+  return true;
+}
 
 // ── Persistent chat cache (localStorage) ─────────────────────────────────────
 // Keyed by cluster+user so different profiles never mix data
@@ -1222,17 +1710,37 @@ function _persistCacheKey(){
 }
 
 async function _savePersistedCache(){
-  var entries = Object.keys(_chatCache).length;
-  if(entries === 0) return;
+  if(Object.keys(_chatCache).length === 0) return;
   try {
+    // Incremental sync: only send entries that are new or changed since last successful save
+    var delta = {};
+    Object.keys(_chatCache).forEach(function(id){
+      var entry = _chatCache[id];
+      // Include if: never synced, or modifiedTimeStamp changed
+      if(!_cacheServerState[id] || _cacheServerState[id] !== entry.modifiedTimeStamp){
+        delta[id] = entry;
+      }
+    });
+
+    if(Object.keys(delta).length === 0){
+      return; // Nothing changed — skip network round-trip entirely
+    }
+
     var r = await fetch(proxyUrl('/api/cache'), {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'save', cluster:_cacheCluster(), user:_cacheUser(), data:_chatCache })
+      body: JSON.stringify({ action:'patch', cluster:_cacheCluster(), user:_cacheUser(), data:delta })
     });
     var j = await r.json();
-    if(j.saved) console.log('[GenAI Monitor] Cache saved: ' + j.entries + ' chats, ' + j.size_kb + ' KB');
-    else        console.warn('[GenAI Monitor] Cache save failed:', j.error);
+    if(j.saved){
+      // Update local state tracker to reflect what server now has
+      Object.keys(delta).forEach(function(id){
+        _cacheServerState[id] = delta[id].modifiedTimeStamp;
+      });
+      console.log('[GenAI Monitor] Cache patch: ' + j.patched + ' new/changed of ' + j.total + ' total (' + j.size_kb + ' KB sent)');
+    } else {
+      console.warn('[GenAI Monitor] Cache patch failed:', j.error);
+    }
   } catch(e){ console.warn('[GenAI Monitor] Cache save error:', e.message); }
 }
 
@@ -1246,12 +1754,47 @@ async function _loadPersistedCache(){
     var j = await r.json();
     if(!j.found || !j.data){ console.log('[GenAI Monitor] No server cache found for:', _persistCacheKey()); return; }
     var total = Object.keys(j.data).length, loaded = 0, skipped = 0;
+    var fromCache = [];
     Object.keys(j.data).forEach(function(id){
       var e = j.data[id];
-      if(e && e.modifiedTimeStamp && Array.isArray(e.msgs)){ _chatCache[id]=e; loaded++; }
-      else skipped++;
+      if(e && e.modifiedTimeStamp && Array.isArray(e.msgs)){
+        _chatCache[id] = e;
+        // Seed server state so first save only patches truly new/changed entries
+        _cacheServerState[id] = e.modifiedTimeStamp;
+        // Reconstruct a list-item with only display fields (not the msgs array).
+        // Old cache entries (saved before metadata was stored) recover what they can from messages.
+        var recoveredBy  = e.createdBy;
+        var recoveredApp = e.applicationName;
+        if(Array.isArray(e.msgs)){
+          if(!recoveredBy){
+            var um = e.msgs.find(function(m){ return m.createdBy && m.type !== 'copilotResponse'; })
+                  || e.msgs.find(function(m){ return m.createdBy; });
+            if(um) recoveredBy = um.createdBy;
+          }
+          if(!recoveredApp){
+            var fum = e.msgs.find(function(m){ return m.type === 'userPromptRequest'; });
+            if(fum && fum.context && Array.isArray(fum.context.providers) && fum.context.providers.length > 0){
+              var prov = fum.context.providers[0];
+              recoveredApp = (prov.analyticsProviderDetails && prov.analyticsProviderDetails.providerName)
+                          || prov.serviceName || null;
+            }
+          }
+        }
+        // Backfill recovered metadata into _chatCache so keptOld enrichment and future saves pick it up
+        if(!e.createdBy && recoveredBy)   _chatCache[id].createdBy       = recoveredBy;
+        if(!e.applicationName && recoveredApp) _chatCache[id].applicationName = recoveredApp;
+        fromCache.push({ id: id, modifiedTimeStamp: e.modifiedTimeStamp, applicationName: recoveredApp, createdBy: recoveredBy, creationTimeStamp: e.creationTimeStamp, name: e.name });
+        loaded++;
+      } else skipped++;
     });
-    console.log('[GenAI Monitor] Cache loaded: ' + loaded + ' chats' + (skipped?' ('+skipped+' skipped)':''));
+    // Rebuild _lastAllItems from cache: only qualified chats on/after _HISTORY_START with known app+user.
+    // Fresh API results will overwrite/update individual entries on the next fetchNow().
+    var qualifiedFromCache = fromCache.filter(isQualifiedChat);
+    if(qualifiedFromCache.length > 0){
+      qualifiedFromCache.sort(function(a,b){ return a.modifiedTimeStamp > b.modifiedTimeStamp ? -1 : a.modifiedTimeStamp < b.modifiedTimeStamp ? 1 : 0; });
+      _lastAllItems = qualifiedFromCache;
+    }
+    console.log('[GenAI Monitor] Cache loaded: ' + loaded + ' chats — history restored to _lastAllItems' + (skipped?' ('+skipped+' skipped)':''));
   } catch(e){ console.warn('[GenAI Monitor] Cache load error:', e.message); }
 }
 
@@ -1301,12 +1844,26 @@ async function fetchNow(){
     // overwrite the full list that ALL/History mode built — this prevents
     // cache misses when switching between modes.
     const freshIdSet = new Set(freshItems.map(c=>c.id));
-    const keptOld = _lastAllItems.filter(c => !freshIdSet.has(c.id));
-    _lastAllItems = freshItems.concat(keptOld).slice(0, 2000); // cap at 2000
+    const keptOld = _lastAllItems.filter(c => !freshIdSet.has(c.id)).map(function(c){
+      // Enrich items that lack metadata using what's now stored in _chatCache
+      var ce = _chatCache[c.id];
+      if(ce && (!c.applicationName || !c.createdBy)){
+        return { id: c.id, modifiedTimeStamp: c.modifiedTimeStamp,
+          applicationName: c.applicationName || ce.applicationName,
+          createdBy:        c.createdBy       || ce.createdBy,
+          creationTimeStamp:c.creationTimeStamp|| ce.creationTimeStamp,
+          name:             c.name            || ce.name };
+      }
+      return c;
+    });
+    _lastAllItems = freshItems.concat(keptOld).filter(isQualifiedChat); // keep all qualified chats since _HISTORY_START
 
     // Apply chat ID filter for display only — never affects the cache
+    // ALL and History modes render from the full accumulated list (includes cache-preserved chats);
+    // Active mode stays on allItems (fresh API response) to keep grace-set logic intact.
     const filterVal = $('chatFilter').value.trim();
-    let items = filterVal ? allItems.filter(i=>i.id===filterVal) : allItems;
+    const displaySource = (mode === 'active') ? allItems : _lastAllItems;
+    let items = filterVal ? displaySource.filter(i=>i.id===filterVal) : displaySource;
 
     const activeMins = parseInt($('activeMinutes').value)||10;
     const cutoff = new Date(Date.now()-activeMins*60*1000);
@@ -1350,7 +1907,8 @@ async function fetchNow(){
     const histDaysFetch = mode==='history' ? parseInt($('historyDays').value) : 0;
     const histCutoffFetch = mode==='history' && histDaysFetch>0 ? new Date(Date.now()-histDaysFetch*24*60*60*1000) : null;
     let displayed = mode==='active' ? allActive
-                  : histCutoffFetch ? items.filter(c=>new Date(c.modifiedTimeStamp)>=histCutoffFetch)
+                  : histCutoffFetch ? items.filter(c=>
+                      new Date(c.modifiedTimeStamp)>=histCutoffFetch || loadPinned().has(c.id))
                   : items;
 
     // ── Step 2: Determine which chats actually need message re-fetching ───────
@@ -1381,12 +1939,24 @@ async function fetchNow(){
             const msgs  = mData.items || [];
             newMsgs[item.id] = msgs;
             // Update per-chat cache
-            _chatCache[item.id] = { modifiedTimeStamp: item.modifiedTimeStamp, msgs };
+            _chatCache[item.id] = { modifiedTimeStamp: item.modifiedTimeStamp, msgs, applicationName: item.applicationName, createdBy: item.createdBy, creationTimeStamp: item.creationTimeStamp, name: item.name };
           }
           catch(e){ newMsgs[item.id]=null; }
         }));
       }
     }
+
+    // Backfill metadata into cache entries for unchanged items (old cache format had no metadata).
+    // Next _savePersistedCache will then persist the metadata so it survives future sessions.
+    unchanged.forEach(function(item){
+      var ce = _chatCache[item.id];
+      if(ce && !ce.applicationName){
+        ce.applicationName    = item.applicationName;
+        ce.createdBy          = item.createdBy;
+        ce.creationTimeStamp  = item.creationTimeStamp;
+        ce.name               = item.name;
+      }
+    });
 
     // ── Step 4: Build msgsMap — merge fresh fetches with cached results ───────
     // Build over ALL items so mode-switch re-renders have complete data
@@ -1398,6 +1968,14 @@ async function fetchNow(){
         msgsMap[item.id] = _chatCache[item.id].msgs;    // reused from cache
       } else {
         msgsMap[item.id] = null;
+      }
+    });
+
+    // Fill msgsMap for historical chats (keptOld — in _lastAllItems but not allItems)
+    // so their message-count chip shows correctly on collapsed cards.
+    _lastAllItems.forEach(function(item){
+      if(!msgsMap.hasOwnProperty(item.id) && _chatCache[item.id]){
+        msgsMap[item.id] = _chatCache[item.id].msgs;
       }
     });
 
@@ -1477,12 +2055,55 @@ async function fetchNow(){
   return _fetchPromise;
 }
 
+// ── Lazy message rendering helpers ───────────────────────────────────────────
+
+// Build the inner HTML for a chat's messages-wrap from a msgs array
+function _buildMsgsHtml(msgs){
+  if(msgs === null)
+    return '<div class="message"><div class="msg-body" style="color:var(--red)">❌ Failed to load messages</div></div>';
+  if(msgs === undefined)
+    return '<div class="message"><div class="msg-body" style="color:var(--text-dim);font-style:italic">Click Fetch to load messages</div></div>';
+  if(msgs.length === 0)
+    return '<div class="message"><div class="msg-body" style="color:var(--text-dim);font-style:italic">No messages</div></div>';
+  return [...msgs]
+    .sort((a,b)=>(a.creationTimeStamp||'').localeCompare(b.creationTimeStamp||''))
+    .map(renderMessage).join('');
+}
+
+// Inject message HTML into a collapsed card the first time it is expanded.
+// Returns true if messages were injected, false if already loaded.
+function _ensureMsgsLoaded(chatId){
+  const card = $('card-' + chatId);
+  if(!card) return false;
+  const wrap = card.querySelector('.messages-wrap');
+  if(!wrap) return false;
+  if(wrap.dataset.msgsLoaded === 'true') return false;  // already done
+
+  // Get messages from cache
+  const msgs = (_cachedMsgsMap && _cachedMsgsMap[chatId] != null)
+    ? _cachedMsgsMap[chatId]
+    : (_chatCache[chatId] ? _chatCache[chatId].msgs : undefined);
+
+  wrap.innerHTML = _buildMsgsHtml(msgs);
+  wrap.dataset.msgsLoaded = 'true';
+  return true;
+}
+
+// Force-load messages for all cards matching a selector (used by expandAll + search)
+function _ensureAllMsgsLoaded(selector){
+  document.querySelectorAll(selector).forEach(card => {
+    const chatId = card.id.replace('card-', '');
+    if(chatId) _ensureMsgsLoaded(chatId);
+  });
+}
+
+
 // ── Render ────────────────────────────────────────────────────────────────────
 function render(chats,msgsMap,activeMins,cutoff){
   const main=$('main');
 
-  // Remove all previous cards and empty states
-  [...main.querySelectorAll('.chat-card, .empty')].forEach(c=>c.remove());
+  // Remove all previous cards, empty states and pinned dividers
+  [...main.querySelectorAll('.chat-card, .empty, .pinned-divider')].forEach(c=>c.remove());
 
   if(!chats.length){
     const empty=document.createElement('div');
@@ -1494,11 +2115,17 @@ function render(chats,msgsMap,activeMins,cutoff){
     return;
   }
 
-  // Sort by modifiedTimeStamp
+  // Sort: pinned chats first (stable), then by modifiedTimeStamp
+  const pins = loadPinned();
   const sorted = [...chats].sort((a,b)=>{
+    const ap = pins.has(a.id), bp = pins.has(b.id);
+    if(ap !== bp) return ap ? -1 : 1;   // pinned always first
     const ta=a.modifiedTimeStamp||'', tb=b.modifiedTimeStamp||'';
     return sortOrder==='newest' ? tb.localeCompare(ta) : ta.localeCompare(tb);
   });
+  const pinnedCount = sorted.filter(c=>pins.has(c.id)).length;
+  let renderedPinned = 0;
+  let dividerInserted = false;
 
   const fragment = document.createDocumentFragment();
   sorted.forEach((chat,idx)=>{
@@ -1512,7 +2139,17 @@ function render(chats,msgsMap,activeMins,cutoff){
     const copilot=chat.copilot||{};
 
     const card=document.createElement('div');
-    card.className=`chat-card ${isActive?'is-active':''} ${collapsed?'collapsed':''}`;
+    const isPinned = pins.has(chat.id);
+    if(isPinned) renderedPinned++;
+    card.className=`chat-card ${isActive?'is-active':''} ${collapsed?'collapsed':''} ${isPinned?'is-pinned':''}`;
+    // Insert divider before the first non-pinned card (only when there are pinned chats above)
+    if(!isPinned && renderedPinned === pinnedCount && pinnedCount > 0 && !dividerInserted){
+      dividerInserted = true;
+      const div = document.createElement('div');
+      div.className = 'pinned-divider';
+      div.textContent = '📌 Pinned above · other chats below';
+      fragment.appendChild(div);
+    }
     card.id=`card-${chat.id}`;
     card.dataset.user       = (chat.createdBy||'').toLowerCase();
     card.dataset.app        = (chat.applicationName||'').toLowerCase();
@@ -1523,35 +2160,49 @@ function render(chats,msgsMap,activeMins,cutoff){
     const msgCount = (msgs != null && msgs !== undefined) ? msgs.length : '?';
     const chip=`<span class="counter-chip ${isActive?'green-chip':''}">${msgCount}</span>`;
 
-    const msgsHtml = (msgs === null)
-      ? `<div class="message"><div class="msg-body" style="color:var(--red)">❌ Failed to load messages</div></div>`
-      : (msgs === undefined)
-        ? `<div class="message"><div class="msg-body" style="color:var(--text-dim);font-style:italic">Click Fetch to load messages</div></div>`
-        : msgs.length === 0
-          ? `<div class="message"><div class="msg-body" style="color:var(--text-dim);font-style:italic">No messages</div></div>`
-          : [...msgs].sort((a,b)=>(a.creationTimeStamp||'').localeCompare(b.creationTimeStamp||'')).map(renderMessage).join('');
+    // Lazy rendering: only inject message HTML when the card is expanded.
+    // Collapsed cards get an empty placeholder — saves DOM nodes and parse time on initial load.
+    const msgsLoaded = !collapsed; // expanded cards get messages immediately; collapsed ones wait
+    const msgsHtml = msgsLoaded ? _buildMsgsHtml(msgs) : '';
 
     card.innerHTML=`
       <div class="chat-header" onclick="toggleCard('${chat.id}')">
         <div class="chat-meta">
-          <div class="chat-id">${chat.id}</div>
-          <div class="chat-title">${chat.applicationName||'?'} · ${chat.createdBy}</div>
+          <div class="chat-id" title="Click to copy ID &amp; filter" onclick="event.stopPropagation();copyChatId('${chat.id}')">${chat.id}</div>
+          <div class="chat-title">${chat.applicationName||'?'}</div>
+          <div class="chat-creator">by ${chat.createdBy||'?'}</div>
           <div class="chat-sub">
             <span>created ${fmtTs(chat.creationTimeStamp)}</span>
             <span>modified ${fmtTs(chat.modifiedTimeStamp)}</span>
-            <span>by ${chat.modifiedBy==='anonymous' ? '<em style="color:var(--accent2)">⟳ generating…</em>' : chat.modifiedBy}</span>
           </div>
         </div>
         <div class="chat-badges">
           ${actTag}
+          ${isPinned?'<span class="tag tag-pin">📌 Pinned</span>':''}
           <span class="tag tag-blue">${chat.applicationName||'?'}</span>
           <span class="tag tag-purple">${copilot.id||'?'} ${copilot.version||''}</span>
           ${chip}
+          <button class="pin-btn ${isPinned?'pinned':''}" title="${isPinned?'Unpin this chat':'Pin chat to top'}"
+            onclick="event.stopPropagation();togglePinChat('${chat.id}')">📌</button>
+          <button class="card-export-btn" title="Replay this conversation" onclick="event.stopPropagation();openReplay('${chat.id}')">▶</button>
           <button class="card-export-btn" title="Export this chat as HTML" onclick="event.stopPropagation();exportChatById('${chat.id}')">⬇</button>
+          <button class="note-btn ${_hasNote(chat.id)?'has-note':''}" title="${_hasNote(chat.id)?'Edit note':'Add note'}"
+            onclick="event.stopPropagation();toggleNotePanel('${chat.id}')">📝</button>
           <span class="chevron">▾</span>
         </div>
       </div>
-      <div class="messages-wrap" style="max-height:${collapsed?'0':'6000px'}">
+      <div class="note-panel" id="note-panel-${chat.id}">
+        <textarea class="note-textarea" id="note-ta-${chat.id}"
+          placeholder="Add a private note… e.g. 'Investigated — known issue with auth flow'"
+          onkeydown="if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){saveNote('${chat.id}');event.preventDefault()}"
+        >${escHtml(_getNote(chat.id))}</textarea>
+        <div class="note-actions">
+          <button class="note-save-btn" onclick="saveNote('${chat.id}')">💾 Save</button>
+          <button class="note-del-btn" onclick="deleteNote('${chat.id}')" ${_hasNote(chat.id)?'':'style="display:none"'} id="note-del-${chat.id}">🗑 Delete</button>
+          <span class="note-hint">Ctrl+Enter to save · private · stored locally</span>
+        </div>
+      </div>
+      <div class="messages-wrap" data-msgs-loaded=${msgsLoaded} style="max-height:${collapsed?'0':'6000px'}">
         ${msgsHtml}
       </div>`;
 
@@ -1701,16 +2352,27 @@ function renderMd(text, appPath){
 function toggleCard(id){
   const card=$(`card-${id}`), wrap=card.querySelector('.messages-wrap');
   const c=card.classList.toggle('collapsed');
+  if(!c){
+    // Expanding — inject messages if not yet loaded (lazy rendering)
+    _ensureMsgsLoaded(id);
+  }
   wrap.style.maxHeight=c?'0':'6000px';
   if(c){
     collapsedSet.add(id);
     collapsedSet.delete('expanded:'+id);
   } else {
     collapsedSet.delete(id);
-    collapsedSet.add('expanded:'+id);   // remember user explicitly opened this
+    collapsedSet.add('expanded:'+id);
+    // If expanding a pinned chat in History mode, switch to All so its full context is visible
+    if(mode === 'history' && card.classList.contains('is-pinned')){
+      setMode('all');
+      toast('📌 Switched to All mode — pinned chat shown in full context');
+    }
   }
 }
 function expandAll(){
+  // Load messages for all cards that haven't been expanded yet (lazy rendering)
+  _ensureAllMsgsLoaded('.chat-card:not(.hidden-card)');
   document.querySelectorAll('.chat-card').forEach(c=>{
     const id=c.id.replace('card-','');
     c.classList.remove('collapsed');
@@ -1776,17 +2438,197 @@ function populateUserDropdown(chats, msgsMap){
   });
 }
 
-// Debounced search — waits 220ms after last keystroke before filtering
+// Debounced search — waits 250ms after last keystroke before filtering
 let _filterTimer = null;
 function debounceFilter(){
   clearTimeout(_filterTimer);
-  _filterTimer = setTimeout(applyClientFilters, 220);
+  _filterTimer = setTimeout(()=>{
+    const term = $('msgSearch').value.trim();
+    if(term.length >= 2){
+      // Global search: queries _chatCache across all modes
+      globalSearch(term);
+    } else {
+      // Short/empty term: clear global results and apply normal DOM filter
+      clearGlobalSearch();
+      applyClientFilters();
+    }
+  }, 250);
+}
+
+// ── Global Search ─────────────────────────────────────────────────────────────
+// Searches _chatCache across ALL modes, not just rendered DOM cards
+function globalSearch(term){
+  const panel = $('globalSearchPanel');
+  const main  = $('main');
+  if(!term){ clearGlobalSearch(); return; }
+
+  const q          = term.toLowerCase();
+  const userVal    = ($('userFilter').value||'').trim().toLowerCase();
+  const appVal     = ($('appFilter').value||'').trim().toLowerCase();
+  const allChats   = _lastAllItems.length ? _lastAllItems : _cachedChats;
+
+  // Search _chatCache — all fetched messages regardless of current mode
+  const results = [];  // { chat, msgs:[ {msg, snippet} ] }
+
+  allChats.forEach(chat => {
+    // Apply user / app filters
+    if(userVal && (chat.createdBy||'').toLowerCase() !== userVal) return;
+    if(appVal  && !(chat.applicationName||'').toLowerCase().includes(appVal)) return;
+    // Skip embedding/anonymous
+    const appL = (chat.applicationName||'').toLowerCase();
+    if(appL.includes('embedding') || appL.includes('expression')) return;
+    if((chat.modifiedBy||'').toLowerCase() === 'anonymous') return;
+
+    const cached = _chatCache[chat.id];
+    if(!cached || !Array.isArray(cached.msgs)) return;
+
+    const hits = [];
+    cached.msgs.forEach(m => {
+      const type = (m.type||'').toLowerCase();
+      if(['functionresult','copilotfunctionresponse'].includes(type)) return;
+      // Extract text from message
+      function ex(v){ if(!v) return ''; if(typeof v==='string') return v;
+        if(typeof v==='object') return String(v.text||v.label||v.value||v.content||v.prompt||'');
+        return String(v); }
+      const text = ex(m.content||m.selectedPrompt||m.value||m.text||'').trim();
+      if(!text) return;
+      if(!text.toLowerCase().includes(q)) return;
+      // Build highlighted snippet (±80 chars around first match)
+      const li  = text.toLowerCase().indexOf(q);
+      const snip_start = Math.max(0, li - 60);
+      const snip_end   = Math.min(text.length, li + q.length + 60);
+      const raw        = (snip_start > 0 ? '…' : '') +
+                          text.slice(snip_start, snip_end) +
+                          (snip_end < text.length ? '…' : '');
+      hits.push({ msg: m, snippet: raw });
+    });
+
+    if(hits.length) results.push({ chat, hits });
+  });
+
+  // Render results
+  const sbar = $('searchBar');
+  sbar.classList.add('visible');
+  $('searchTerm').textContent      = term;
+  $('searchMatchCount').textContent = results.reduce((s,r)=>s+r.hits.length, 0);
+  $('searchScopeNote').textContent = '— across all cached chats';
+  $('searchNavGroup').style.display = 'none';   // prev/next not applicable for global
+  $('hiddenChatsNote').textContent = '';
+
+  // Show results panel, hide main chat list
+  main.style.display  = 'none';
+  panel.style.display = 'flex';
+
+  if(!results.length){
+    panel.innerHTML = `<div class="gs-empty">🔍 No messages found for "<strong>${escHtml(term)}</strong>"<br>
+      <span style="font-size:11px;margin-top:6px;display:block;opacity:.7">
+        ${Object.keys(_chatCache).length} chats searched · try a different term</span></div>`;
+    return;
+  }
+
+  function hlSnip(raw){
+    const qi = raw.toLowerCase().indexOf(q);
+    if(qi === -1) return escHtml(raw);
+    return escHtml(raw.slice(0, qi))
+      + `<mark class="hl">${escHtml(raw.slice(qi, qi+q.length))}</mark>`
+      + escHtml(raw.slice(qi + q.length));
+  }
+
+  const total = results.reduce((s,r)=>s+r.hits.length,0);
+  let html = `<div class="gs-header">
+    Found <strong>${total}</strong> message${total!==1?'s':''} in
+    <strong>${results.length}</strong> chat${results.length!==1?'s':''}
+    &nbsp;·&nbsp; <span style="opacity:.6">${Object.keys(_chatCache).length} chats searched</span>
+    <span style="margin-left:auto;font-size:10px;opacity:.6">Click a result to jump to it</span>
+  </div>`;
+
+  results.forEach(({chat, hits}) => {
+    const app  = escHtml(chat.applicationName||'?');
+    const user = escHtml(chat.createdBy||'?');
+    const ts   = chat.modifiedTimeStamp ? fmtTs(chat.modifiedTimeStamp) : '';
+    const more = hits.length > 3 ? `<div class="gs-more">+${hits.length-3} more match${hits.length-3!==1?'es':''} in this chat</div>` : '';
+    const snips = hits.slice(0,3).map(h =>
+      `<div class="gs-hit">${hlSnip(h.snippet)}</div>`
+    ).join('');
+
+    html += `<div class="gs-card" onclick="globalSearchJump('${chat.id}')">
+      <div class="gs-card-meta">
+        <span class="gs-app">${app}</span>
+        <span class="gs-user">👤 ${user}</span>
+        <span class="gs-ts">${ts}</span>
+      </div>
+      ${snips}${more}
+    </div>`;
+  });
+
+  panel.innerHTML = html;
+}
+
+function clearGlobalSearch(){
+  const panel = $('globalSearchPanel');
+  const main  = $('main');
+  panel.style.display = 'none';
+  panel.innerHTML     = '';
+  main.style.display  = '';
+  // Restore search bar to normal mode
+  const sbar = $('searchBar');
+  $('searchNavGroup').style.display = '';
+  $('searchScopeNote').textContent  = '';
+  sbar.classList.remove('visible');
+}
+
+function globalSearchJump(chatId){
+  // Find which mode has this chat and switch to it, then scroll to the card
+  const chat = (_lastAllItems.length ? _lastAllItems : _cachedChats).find(c=>c.id===chatId);
+  if(!chat){ toast('Chat not in cache — try Fetch first'); return; }
+
+  // Determine best mode: if in Active window → active, else → all
+  const activeMins = parseInt($('activeMinutes').value)||10;
+  const cutoff     = new Date(Date.now()-activeMins*60*1000);
+  const isActive   = new Date(chat.modifiedTimeStamp) >= cutoff;
+
+  // Clear the search so we go back to normal card list
+  $('msgSearch').value = '';
+  clearGlobalSearch();
+
+  // Switch mode and jump to the card once rendered
+  const targetMode = isActive ? 'active' : 'all';
+  if(mode !== targetMode) setMode(targetMode);
+
+  // Poll until the card appears in DOM then scroll to it
+  let attempts = 0;
+  const tryJump = () => {
+    const card = document.getElementById('card-' + chatId);
+    if(card){
+      // Expand card — lazy-load messages first
+      _ensureMsgsLoaded(chatId);
+      card.classList.remove('collapsed');
+      const wrap = card.querySelector('.messages-wrap');
+      if(wrap) wrap.style.maxHeight = '6000px';
+      collapsedSet.delete(chatId);
+      collapsedSet.add('expanded:' + chatId);
+      // Scroll
+      const headerH  = 56;
+      const toolbarH = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--toolbar-h'))||52;
+      const statusH  = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--statusbar-h'))||36;
+      const offset   = headerH + toolbarH + statusH + 12;
+      const top      = card.getBoundingClientRect().top + window.scrollY - offset;
+      window.scrollTo({top, behavior:'smooth'});
+      card.style.outline = '2px solid var(--accent)';
+      card.style.borderRadius = '10px';
+      setTimeout(()=>{ card.style.outline=''; }, 2000);
+    } else if(attempts++ < 20){
+      setTimeout(tryJump, 150);
+    }
+  };
+  setTimeout(tryJump, 100);
 }
 
 function applyClientFilters(){
   const userVal   = $('userFilter').value.trim().toLowerCase();
   const appVal    = $('appFilter').value.trim().toLowerCase();
   const searchVal = $('msgSearch').value.trim().toLowerCase();
+  const chatIdVal = $('chatFilter').value.trim().toLowerCase();
 
   // If graphs mode is active, just re-render charts with the new user filter
   if(mode === 'graphs'){
@@ -1797,7 +2639,7 @@ function applyClientFilters(){
   }
 
   // Toggle clear button visibility
-  $('clearFiltersBtn').style.display = (userVal||appVal||searchVal) ? '' : 'none';
+  $('clearFiltersBtn').style.display = (userVal||appVal||searchVal||chatIdVal) ? '' : 'none';
 
   // Remove all previous highlights efficiently
   document.querySelectorAll('mark.hl').forEach(m=>{
@@ -1810,6 +2652,14 @@ function applyClientFilters(){
   document.querySelectorAll('.chat-card').forEach(card=>{
     const chatCreatedBy = (card.dataset.user||'').toLowerCase();
     let cardVisible = true;
+
+    // Chat ID filter: hide card if ID doesn't include the typed value
+    if(chatIdVal){
+      const cardChatId = card.id.replace('card-','').toLowerCase();
+      if(!cardChatId.includes(chatIdVal)){
+        card.classList.add('hidden-card'); return;
+      }
+    }
 
     // App filter: hide card if applicationName doesn't match
     const chatApp = (card.dataset.app||'').toLowerCase();
@@ -1828,19 +2678,20 @@ function applyClientFilters(){
       }
     }
     if(appVal && !chatApp.includes(appVal)){
-      card.classList.add('hidden-card');
-      return;
+      if(!card.classList.contains('is-pinned')){ card.classList.add('hidden-card'); return; }
     }
 
     // User filter: hide whole card if chat not by selected user
+    // Pinned chats are exempt — they always stay visible
+    const cardIsPinned = card.classList.contains('is-pinned');
     if(userVal && !chatCreatedBy.includes(userVal)){
-      card.classList.add('hidden-card');
-      return;
+      if(!cardIsPinned){ card.classList.add('hidden-card'); return; }
     } else {
       card.classList.remove('hidden-card');
     }
 
-    // Search filter: per-message visibility + highlight
+    // Search filter: ensure messages are loaded before searching content
+    if(searchVal) _ensureMsgsLoaded(card.id.replace('card-',''));
     const messages = card.querySelectorAll('.message');
     let anyVisible = messages.length === 0; // cards with no messages stay visible
 
@@ -1894,13 +2745,13 @@ function applyClientFilters(){
     sbar.classList.remove('visible');
   }
 
-  // Update count badges: visible (after all filters) vs non-embedding total
+  // Update count badges: visible (after all filters) vs qualified total (history-inclusive)
   const visibleCards   = document.querySelectorAll('.chat-card:not(.hidden-card)').length;
-  const nonEmbedTotal  = _cachedChats.filter(c=>
-    !(c.applicationName||'').toLowerCase().includes('embedding') &&
-    (c.modifiedBy||'').toLowerCase() !== 'anonymous'
-  ).length;
-  updateChatBadges(visibleCards, nonEmbedTotal);
+  const qualifiedAll   = (_lastAllItems.length ? _lastAllItems : _cachedChats).filter(c=>
+    isQualifiedChat(c) &&
+    !(c.applicationName||'').toLowerCase().includes('embedding')
+  );
+  updateChatBadges(visibleCards);
 }
 
 function highlightNode(el, term){
@@ -1950,16 +2801,286 @@ function focusMatch(idx){
 
 function navSearch(dir){ focusMatch(searchIdx + dir); }
 
+function exportChatListCSV(){
+  // Collect visible (non-hidden) cards from the DOM — respects all active filters
+  const visibleCards = [...document.querySelectorAll('.chat-card:not(.hidden-card)')];
+
+  if(!visibleCards.length){
+    toast('No chats to export — try a different filter or mode');
+    return;
+  }
+
+  const pins       = loadPinned();
+  const activeMins = parseInt($('activeMinutes').value)||10;
+  const cutoff     = new Date(Date.now()-activeMins*60*1000);
+
+  // CSV helpers
+  function csvCell(v){
+    if(v == null) return '';
+    const s = String(v).replace(/"/g,'""');   // escape internal quotes
+    return /[",\n\r]/.test(s) ? `"${s}"` : s;
+  }
+  function fmtDate(ts){ return ts ? new Date(ts).toLocaleString() : ''; }
+
+  // Header row
+  const cols = [
+    'Chat ID','Application','Created By','Modified By',
+    'Created At','Modified At',
+    'Message Count','User Messages','Copilot Responses',
+    'Status','Pinned','Note','Copilot ID','Copilot Version',
+    'Mode','Exported At'
+  ];
+
+  const rows = [cols.map(csvCell).join(',')];
+  const exportedAt = new Date().toLocaleString();
+
+  visibleCards.forEach(card => {
+    const chatId = card.id.replace('card-','');
+    // Find chat object from _cachedChats
+    const chat = (_cachedChats||[]).find(c=>c.id===chatId) ||
+                 (_lastAllItems||[]).find(c=>c.id===chatId) || null;
+    if(!chat) return;
+
+    const copilot  = chat.copilot || {};
+    const msgs     = (_cachedMsgsMap||{})[chatId] || (_chatCache[chatId]||{}).msgs || [];
+    const isActive = new Date(chat.modifiedTimeStamp||'') >= cutoff;
+    const isPinned = pins.has(chatId);
+
+    // Count message types
+    const userMsgs    = msgs.filter(m=>{const t=(m.type||'').toLowerCase();return t.includes('user')||t.includes('prompt');}).length;
+    const copilotMsgs = msgs.filter(m=>(m.type||'').toLowerCase().startsWith('copilot') && !['functionresult','copilotfunctionresponse'].includes((m.type||'').toLowerCase())).length;
+
+    const row = [
+      chatId,
+      chat.applicationName||'',
+      chat.createdBy||'',
+      chat.modifiedBy||'',
+      fmtDate(chat.creationTimeStamp),
+      fmtDate(chat.modifiedTimeStamp),
+      msgs.length,
+      userMsgs,
+      copilotMsgs,
+      isActive ? 'active' : 'idle',
+      isPinned ? 'yes' : 'no',
+      _getNote(chatId),
+      copilot.id||'',
+      copilot.version||'',
+      mode,
+      exportedAt
+    ];
+    rows.push(row.map(csvCell).join(','));
+  });
+
+  const csv      = rows.join('\r\n');
+  const blob     = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });  // BOM for Excel
+  const user     = (cfg.user||'unknown').toLowerCase();
+  const cluster  = (cfg.viyaUrl||'').replace(/^https?:\/\//,'').replace(/\/+$/,'').toLowerCase();
+  const ts       = new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);  // 2026-04-16T17-32-05
+  const histDays  = mode === 'history' ? parseInt($('historyDays').value)||0 : 0;
+  const modePart  = mode === 'history'
+    ? `history-p${histDays > 0 ? histDays+'d' : 'all'}`
+    : mode;
+  downloadBlob(blob, `viya-chats-${modePart}-${cluster}-${user}-${ts}.csv`);
+  toast(`⬇ CSV exported — ${visibleCards.length} chat${visibleCards.length!==1?'s':''}`);
+}
+
+
 function clearFilters(){
   $('userFilter').value   = '';
   $('appFilter').value    = '';
+  $('chatFilter').value   = '';
   _lastDropdownUsers = '';
   $('msgSearch').value    = '';
   $('clearFiltersBtn').style.display = 'none';
+  clearGlobalSearch();
   applyClientFilters();
 }
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
+// ── Keyboard shortcut help overlay ───────────────────────────────────────────
+function toggleShortcutHelp(){
+  let modal = $('shortcutHelp');
+  if(modal){ modal.remove(); return; }
+  modal = document.createElement('div');
+  modal.id = 'shortcutHelp';
+  modal.onclick = e => { if(e.target === modal) modal.remove(); };
+  modal.innerHTML = `
+    <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:14px;
+      padding:28px 32px;min-width:340px;max-width:440px;box-shadow:0 8px 32px rgba(0,0,0,.2)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+        <div style="font-family:var(--sans);font-weight:800;font-size:15px;color:var(--text)">
+          ⌨️ Keyboard Shortcuts
+        </div>
+        <button onclick="this.closest('#shortcutHelp').remove()"
+          style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--text-dim);
+          line-height:1;padding:0 4px">&times;</button>
+      </div>
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 20px;align-items:center;
+        font-size:12px;font-family:var(--mono)">
+        <span style="color:var(--text-dim)">Navigation</span><span></span>
+        ${[
+          ['A','Switch to Active tab'],
+          ['L','Switch to All tab'],
+          ['H','Switch to History tab'],
+          ['G','Switch to Graphs tab (admin)'],
+          ['R','Refresh graphs (Graphs tab only)'],
+          ['P','Pin / unpin a chat (click 📌 on card)'],
+        ].map(([k,d])=>`<kbd>${k}</kbd><span style="color:var(--text-mid)">${d}</span>`).join('')}
+
+        <span style="color:var(--text-dim);margin-top:8px">Sort</span><span></span>
+        ${[
+          ['N','Sort by Newest'],
+          ['O','Sort by Oldest'],
+        ].map(([k,d])=>`<kbd>${k}</kbd><span style="color:var(--text-mid)">${d}</span>`).join('')}
+
+        <span style="color:var(--text-dim);margin-top:8px">Search & Filters</span><span></span>
+        ${[
+          ['/','Focus search box'],
+          ['Esc','Clear search · close panels'],
+        ].map(([k,d])=>`<kbd>${k}</kbd><span style="color:var(--text-mid)">${d}</span>`).join('')}
+
+        <span style="color:var(--text-dim);margin-top:8px">Help</span><span></span>
+        <kbd>?</kbd><span style="color:var(--text-mid)">Show / hide this panel</span>
+      </div>
+      <div style="margin-top:18px;font-size:10px;color:var(--text-dim);border-top:1px solid var(--border);
+        padding-top:12px">Shortcuts are disabled while typing in an input field.</div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+// ── Conversation Replay ──────────────────────────────────────────────────────
+var _replayMsgs    = [];   // sorted messages for current replay
+var _replayIdx     = 0;    // next message index to show
+var _replayTimer   = null; // setTimeout handle
+var _replayPaused  = false;
+var _replayChatId  = null;
+
+function openReplay(chatId){
+  // Ensure messages are loaded
+  _ensureMsgsLoaded(chatId);
+
+  const chat = (_cachedChats||[]).find(c=>c.id===chatId) ||
+               (_lastAllItems||[]).find(c=>c.id===chatId);
+  if(!chat){ toast('Chat not found'); return; }
+
+  const cached = _chatCache[chatId] || {};
+  const msgs   = (cached.msgs || (_cachedMsgsMap||{})[chatId] || [])
+    .filter(m => {
+      const t = (m.type||'').toLowerCase();
+      return !HIDDEN_MSG_TYPES.has(m.type) && !HIDDEN_MSG_TYPES.has(t) && m.type;
+    })
+    .sort((a,b)=>(a.creationTimeStamp||'').localeCompare(b.creationTimeStamp||''));
+
+  if(!msgs.length){ toast('No messages to replay'); return; }
+
+  _replayMsgs   = msgs;
+  _replayChatId = chatId;
+  _replayIdx    = 0;
+  _replayPaused = false;
+
+  // Set up modal
+  $('replayTitle').textContent = (chat.applicationName||'Chat') + ' — Replay';
+  $('replaySubtitle').textContent =
+    (chat.createdBy||'') + ' · ' + fmtTs(chat.creationTimeStamp) +
+    ' · ' + msgs.length + ' message' + (msgs.length!==1?'s':'');
+  $('replayMessages').innerHTML = '';
+  $('replayBar').style.width    = '0%';
+  $('replayCounter').textContent = '0 / ' + msgs.length;
+  $('replayPlayBtn').textContent = '⏸ Pause';
+  $('replayPlayBtn').disabled    = false;
+
+  $('replayModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+
+  // Start playback
+  _replayStep();
+}
+
+function _replayStep(){
+  if(_replayPaused || _replayIdx >= _replayMsgs.length){
+    if(_replayIdx >= _replayMsgs.length){
+      $('replayPlayBtn').textContent = '✓ Done';
+      $('replayPlayBtn').disabled    = true;
+    }
+    return;
+  }
+
+  const m    = _replayMsgs[_replayIdx];
+  const wrap = $('replayMessages');
+
+  // Add timestamp separator if day changed
+  if(_replayIdx === 0 || _dayOf(_replayMsgs[_replayIdx-1]) !== _dayOf(m)){
+    const tsDiv = document.createElement('div');
+    tsDiv.className = 'replay-ts';
+    tsDiv.textContent = new Date(m.creationTimeStamp||'').toLocaleDateString(undefined,
+      {weekday:'short',month:'short',day:'numeric'});
+    wrap.appendChild(tsDiv);
+  }
+
+  // Render message using same renderMessage function
+  const msgDiv = document.createElement('div');
+  msgDiv.className = 'replay-msg';
+  msgDiv.innerHTML = renderMessage(m);
+  wrap.appendChild(msgDiv);
+
+  // Trigger animation after a tick
+  requestAnimationFrame(()=>{ msgDiv.classList.add('visible'); });
+
+  // Auto-scroll to bottom
+  wrap.scrollTop = wrap.scrollHeight;
+
+  // Update progress
+  _replayIdx++;
+  const pct = (_replayIdx / _replayMsgs.length * 100).toFixed(1);
+  $('replayBar').style.width    = pct + '%';
+  $('replayCounter').textContent = _replayIdx + ' / ' + _replayMsgs.length;
+
+  // Schedule next message
+  const delay = parseInt($('replaySpeed').value) || 1500;
+  _replayTimer = setTimeout(_replayStep, delay);
+}
+
+function _dayOf(m){
+  return (m.creationTimeStamp||'').slice(0,10);
+}
+
+function replayToggle(){
+  if(_replayIdx >= _replayMsgs.length) return;
+  _replayPaused = !_replayPaused;
+  $('replayPlayBtn').textContent = _replayPaused ? '▶ Play' : '⏸ Pause';
+  if(!_replayPaused) _replayStep();
+  else if(_replayTimer){ clearTimeout(_replayTimer); _replayTimer=null; }
+}
+
+function replayRestart(){
+  if(_replayTimer){ clearTimeout(_replayTimer); _replayTimer=null; }
+  _replayIdx    = 0;
+  _replayPaused = false;
+  $('replayMessages').innerHTML = '';
+  $('replayBar').style.width    = '0%';
+  $('replayCounter').textContent = '0 / ' + _replayMsgs.length;
+  $('replayPlayBtn').textContent = '⏸ Pause';
+  $('replayPlayBtn').disabled    = false;
+  _replayStep();
+}
+
+function replaySetSpeed(val){
+  // If playing, restart the timer with new speed
+  if(!_replayPaused && _replayIdx < _replayMsgs.length){
+    if(_replayTimer){ clearTimeout(_replayTimer); _replayTimer=null; }
+    _replayTimer = setTimeout(_replayStep, parseInt(val)||1500);
+  }
+}
+
+function closeReplay(){
+  if(_replayTimer){ clearTimeout(_replayTimer); _replayTimer=null; }
+  $('replayModal').classList.remove('open');
+  document.body.style.overflow = '';
+  _replayMsgs   = [];
+  _replayIdx    = 0;
+  _replayChatId = null;
+}
+
 function toggleTheme(){
   const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
   const next = isDark ? 'light' : 'dark';
@@ -1973,7 +3094,7 @@ function disconnect(){
   token=null; tokenAt=0; lastHash='';
   cfg={viyaUrl:'',user:'',pass:'',interval:5};
   editingProfileId = null;  // reset so next profile selection starts fresh
-  _cachedChats = []; _cachedMsgsMap = {}; _chatCache = {}; _activeGraceSet = {}; _lastRenderedIds = ''; _lastAllItems = []; _lastDropdownUsers = ''; _lastDropdownApps = ''; lastHash=''; _lastFetchWasFull=false; _gAllChats=[];
+  _cachedChats = []; _cachedMsgsMap = {}; _chatCache = {}; _cacheServerState = {}; _activeGraceSet = {}; _lastRenderedIds = ''; _lastAllItems = []; _lastDropdownUsers = ''; _lastDropdownApps = ''; lastHash=''; _lastFetchWasFull=false; _gAllChats=[];
   // Note: persisted localStorage cache is intentionally kept — reused on next login
   // Clear saved panel so next profile's prompts load fresh
   $('savedPanel').classList.remove('open');
@@ -1981,6 +3102,15 @@ function disconnect(){
   $('nsBadge').style.display='none';
   $('appShell').style.display='none';
   $('btn-graphs').style.display='none';  // reset — re-checked on next login
+  // Reset cluster chip
+  var chip = $('clusterChip');
+  chip.classList.remove('visible');
+  chip.style.borderColor = '';
+  $('clusterChipAvatar').textContent = '🖥️';
+  $('clusterChipAvatar').style.cssText = '';
+  $('clusterChipName').textContent = '—';
+  $('clusterChipEnv').textContent  = '—';
+  $('clusterChipLive').className   = 'cluster-chip-live';
   if(mode==='graphs') setMode('active'); // leave graphs mode if active
   $('loginScreen').style.display='flex';
   renderProfileList();
@@ -1989,11 +3119,13 @@ function disconnect(){
 }
 
 function updateStickyOffsets(){
-  const toolbar   = document.querySelector('.toolbar');
-  const statusbar = document.querySelector('.statusbar');
-  const root      = document.documentElement;
+  const toolbar    = document.querySelector('.toolbar');
+  const statusbar  = document.querySelector('.statusbar');
+  const graphsNav  = document.getElementById('graphsNav');
+  const root       = document.documentElement;
   if(toolbar)   root.style.setProperty('--toolbar-h',   toolbar.offsetHeight   + 'px');
   if(statusbar) root.style.setProperty('--statusbar-h', statusbar.offsetHeight + 'px');
+  if(graphsNav) root.style.setProperty('--graphsnav-h', graphsNav.offsetHeight + 'px');
 }
 
 // ── Icon / Color Picker ───────────────────────────────────────────────────────
@@ -2146,15 +3278,15 @@ function renderProfileList(){
     var color = p.color || profileColor(i);
     var emoji = p.emoji || profileEmoji(i);
     var isActive = editingProfileId === p.id ? ' active' : '';
-    return '<div class="profile-item'+isActive+'" data-id="'+p.id+'" onclick="selectProfile(\''+p.id+'\')">'
-      +'<div class="profile-avatar" style="background:'+color+'22;color:'+color+';border:1.5px solid '+color+'44">'+emoji+'</div>'
+    return '<div class="profile-item'+isActive+'" data-id="'+p.id+'" style="--c:'+color+'" onclick="selectProfile(\''+p.id+'\')">'
+      +'<div class="profile-avatar" style="background:'+color+'22;color:'+color+';border:1.5px solid '+color+'55">'+emoji+'</div>'
       +'<div class="profile-info">'
         +'<div class="profile-name">'+escHtml(p.name||'Unnamed')+'</div>'
         +'<div class="profile-meta">'+(p.viyaUrl ? escHtml(p.viyaUrl.replace(/^https?:\/\//,'')) : 'not configured')+'</div>'
       +'</div>'
       +'<div class="profile-actions">'
-        +'<button class="profile-action-btn export-btn" title="Export this profile" onclick="event.stopPropagation();exportProfile(\''+p.id+'\')">⬇</button>'
-      +'<button class="profile-action-btn" title="Delete" onclick="event.stopPropagation();deleteProfile(\''+p.id+'\')">🗑</button>'
+        +'<button class="profile-action-btn export-btn" title="Export" onclick="event.stopPropagation();exportProfile(\''+p.id+'\')">⬇</button>'
+      +'<button class="profile-action-btn" title="Delete" onclick="event.stopPropagation();deleteProfile(\''+p.id+'\')">✕</button>'
       +'</div>'
       +'</div>';
   }).join('');
@@ -2277,6 +3409,123 @@ function saveCurrentProfile(extra){
 // ── Saved Prompts ─────────────────────────────────────────────────────────────
 var SAVED_KEY_PREFIX = 'viya4-saved-prompts';
 var savedActiveTag   = '';   // currently filtered tag
+
+// ── Pinned Chats ─────────────────────────────────────────────────────────────
+var PIN_KEY_PREFIX = 'viya4-pinned-chats';
+
+function _pinKey(){
+  const cluster = (cfg.viyaUrl||'').replace(/^https?:\/\//,'').toLowerCase().replace(/\/+$/,'');
+  const user    = (cfg.user||'').toLowerCase();
+  return PIN_KEY_PREFIX + (cluster?':'+cluster:'') + (user?':'+user:'');
+}
+function loadPinned(){
+  try{ return new Set(JSON.parse(localStorage.getItem(_pinKey()))||[]); }
+  catch(e){ return new Set(); }
+}
+function savePinned(set){
+  try{ localStorage.setItem(_pinKey(), JSON.stringify([...set])); }
+  catch(e){ console.warn('Could not save pinned chats', e); }
+}
+function isChatPinned(chatId){ return loadPinned().has(chatId); }
+
+// ── Chat Notes ────────────────────────────────────────────────────────────────
+var NOTE_KEY_PREFIX = 'viya4-chat-notes';
+
+function _noteKey(){
+  const cluster = (cfg.viyaUrl||'').replace(/^https?:\/\//,'').toLowerCase().replace(/\/+$/,'');
+  const user    = (cfg.user||'').toLowerCase();
+  return NOTE_KEY_PREFIX + (cluster?':'+cluster:'') + (user?':'+user:'');
+}
+function _loadNotes(){
+  try{ return JSON.parse(localStorage.getItem(_noteKey()))||{}; }
+  catch(e){ return {}; }
+}
+function _saveNotes(notes){
+  try{ localStorage.setItem(_noteKey(), JSON.stringify(notes)); }
+  catch(e){ console.warn('Could not save notes', e); }
+}
+function _getNote(chatId){ return (_loadNotes()[chatId]||''); }
+function _hasNote(chatId){ return !!_loadNotes()[chatId]; }
+function _notePreview(chatId){
+  const n = _getNote(chatId);
+  return n.length > 28 ? n.slice(0,28)+'…' : n;
+}
+
+function toggleNotePanel(chatId){
+  const panel = document.getElementById('note-panel-'+chatId);
+  if(!panel) return;
+  const isOpen = panel.classList.contains('open');
+  panel.classList.toggle('open', !isOpen);
+  if(!isOpen){
+    const ta = document.getElementById('note-ta-'+chatId);
+    if(ta){ ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  }
+}
+
+function saveNote(chatId){
+  const ta = document.getElementById('note-ta-'+chatId);
+  if(!ta) return;
+  const text = ta.value.trim();
+  const notes = _loadNotes();
+  if(text) notes[chatId] = text;
+  else delete notes[chatId];
+  _saveNotes(notes);
+
+  // Update button appearance without full re-render
+  const card = document.getElementById('card-'+chatId);
+  if(card){
+    const btn = card.querySelector('.note-btn');
+    const del = document.getElementById('note-del-'+chatId);
+    if(btn){
+      btn.classList.toggle('has-note', !!text);
+      btn.title = text ? 'Edit note' : 'Add note';
+      // Update preview span
+      let preview = btn.querySelector('.note-preview');
+      if(text){
+        if(!preview){
+          preview = document.createElement('span');
+          preview.className = 'note-preview';
+          btn.appendChild(preview);
+        }
+        preview.textContent = text.length > 28 ? text.slice(0,28)+'…' : text;
+        preview.title = text;
+      } else if(preview){
+        preview.remove();
+      }
+    }
+    if(del) del.style.display = text ? '' : 'none';
+  }
+  toast(text ? '📝 Note saved' : '🗑 Note deleted');
+}
+
+function deleteNote(chatId){
+  const ta = document.getElementById('note-ta-'+chatId);
+  if(ta) ta.value = '';
+  saveNote(chatId);
+  const panel = document.getElementById('note-panel-'+chatId);
+  if(panel) panel.classList.remove('open');
+}
+function togglePinChat(chatId){
+  const pins = loadPinned();
+  if(pins.has(chatId)){ pins.delete(chatId); toast('📌 Unpinned'); }
+  else                { pins.add(chatId);    toast('📌 Pinned — always shown at top'); }
+  savePinned(pins);
+  // Re-render current view
+  const fullItems = _lastAllItems.length ? _lastAllItems : _cachedChats;
+  const activeMins = parseInt($('activeMinutes').value)||10;
+  const cutoff     = new Date(Date.now()-activeMins*60*1000);
+  const allActive  = fullItems.filter(i=>new Date(i.modifiedTimeStamp)>=cutoff && isVisibleChat(i));
+  const histDays   = mode==='history' ? parseInt($('historyDays').value) : 0;
+  const histCutoff = mode==='history' && histDays>0 ? new Date(Date.now()-histDays*24*60*60*1000) : null;
+  const displayed  = mode==='active' ? allActive
+                   : histCutoff ? fullItems.filter(c=>
+                       new Date(c.modifiedTimeStamp)>=histCutoff || loadPinned().has(c.id))
+                   : fullItems;
+  const msgsMap = {};
+  displayed.forEach(c=>{ msgsMap[c.id] = _chatCache[c.id]?_chatCache[c.id].msgs:(_cachedMsgsMap[c.id]||null); });
+  render(displayed, msgsMap, activeMins, cutoff);
+  applyClientFilters();
+}
 
 function savedKey(){
   // Favorites scoped by username + cluster URL
@@ -2477,6 +3726,7 @@ function jumpToMessage(id){
   var card = msgEl.closest('.chat-card');
   if(card && card.classList.contains('collapsed')){
     var wrap = card.querySelector('.messages-wrap');
+    _ensureMsgsLoaded(card.id.replace('card-',''));  // lazy-load messages first
     card.classList.remove('collapsed');
     if(wrap) wrap.style.maxHeight = '6000px';
     var cardId = card.id.replace('card-','');
@@ -3013,11 +4263,670 @@ function setGraphsToolbar(isGraphs){
   }
 }
 
+// ── Graphs Report Export ──────────────────────────────────────────────────────
+function exportGraphsReport(){
+  // Show a small picker: PNG or PDF
+  let picker = document.getElementById('gExportPicker');
+  if(picker){ picker.remove(); return; }
+
+  picker = document.createElement('div');
+  picker.id = 'gExportPicker';
+  picker.style.cssText = 'position:fixed;inset:0;z-index:3000;display:flex;align-items:center;'
+    + 'justify-content:center;background:rgba(0,0,0,.45);backdrop-filter:blur(3px)';
+  picker.onclick = e => { if(e.target===picker) picker.remove(); };
+
+  picker.innerHTML = `
+    <div style="background:var(--bg2);border:1px solid var(--border2);border-radius:14px;
+      padding:28px 32px;min-width:300px;box-shadow:0 8px 32px rgba(0,0,0,.25);text-align:center">
+      <div style="font-family:var(--sans);font-weight:800;font-size:15px;color:var(--text);margin-bottom:6px">
+        ⬇ Export Graphs Report
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:22px;font-family:var(--mono)">
+        Captures all charts + stats as currently shown
+      </div>
+      <div style="display:flex;gap:10px;justify-content:center;margin-bottom:18px">
+        <button onclick="doExportGraphs('png')"
+          style="background:var(--accent);border:none;color:#fff;border-radius:8px;
+          font-family:var(--mono);font-size:13px;padding:10px 24px;cursor:pointer;font-weight:600">
+          🖼 PNG
+        </button>
+        <button onclick="doExportGraphs('pdf')"
+          style="background:var(--bg3);border:1px solid var(--border2);color:var(--text);
+          border-radius:8px;font-family:var(--mono);font-size:13px;padding:10px 24px;cursor:pointer;font-weight:600">
+          📄 PDF
+        </button>
+      </div>
+      <div style="font-size:10px;color:var(--text-dim);font-family:var(--mono)">
+        Press Esc or click outside to cancel
+      </div>
+    </div>`;
+
+  document.body.appendChild(picker);
+}
+
+async function doExportGraphs(fmt){
+  // Close picker
+  const picker = document.getElementById('gExportPicker');
+  if(picker) picker.remove();
+
+  const btn = $('gExportBtn');
+  if(btn){ btn.textContent = '⏳ Rendering…'; btn.disabled = true; }
+
+  try {
+    const panel = $('graphsPanel');
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+
+    // Temporarily scroll panel to top and ensure full render
+    const prevScroll = window.scrollY;
+    window.scrollTo(0, panel.offsetTop);
+    await new Promise(r => setTimeout(r, 200));
+
+    // Snapshot the donut SVG as a canvas BEFORE html2canvas runs.
+    // html2canvas cannot reliably capture dynamically-built SVG paths,
+    // so we rasterize it ourselves and swap it for a plain <canvas> temporarily.
+    const donutSvg = $('gDonutSvg');
+    let donutCanvas = null;
+    let donutPlaceholder = null;
+
+    if(donutSvg){
+      const dw = donutSvg.clientWidth  || 190;
+      const dh = donutSvg.clientHeight || 190;
+      donutCanvas = document.createElement('canvas');
+      donutCanvas.width  = dw * 2;
+      donutCanvas.height = dh * 2;
+      donutCanvas.style.width  = dw + 'px';
+      donutCanvas.style.height = dh + 'px';
+
+      // Draw donut arcs directly onto our canvas using the same data
+      const dctx  = donutCanvas.getContext('2d');
+      const scale = 2;
+      const cx = dw * scale / 2, cy = dh * scale / 2;
+      const outerR = Math.min(cx, cy) - 4 * scale;
+      const innerR = outerR * 0.55;
+
+      const userFilter = ($('gNavUserFilter') && $('gNavUserFilter').value) || '';
+      const chats = userFilter
+        ? (_gAllChats||[]).filter(c=>(c.createdBy||'').toLowerCase()===userFilter.toLowerCase())
+        : (_gAllChats||[]);
+
+      // Count prompts per app (same logic as gRenderDonut)
+      const appCounts = {};
+      chats.forEach(chat => {
+        const app = chat.applicationName || 'Unknown';
+        const appL = app.toLowerCase();
+        if(appL.includes('embedding') || appL.includes('expression')) return;
+        if((chat.modifiedBy||'').toLowerCase() === 'anonymous') return;
+        const cached = _chatCache[chat.id];
+        const msgs   = cached ? (cached.msgs||[]) : [];
+        const prompts = msgs.filter(m => {
+          const t = (m.type||'').toLowerCase();
+          return (t.includes('user') || t.includes('prompt')) &&
+                 !['functionresult','copilotfunctionresponse'].includes(t);
+        }).length;
+        if(prompts > 0) appCounts[app] = (appCounts[app]||0) + prompts;
+      });
+
+      const sorted  = Object.entries(appCounts).sort((a,b)=>b[1]-a[1]);
+      const top8    = sorted.slice(0, 8);
+      const otherN  = sorted.slice(8).reduce((s,[,v])=>s+v, 0);
+      if(otherN > 0) top8.push(['Other', otherN]);
+      const total   = top8.reduce((s,[,v])=>s+v, 0);
+      const pal     = G_PALETTE();
+
+      if(total > 0){
+        let angle = -Math.PI / 2;
+        top8.forEach(([, count], i) => {
+          const sweep = (count / total) * Math.PI * 2;
+          dctx.beginPath();
+          dctx.moveTo(cx, cy);
+          dctx.arc(cx, cy, outerR, angle, angle + sweep);
+          dctx.closePath();
+          dctx.fillStyle = pal[i % pal.length];
+          dctx.fill();
+          angle += sweep;
+        });
+        // Punch inner hole
+        dctx.beginPath();
+        dctx.arc(cx, cy, innerR, 0, Math.PI * 2);
+        dctx.fillStyle = isDark ? '#0f1219' : '#ffffff';
+        dctx.fill();
+        // Center label
+        dctx.fillStyle = isDark ? '#c8d4e8' : '#1a2540';
+        dctx.font = `bold ${Math.round(20 * scale)}px Arial`;
+        dctx.textAlign = 'center';
+        dctx.textBaseline = 'middle';
+        dctx.fillText(total, cx, cy - 6 * scale);
+        dctx.font = `${Math.round(8 * scale)}px Arial`;
+        dctx.fillStyle = isDark ? '#4a5a78' : '#7a8aaa';
+        dctx.fillText('PROMPTS', cx, cy + 10 * scale);
+      }
+
+      // Swap SVG → canvas temporarily
+      donutPlaceholder = donutCanvas;
+      donutSvg.parentNode.replaceChild(donutCanvas, donutSvg);
+    }
+
+    await new Promise(r => setTimeout(r, 60));
+
+    // Capture with html2canvas
+    const canvas = await html2canvas(panel, {
+      backgroundColor: isDark ? '#0a0c10' : '#f0f4fa',
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      ignoreElements: el => el.tagName === 'SELECT' || el.tagName === 'BUTTON' ||
+                            el.id === 'gExportBtn',
+    });
+
+    // Restore original donut SVG
+    if(donutSvg && donutPlaceholder){
+      try { donutPlaceholder.parentNode.replaceChild(donutSvg, donutPlaceholder); } catch(e) {}
+    }
+
+    window.scrollTo(0, prevScroll);
+
+    // Build filename
+    const user    = cfg.user || 'unknown';
+    const cluster    = (cfg.viyaUrl||'').replace(/^https?:\/\//,'').split('/')[0].split('.')[0];
+    const dateStr    = new Date().toISOString().slice(0,10);
+    const filterUser = ($('gNavUserFilter') && $('gNavUserFilter').value) ? $('gNavUserFilter').value : '';
+    const userSuffix = filterUser ? `-u-${filterUser.toLowerCase()}` : '';
+    const base       = `viya-genai-report-${cluster}-${user}${userSuffix}-${dateStr}`;
+
+    if(fmt === 'png'){
+      // Add a branded header strip above the chart canvas
+      const headerH  = Math.round(canvas.height * 0.045); // ~4.5% of height
+      const out      = document.createElement('canvas');
+      out.width      = canvas.width;
+      out.height     = canvas.height + headerH;
+      const ctx      = out.getContext('2d');
+
+      // Header background — accent blue
+      ctx.fillStyle  = '#2563eb';
+      ctx.fillRect(0, 0, out.width, headerH);
+
+      // Header text
+      const scale    = canvas.width / 1200;  // normalize font to canvas width
+      ctx.fillStyle  = '#ffffff';
+      ctx.font       = `bold ${Math.round(14*scale)}px Arial, sans-serif`;
+      ctx.fillText('Viya GenAI Monitor — Analytics Report', 18*scale, headerH*0.62);
+      ctx.font       = `${Math.round(10*scale)}px Arial, sans-serif`;
+      const meta     = `${cfg.user||''}${filterUser ? '  (filter: '+filterUser+')' : ''}  @  ${cfg.viyaUrl||''}   ·   ${new Date().toLocaleString()}`;
+      ctx.textAlign  = 'right';
+      ctx.fillText(meta, out.width - 18*scale, headerH*0.62);
+      ctx.textAlign  = 'left';
+
+      // Charts below header
+      ctx.drawImage(canvas, 0, headerH);
+
+      out.toBlob(blob => {
+        downloadBlob(blob, base + '.png');
+        toast('📥 Report exported as PNG');
+      }, 'image/png');
+
+    } else {
+      // PDF — fit canvas to A4 landscape
+      const { jsPDF } = window.jspdf;
+      const pdf  = new jsPDF({ orientation:'landscape', unit:'mm', format:'a4' });
+      const pw   = pdf.internal.pageSize.getWidth();
+      const ph   = pdf.internal.pageSize.getHeight();
+
+      // Header strip
+      const headerH = 14;
+      pdf.setFillColor(isDark ? 15 : 37, isDark ? 18 : 99, isDark ? 30 : 235);
+      pdf.rect(0, 0, pw, headerH, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(9);
+      pdf.setFont('helvetica','bold');
+      pdf.text('Viya GenAI Monitor — Analytics Report', 8, 9);
+      pdf.setFont('helvetica','normal');
+      pdf.setFontSize(7);
+      pdf.text(`${user}${filterUser ? '  (filter: '+filterUser+')' : ''}  @  ${cfg.viyaUrl||''}   ·   ${new Date().toLocaleString()}`, pw - 8, 9, {align:'right'});
+
+      // Chart image — fill remaining page height
+      const imgData = canvas.toDataURL('image/png');
+      const imgW    = pw;
+      const imgH    = Math.min(ph - headerH - 4, (canvas.height / canvas.width) * pw);
+      pdf.addImage(imgData, 'PNG', 0, headerH + 2, imgW, imgH);
+
+      // If content taller than one page, add more pages
+      const totalPages = Math.ceil(((canvas.height / canvas.width) * pw) / (ph - headerH - 4));
+      if(totalPages > 1){
+        const sliceH = (ph - headerH - 4) / ((canvas.height / canvas.width) * pw) * canvas.height;
+        for(let p=1; p<totalPages; p++){
+          pdf.addPage();
+          const sliceCanvas = document.createElement('canvas');
+          sliceCanvas.width  = canvas.width;
+          sliceCanvas.height = Math.min(sliceH, canvas.height - p*sliceH);
+          const ctx = sliceCanvas.getContext('2d');
+          ctx.drawImage(canvas, 0, -p*sliceH);
+          pdf.addImage(sliceCanvas.toDataURL('image/png'), 'PNG', 0, 2, pw, ph - 4);
+        }
+      }
+
+      pdf.save(base + '.pdf');
+      toast('📥 Report exported as PDF');
+    }
+
+  } catch(e){
+    toast('❌ Export failed: ' + e.message, 4000);
+    console.error('Graph export error:', e);
+  } finally {
+    if(btn){ btn.textContent = '⬇ Export'; btn.disabled = false; }
+  }
+}
+
 function gNavUserChanged(){
   // Sync the graphs nav user filter → main userFilter → re-render
   const val = $('gNavUserFilter').value;
   $('userFilter').value = val;
+  _gjWeekOffset = 0;   // reset to current week when switching users
   renderGraphs();
+  if(val) gRenderJourney(val);
+  else    gHideJourney();
+}
+
+// ── User Journey View ─────────────────────────────────────────────────────────
+function gHideJourney(){
+  gjHideTip();
+  const panel = $('gJourneyPanel');
+  if(panel){ panel.innerHTML = ''; }
+  const prompt = $('gJourneyPrompt');
+  if(prompt) prompt.style.display = 'block';
+}
+
+// Week offset: 0 = current week, -1 = last week, etc.
+var _gjWeekOffset  = 0;
+var _gjZoomHours   = 24;   // visible hour window (24 = full day, min=1)
+var _gjZoomStart   = 0;    // start of visible window in hours (0–23)
+
+function gRenderJourney(username, targetEl){
+  const panel = (targetEl && targetEl.nodeType) ? targetEl : $('gJourneyPanel');
+  if(!panel) return;
+  // Show/hide the prompt message
+  const prompt = $('gJourneyPrompt');
+  if(prompt) prompt.style.display = 'none';
+
+  const pal = G_PALETTE();
+
+  // All chats for this user (all time — stats use all, timeline filtered by week)
+  const allChats = (_gAllChats||[]).filter(c => {
+    if((c.createdBy||'').toLowerCase() !== username.toLowerCase()) return false;
+    const app = (c.applicationName||'').toLowerCase();
+    if(app.includes('embedding') || app.includes('expression')) return false;
+    if((c.modifiedBy||'').toLowerCase() === 'anonymous') return false;
+    return true;
+  }).sort((a,b)=>(a.creationTimeStamp||'').localeCompare(b.creationTimeStamp||''));
+
+  if(!allChats.length){
+    panel.innerHTML = `<div class="gj-empty">No chats found for <strong>${escHtml(username)}</strong></div>`;
+    return;
+  }
+
+  // ── Week window ──────────────────────────────────────────────────────────
+  function getWeekBounds(offset){
+    const now = new Date();
+    const day = now.getDay() || 7;
+    const mon = new Date(now);
+    mon.setHours(0,0,0,0);
+    mon.setDate(mon.getDate() - (day-1) + offset*7);
+    const sun = new Date(mon);
+    sun.setDate(sun.getDate()+6);
+    sun.setHours(23,59,59,999);
+    return { mon, sun };
+  }
+  const { mon: wStart, sun: wEnd } = getWeekBounds(_gjWeekOffset);
+
+  const weekChats = allChats.filter(c => {
+    const t = new Date(c.creationTimeStamp||'').getTime();
+    return t >= wStart.getTime() && t <= wEnd.getTime();
+  });
+
+  // ── Stats (all-time) ────────────────────────────────────────────────────
+  let totalPrompts=0, totalDurMs=0, durCount=0;
+  allChats.forEach(c => {
+    const cached = _chatCache[c.id];
+    const msgs   = cached ? (cached.msgs||[]) : [];
+    totalPrompts += msgs.filter(m => {
+      const t=(m.type||'').toLowerCase();
+      return (t.includes('user')||t.includes('prompt')) &&
+             !['functionresult','copilotfunctionresponse'].includes(t);
+    }).length;
+    const dur = new Date(c.modifiedTimeStamp||'') - new Date(c.creationTimeStamp||'');
+    if(dur>0 && dur<86400000){ totalDurMs+=dur; durCount++; }
+  });
+  const avgDurMs  = durCount ? totalDurMs/durCount : 0;
+  const avgDurStr = avgDurMs<60000 ? Math.round(avgDurMs/1000)+'s' : Math.round(avgDurMs/60000)+'m';
+  const appCounts = {};
+  allChats.forEach(c=>{ const a=c.applicationName||'Unknown'; appCounts[a]=(appCounts[a]||0)+1; });
+  const topApp    = Object.entries(appCounts).sort((a,b)=>b[1]-a[1])[0]?.[0]||'—';
+  const firstSeen = fmtTs(allChats[0].creationTimeStamp);
+  const lastSeen  = fmtTs(allChats[allChats.length-1].modifiedTimeStamp);
+
+  // ── App color map ────────────────────────────────────────────────────────
+  const appList  = [...new Set(allChats.map(c=>c.applicationName||'Unknown'))];
+  const appColor = {};
+  appList.forEach((app,i) => appColor[app] = pal[i%pal.length]);
+
+  // ── Group week chats by date, prefill all 7 days ─────────────────────────
+  const byDate = {};
+  for(let d=0;d<7;d++){
+    const dt=new Date(wStart); dt.setDate(dt.getDate()+d);
+    byDate[dt.toISOString().slice(0,10)]=[];
+  }
+  weekChats.forEach(c=>{
+    const d=(c.creationTimeStamp||'').slice(0,10);
+    if(byDate[d]) byDate[d].push(c);
+  });
+  const dates = Object.keys(byDate).sort();
+
+  // Position by time-of-day (0–100% = 00:00–24:00)
+  // Position helpers — always map 0..24h → 0..100% of track
+  // Zoom is handled by making the container wider (scrollable), not by changing positions
+  function todPct(ts){
+    const d=new Date(ts||'');
+    const secs=d.getHours()*3600+d.getMinutes()*60+d.getSeconds();
+    return secs/86400*100;
+  }
+  function durTodPct(c){
+    const s=new Date(c.creationTimeStamp||'').getTime();
+    const e=new Date(c.modifiedTimeStamp||'').getTime();
+    return Math.max(0.15, (e-s)/86400000*100);
+  }
+
+  const fmtDay = d => d.toLocaleDateString(undefined,{month:'short',day:'numeric'});
+  const weekLabel = _gjWeekOffset===0 ? `This week (${fmtDay(wStart)} – ${fmtDay(wEnd)})`
+                  : _gjWeekOffset===-1 ? `Last week (${fmtDay(wStart)} – ${fmtDay(wEnd)})`
+                  : `Week of ${fmtDay(wStart)} – ${fmtDay(wEnd)}`;
+
+  // ── Build rows ────────────────────────────────────────────────────────────
+  let rowsHtml='';
+  dates.forEach(date=>{
+    const dayChats=byDate[date];
+    const dayLabel=new Date(date+'T12:00:00').toLocaleDateString('en-US',
+      {weekday:'short',month:'short',day:'numeric'});
+    let blocks='';
+    dayChats.forEach(c=>{
+      const rawLeft = todPct(c.creationTimeStamp);
+      const rawWid  = durTodPct(c);
+      const left    = Math.max(0, Math.min(99.85, rawLeft)).toFixed(2);
+      const width   = Math.max(0.15, Math.min(100-rawLeft, rawWid)).toFixed(2);
+      const col  =appColor[c.applicationName||'Unknown'];
+      const cached=_chatCache[c.id];
+      const msgCount=cached?(cached.msgs||[]).length:'?';
+      const dur=(()=>{
+        const d=new Date(c.modifiedTimeStamp||'')-new Date(c.creationTimeStamp||'');
+        if(d<=0) return '< 1s';
+        if(d<60000) return Math.round(d/1000)+'s';
+        if(d<3600000) return Math.round(d/60000)+'m';
+        return (d/3600000).toFixed(1)+'h';
+      })();
+      blocks+=`<div class="gj-block"
+        style="left:${left}%;width:${width}%;background:${col}"
+        data-id="${c.id}"
+        data-app="${escHtml(c.applicationName||'?')}"
+        data-created="${fmtTs(c.creationTimeStamp)}"
+        data-modified="${fmtTs(c.modifiedTimeStamp)}"
+        data-msgs="${msgCount}"
+        data-dur="${dur}"
+        onmouseenter="gjShowTip(event,this)"
+        onmouseleave="gjHideTip()"
+        onclick="gjJumpToChat('${c.id}')"></div>`;
+    });
+    rowsHtml+=`<div class="gj-row">
+      <div class="gj-row-label">${dayLabel}</div>
+      <div class="gj-track">${blocks}</div>
+    </div>`;
+  });
+
+  const noChatsNote = weekChats.length===0
+    ? `<div style="text-align:center;padding:20px;color:var(--text-dim);font-size:12px;font-family:var(--mono)">No activity this week</div>` : '';
+
+  const navBtnStyle='background:var(--bg3);border:1px solid var(--border2);border-radius:6px;'+
+    'color:var(--text);font-family:var(--mono);font-size:11px;padding:4px 10px;cursor:pointer';
+
+  const legendHtml=appList.map(app=>`
+    <div class="gj-legend-item">
+      <div class="gj-legend-dot" style="background:${appColor[app]}"></div>
+      <span title="${escHtml(app)}">${escHtml(gAbbrevApp(app))}</span>
+    </div>`).join('');
+
+  panel.innerHTML=`
+    <div class="gj-header">
+      <div>
+        <div class="gj-title">👤 User Journey — ${escHtml(username)}</div>
+        <div class="gj-subtitle">Each bar = one chat · x-axis = time of day · click to jump · hover for details</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="gj-close" onclick="gjOpenFullscreen(this.dataset.u)" data-u="${escHtml(username)}">⛶ Expand</button>
+        <button class="gj-close" onclick="gClearJourneyUser()">✕ Close</button>
+      </div>
+    </div>
+    <div class="gj-stats">
+      <div class="gj-stat"><div class="gjv">${allChats.length}</div><div class="gjl">Total Chats</div></div>
+      <div class="gj-stat"><div class="gjv">${totalPrompts}</div><div class="gjl">Total Prompts</div></div>
+      <div class="gj-stat"><div class="gjv">${avgDurStr}</div><div class="gjl">Avg Session</div></div>
+      <div class="gj-stat"><div class="gjv" title="${topApp}" style="font-size:13px">${gAbbrevApp(topApp)}</div><div class="gjl">Top App</div></div>
+      <div class="gj-stat"><div class="gjv" style="font-size:11px">${firstSeen}</div><div class="gjl">First Seen</div></div>
+      <div class="gj-stat"><div class="gjv" style="font-size:11px">${lastSeen}</div><div class="gjl">Last Seen</div></div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+      <div style="display:flex;gap:6px">
+        <button style="${navBtnStyle}" onclick="_gjNav(-1)">← Prev</button>
+        <button style="${navBtnStyle}${_gjWeekOffset===0?';opacity:.4;cursor:default':''}"
+          onclick="_gjNav(0)" ${_gjWeekOffset===0?'disabled':''}>Current week</button>
+        <button style="${navBtnStyle}${_gjWeekOffset>=0?';opacity:.4;cursor:default':''}"
+          onclick="_gjNav(1)" ${_gjWeekOffset>=0?'disabled':''}>Next →</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:5px;font-size:11px;font-family:var(--mono);color:var(--text-dim)">
+          <button style="${navBtnStyle}" onclick="_gjZoomIn()" title="Zoom in (narrow time window)">🔍+</button>
+          <button style="${navBtnStyle}" onclick="_gjZoomOut()" title="Zoom out (wider time window)">🔍−</button>
+          <button style="${navBtnStyle}" onclick="_gjZoomReset()" title="Reset to full day">⊙</button>
+          <span id="gjZoomLabel" style="min-width:60px;text-align:center">${_gjZoomHours<24?_gjZoomHours+'h window':'Full day'}</span>
+        </div>
+        <div style="font-size:11px;color:var(--text-mid);font-family:var(--mono)">
+        ${weekLabel} · <strong>${weekChats.length}</strong> chat${weekChats.length!==1?'s':''}
+      </div>
+    </div>
+    </div>
+    <div class=<div style=display:block">
+      <div class="gj-timeline-wrap" id="gjScrollWrap" style="overflow-x:${_gjZoomHours<24?'auto':'hidden'}">
+        <div style="min-width:${(24/_gjZoomHours*100).toFixed(0)}%">
+          <div style="display:flex">
+            <div style="flex-shrink:0;width:110px">
+              <div class="gj-axis" style="visibility:hidden;pointer-events:none;position:sticky;left:0;background:var(--bg2);z-index:3">x</div>
+            </div>
+            <div style="flex:1"><div class="gj-axis">${gjAxisLabels()}</div></div>
+          </div>
+          <div class="gj-timeline-grid">${rowsHtml}</div>
+        </div>
+      </div>
+    </div>
+    <div class="gj-legend" style="margin-top:14px">${legendHtml}</div>`;
+}
+
+// ── Journey zoom helpers ──────────────────────────────────────────────────────
+var _GJ_ZOOM_STEPS = [24,18,12,9,6,4,3,2,1];  // hours per zoom level — more steps for finer control
+
+function gjAxisLabels(){
+  // Full 24h axis labels — 12am on far left aligns with border-left of scroll area
+  return '<span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>12am</span>';
+}
+
+function _gjZoomApply(){
+  _gjZoomStart = Math.max(0, Math.min(24-_gjZoomHours, _gjZoomStart));
+  const user=$('gNavUserFilter')?$('gNavUserFilter').value:'';
+  if(!user) return;
+  const overlay=$('gjFullscreen');
+  const isFs=overlay&&overlay.classList.contains('open');
+  if(isFs){
+    const inner=$('gjFullscreenInner');
+    gRenderJourney(user,inner);
+    inner.querySelectorAll('.gj-close').forEach(btn=>{
+      if(btn.textContent.trim().includes('Expand')) btn.style.display='none';
+      else if(btn.textContent.trim().includes('Close')){ btn.onclick=gjCloseFullscreen; btn.textContent='✕ Close fullscreen'; }
+    });
+  } else {
+    gRenderJourney(user);  // always re-render main panel
+  }
+  // Scroll to zoom start — use setTimeout so DOM is fully updated
+  setTimeout(()=>{
+    // Find gjScrollWrap in the active container (main or fullscreen)
+    const container = isFs ? $('gjFullscreenInner') : $('gJourneyPanel');
+    const wrap = container ? container.querySelector('#gjScrollWrap') : $('gjScrollWrap');
+    if(wrap && _gjZoomHours < 24){
+      wrap.scrollLeft = wrap.scrollWidth * (_gjZoomStart / 24);
+    }
+  }, 50);
+}
+
+function _gjZoomIn(){
+  const i=_GJ_ZOOM_STEPS.indexOf(_gjZoomHours);
+  if(i<_GJ_ZOOM_STEPS.length-1){
+    const newH=_GJ_ZOOM_STEPS[i+1];
+    // On first zoom from full day, center on 9am (typical work start)
+    // Otherwise center on current visible midpoint
+    const center = _gjZoomHours===24 ? 11 : _gjZoomStart+_gjZoomHours/2;
+    _gjZoomHours=newH;
+    _gjZoomStart=center-newH/2;
+    _gjZoomApply();
+  }
+}
+function _gjZoomOut(){
+  const i=_GJ_ZOOM_STEPS.indexOf(_gjZoomHours);
+  if(i>0){
+    const center=_gjZoomStart+_gjZoomHours/2;
+    _gjZoomHours=_GJ_ZOOM_STEPS[i-1];
+    _gjZoomStart=center-_gjZoomHours/2;
+    _gjZoomApply();
+  }
+}
+function _gjZoomReset(){
+  _gjZoomHours=24; _gjZoomStart=0; _gjZoomApply();
+}
+
+function _gjNav(direction){
+  if(direction===0) _gjWeekOffset=0;
+  else _gjWeekOffset+=direction;
+  if(_gjWeekOffset>0) _gjWeekOffset=0;
+  _gjZoomHours=24; _gjZoomStart=0;  // reset zoom on week change
+  const user=$('gNavUserFilter')?$('gNavUserFilter').value:'';
+  if(!user) return;
+  // Re-render into whichever container is currently active
+  const overlay = $('gjFullscreen');
+  const isFs    = overlay && overlay.classList.contains('open');
+  if(isFs){
+    const inner = $('gjFullscreenInner');
+    gRenderJourney(user, inner);
+    // Re-apply fullscreen button overrides
+    inner.querySelectorAll('.gj-close').forEach(btn => {
+      if(btn.textContent.trim().includes('Expand')) btn.style.display='none';
+      else if(btn.textContent.trim().includes('Close')){ btn.onclick=gjCloseFullscreen; btn.textContent='✕ Close fullscreen'; }
+    });
+  } else {
+    gRenderJourney(user);
+  }
+}
+
+function gjShowTip(e, el){
+  const tip = $('gjTooltip');
+  if(!tip) return;
+  tip.innerHTML = `
+    <strong>${el.dataset.app}</strong><br>
+    🕐 ${el.dataset.created}<br>
+    ✏️ ${el.dataset.modified}<br>
+    ⏱ Duration: ${el.dataset.dur} &nbsp;·&nbsp; 💬 ${el.dataset.msgs} messages<br>
+    <span style="font-size:9px;opacity:.6">${el.dataset.id}</span>`;
+  tip.style.display = 'block';
+  gjMoveTip(e);
+}
+function gjMoveTip(e){
+  const tip = $('gjTooltip');
+  if(!tip || tip.style.display==='none') return;
+  const x = e.clientX + 14, y = e.clientY - 10;
+  tip.style.left = Math.min(x, window.innerWidth - tip.offsetWidth - 10) + 'px';
+  tip.style.top  = Math.min(y, window.innerHeight - tip.offsetHeight - 10) + 'px';
+}
+document.addEventListener('mousemove', gjMoveTip);
+
+function gjHideTip(){
+  const tip = $('gjTooltip'); if(tip) tip.style.display = 'none';
+}
+
+function gjJumpToChat(chatId){
+  gjHideTip();  // always hide tooltip before switching mode
+  // If fullscreen is open, close it first so the card is visible
+  const overlay = $('gjFullscreen');
+  if(overlay && overlay.classList.contains('open')) gjCloseFullscreen();
+  $('msgSearch').value = '';
+  clearGlobalSearch();
+  if(mode !== 'all') setMode('all');
+  let attempts = 0;
+  const tryJump = () => {
+    const card = document.getElementById('card-' + chatId);
+    if(card){
+      _ensureMsgsLoaded(chatId);
+      card.classList.remove('collapsed');
+      const wrap = card.querySelector('.messages-wrap');
+      if(wrap) wrap.style.maxHeight = '6000px';
+      collapsedSet.delete(chatId); collapsedSet.add('expanded:'+chatId);
+      const offset = 56 + (parseInt(getComputedStyle(document.documentElement)
+        .getPropertyValue('--toolbar-h'))||52) + 36 + 12;
+      window.scrollTo({top: card.getBoundingClientRect().top + window.scrollY - offset,
+        behavior:'smooth'});
+      card.style.outline = '2px solid var(--accent)';
+      setTimeout(()=>{ card.style.outline=''; }, 2000);
+    } else if(attempts++ < 20){ setTimeout(tryJump, 150); }
+  };
+  setTimeout(tryJump, 80);
+}
+
+function gClearJourneyUser(){
+  // Clear user filter and hide journey panel
+  if($('gNavUserFilter')) $('gNavUserFilter').value = '';
+  if($('userFilter')) $('userFilter').value = '';
+  gHideJourney();
+  renderGraphs();
+}
+
+function gjOpenFullscreen(username){
+  const overlay = $('gjFullscreen');
+  const inner   = $('gjFullscreenInner');
+  if(!overlay || !inner) return;
+
+  // Render a fresh copy of the journey into the fullscreen container
+  inner.innerHTML = '';
+  gRenderJourney(username, inner);
+
+  // Swap out the buttons inside fullscreen: hide Expand, change Close
+  inner.querySelectorAll('.gj-close').forEach(btn => {
+    if(btn.textContent.trim().includes('Expand')){
+      btn.style.display = 'none';
+    } else if(btn.textContent.trim().includes('Close')){
+      btn.onclick = gjCloseFullscreen;
+      btn.textContent = '✕ Close fullscreen';
+    }
+  });
+
+  overlay.classList.add('open');
+  document.body.style.overflow = 'hidden';
+
+  // Esc closes fullscreen
+  overlay._esc = e => { if(e.key==='Escape') gjCloseFullscreen(); };
+  document.addEventListener('keydown', overlay._esc);
+}
+
+function gjCloseFullscreen(){
+  const overlay = $('gjFullscreen');
+  if(!overlay) return;
+  overlay.classList.remove('open');
+  document.body.style.overflow = '';
+  if(overlay._esc){
+    document.removeEventListener('keydown', overlay._esc);
+    overlay._esc = null;
+  }
+  $('gjFullscreenInner').innerHTML = '';
 }
 
 function refreshGraphs(){
@@ -3079,10 +4988,11 @@ async function fetchForGraphs(){
 
       // Merge into _lastAllItems so other modes benefit too
       const freshIdSet = new Set(allChats.map(c=>c.id));
-      const keptOld    = _lastAllItems.filter(c => !freshIdSet.has(c.id));
-      _lastAllItems    = allChats.concat(keptOld).slice(0, 2000);
+      const keptOld    = _lastAllItems.filter(c => !freshIdSet.has(c.id) && isQualifiedChat(c));
+      _lastAllItems    = allChats.concat(keptOld).filter(isQualifiedChat); // qualified chats since _HISTORY_START only
 
-      // Store as the authoritative source for graphs rendering
+      // Filter to qualified chats only before storing
+      allChats   = allChats.filter(isQualifiedChat);
       _gAllChats = allChats;
       _lastFetchWasFull = true;  // graphs fetches the full list
     }
@@ -3107,7 +5017,7 @@ async function fetchForGraphs(){
           try {
             const mData = await proxyGetAll(`/genAiGateway/v1/chats/${chat.id}/messages`);
             const msgs  = mData.items || [];
-            _chatCache[chat.id] = { modifiedTimeStamp: chat.modifiedTimeStamp, msgs };
+            _chatCache[chat.id] = { modifiedTimeStamp: chat.modifiedTimeStamp, msgs, applicationName: chat.applicationName, createdBy: chat.createdBy, creationTimeStamp: chat.creationTimeStamp, name: chat.name };
           } catch(e){ /* skip on error */ }
         }));
         const done = Math.min(i+BATCH, missing.length);
@@ -3127,11 +5037,22 @@ async function fetchForGraphs(){
   }
 }
 
-const G_PALETTE = [
+// Light palette: vivid, saturated
+const G_PALETTE_LIGHT = [
+  '#2563eb','#0891b2','#059669','#d97706','#dc2626',
+  '#7c3aed','#db2777','#0d9488','#ea580c','#65a30d',
   '#3b82f6','#06b6d4','#10b981','#f59e0b','#f43f5e',
-  '#8b5cf6','#ec4899','#14b8a6','#f97316','#a3e635',
-  '#60a5fa','#34d399','#fbbf24','#fb7185','#a78bfa',
 ];
+// Dark palette: lighter, higher-contrast on dark backgrounds
+const G_PALETTE_DARK = [
+  '#60a5fa','#22d3ee','#34d399','#fbbf24','#fb7185',
+  '#a78bfa','#f472b6','#2dd4bf','#fb923c','#a3e635',
+  '#93c5fd','#67e8f9','#6ee7b7','#fde68a','#fca5a5',
+];
+function G_PALETTE(){
+  return document.documentElement.getAttribute('data-theme') === 'dark'
+    ? G_PALETTE_DARK : G_PALETTE_LIGHT;
+}
 
 // Stores raw per-word-per-app counts so the cloud can be re-filtered without re-parsing
 var _gRawWordMap = {};
@@ -3182,7 +5103,10 @@ function gBuildTopWords(filterApp){
     const count = filterApp
       ? (apps[filterApp]||0)
       : Object.values(apps).reduce((s,v)=>s+v, 0);
-    const topApp = Object.entries(apps).sort((a,b)=>b[1]-a[1])[0]?.[0]||'Unknown';
+    // When filtered, all words belong to that app; unfiltered = global top app per word
+    const topApp = filterApp
+      ? filterApp
+      : (Object.entries(apps).sort((a,b)=>b[1]-a[1])[0]?.[0]||'Unknown');
     return { word, count, topApp };
   }).filter(w => w.count > 0);
   return filtered.sort((a,b)=>b.count-a.count).slice(0,30);
@@ -3205,6 +5129,9 @@ function renderGraphs(){
 
   const byMonth={}, byApp={}, wordMap={}, byChat={};
   const _rawPromptTs=[], _rawChatTs=[];
+  // [dayIndex(0=Sun), hourIndex] counts for heatmap
+  const _heatPrompts = Array.from({length:7}, ()=>new Array(24).fill(0));
+  const _heatChats   = Array.from({length:7}, ()=>new Array(24).fill(0));
   let totalTokens = 0;  // estimated tokens: words in user prompts + copilot responses
 
   // Use _gAllChats (set by fetchForGraphs from the server) as the definitive source.
@@ -3236,7 +5163,11 @@ function renderGraphs(){
     // Count this chat in its creation month (for "Chats by Month" view)
     const chatMonth = (chat.creationTimeStamp||'').slice(0,7) || 'Unknown';
     byChat[chatMonth] = (byChat[chatMonth]||0) + 1;
-    if(chat.creationTimeStamp) _rawChatTs.push(chat.creationTimeStamp);
+    if(chat.creationTimeStamp){
+      _rawChatTs.push(chat.creationTimeStamp);
+      const _cd = new Date(chat.creationTimeStamp);
+      _heatChats[_cd.getDay()][_cd.getHours()]++;
+    }
 
     // Use _chatCache first (has messages for ALL fetched chats regardless of current mode/filter),
     // fall back to _cachedMsgsMap for any chat only in the live map
@@ -3262,7 +5193,11 @@ function renderGraphs(){
       if(!text) return;
       const month=(m.creationTimeStamp||chat.creationTimeStamp||'').slice(0,7)||'Unknown';
       byMonth[month]=(byMonth[month]||0)+1;
-      if(m.creationTimeStamp) _rawPromptTs.push(m.creationTimeStamp);
+      if(m.creationTimeStamp){
+        _rawPromptTs.push(m.creationTimeStamp);
+        const _pd = new Date(m.creationTimeStamp);
+        _heatPrompts[_pd.getDay()][_pd.getHours()]++;
+      }
       byApp[app]=(byApp[app]||0)+1;
       // Count input tokens (words in user prompt)
       totalTokens += text.split(/\s+/).filter(w=>w.length>0).length;
@@ -3303,6 +5238,10 @@ function renderGraphs(){
   // Stats — use processedChatCount which reflects exactly what was counted
   // (after user filter + embedding/expression exclusion)
   $('gStatChats').textContent=processedChatCount||'—';
+
+  // Sync statusbar badges so graphs mode shows the same totals as other modes
+  $('activeCountBadge').style.display = 'none';
+  updateChatBadges(processedChatCount);
   $('gStatPrompts').textContent=totalPrompts||'—';
   $('gStatTokens').textContent=totalTokens > 999999
     ? (totalTokens/1000000).toFixed(1)+'M'
@@ -3321,9 +5260,17 @@ function renderGraphs(){
   window._gRawPrompts = _rawPromptTs;
   window._gRawChats   = _rawChatTs;
 
+  window._gHeatPrompts = _heatPrompts;
+  window._gHeatChats   = _heatChats;
+
   gRenderBar(window._gByMonth, window._gByChat);
   gRenderDonut(sortedApps, totalPrompts);
+  gRenderHeatmap();
   gRenderCloud(topWords);
+  // Re-render journey if a user is currently selected
+  const journeyUser = $('gNavUserFilter') ? $('gNavUserFilter').value : '';
+  if(journeyUser) gRenderJourney(journeyUser);
+  else { const p=$('gJourneyPrompt'); if(p) p.style.display='block'; }
 }
 
 function gBarModeChanged(){
@@ -3428,7 +5375,7 @@ function gRenderBar(byMonth, byChat){
   bucketed.forEach(([key,count,label])=>{
     const h=max>0?Math.max(count>0?3:0,Math.round((count/max)*H)):0;
     bars+=`<div class="g-bar-col">
-      <div class="g-bar" style="height:${h}px;${count===0?'background:var(--bg3)':''}">
+      <div class="g-bar" style="height:${h}px;${count===0?'background:var(--g-bar-empty)':''}">
         <div class="g-bar-tip ${h > 100 ? 'tip-below' : 'tip-above'}">${label}: <strong>${count}</strong></div>
       </div>
       <div class="g-bar-lbl-h">${label}</div>
@@ -3436,6 +5383,167 @@ function gRenderBar(byMonth, byChat){
   });
   bars+='</div>';
   el.innerHTML=`<div style="position:relative;padding-left:38px">${yAxis}${bars}</div>`;
+}
+
+
+function gHeatmapModeChanged(){
+  gRenderHeatmap();
+}
+
+// Build week options from raw timestamps and populate the week dropdown
+function gPopulateHeatWeeks(rawTs){
+  const sel = $('gHeatmapWeek');
+  if(!sel) return;
+  const prev = sel.value;   // preserve user's current selection across re-renders
+
+  function weekKey(ts){
+    const d   = new Date(ts);
+    const day = d.getDay() || 7;
+    const mon = new Date(d);
+    mon.setHours(0,0,0,0);
+    mon.setDate(mon.getDate() - (day - 1));
+    return mon.toISOString().slice(0,10);
+  }
+  function fmtWeek(monStr){
+    const mon = new Date(monStr + 'T00:00:00');
+    const sun = new Date(mon); sun.setDate(sun.getDate() + 6);
+    const fmt = d => d.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    return `${fmt(mon)} – ${fmt(sun)}`;
+  }
+
+  const weeks = [...new Set(rawTs.map(weekKey))].sort().reverse(); // newest first
+  if(!weeks.length) return;
+
+  sel.innerHTML = '';
+  weeks.forEach((w, i) => {
+    const opt = document.createElement('option');
+    opt.value = w;
+    opt.textContent = fmtWeek(w);
+    // Keep user's previous selection if it still exists in the list;
+    // otherwise default to the most recent week (index 0)
+    if(prev && weeks.includes(prev) ? w === prev : i === 0) opt.selected = true;
+    sel.appendChild(opt);
+  });
+}
+
+function gRenderHeatmap(){
+  const el = $('gHeatmap');
+  if(!el) return;
+
+  const useChats = ($('gHeatmapMode') && $('gHeatmapMode').value === 'chats');
+  const rawTs    = useChats ? (window._gRawChats||[]) : (window._gRawPrompts||[]);
+
+  // Populate week dropdown FIRST so weekSel reads the correctly defaulted value
+  gPopulateHeatWeeks(rawTs);
+  const weekSel = $('gHeatmapWeek') ? $('gHeatmapWeek').value : '';
+
+  if(!rawTs.length){ el.innerHTML = '<div class="g-empty"><span>📅</span>No data yet</div>'; return; }
+
+  const DAYS  = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const HOURS = Array.from({length:24}, (_,i) => {
+    if(i===0)  return '12am';
+    if(i===12) return '12pm';
+    return i < 12 ? i+'am' : (i-12)+'pm';
+  });
+
+  // Build 7×24 grid, optionally filtered to one week
+  function weekKey(ts){
+    const d   = new Date(ts);
+    const day = d.getDay() || 7;
+    const mon = new Date(d);
+    mon.setHours(0,0,0,0);
+    mon.setDate(mon.getDate() - (day - 1));
+    return mon.toISOString().slice(0,10);
+  }
+
+  const grid = Array.from({length:7}, ()=>new Array(24).fill(0));
+  rawTs.forEach(ts => {
+    if(weekKey(ts) !== weekSel) return;
+    const d = new Date(ts);
+    grid[d.getDay()][d.getHours()]++;
+  });
+
+  let max = 0;
+  grid.forEach(row => row.forEach(v => { if(v > max) max = v; }));
+
+  function cellColor(v){
+    if(v === 0) return 'var(--g-bar-empty)';
+    const t = Math.sqrt(v / Math.max(max, 1));
+    // Read RGB from CSS var so it adapts to light/dark theme
+    const rgb = getComputedStyle(document.documentElement)
+                  .getPropertyValue('--g-heat-base').trim() || '37,99,235';
+    return `rgba(${rgb},${(0.15 + t * 0.85).toFixed(2)})`;
+  }
+
+  // Build grid HTML — tooltip uses data-attrs + a shared floating div to avoid clipping
+  let html = '<div class="g-heat-wrap"><div class="g-heat-grid" id="gHeatGrid">';
+
+  // Header row
+  html += '<div class="g-heat-hdr"></div>';
+  HOURS.forEach(h => { html += `<div class="g-heat-hdr">${h}</div>`; });
+
+  // Data rows
+  const metric = useChats ? 'chat' : 'prompt';
+  DAYS.forEach((day, di) => {
+    html += `<div class="g-heat-lbl">${day}</div>`;
+    for(let hr=0; hr<24; hr++){
+      const v   = grid[di][hr] || 0;
+      const lbl = `${day} ${HOURS[hr]}: ${v} ${metric}${v!==1?'s':''}`;
+      html += `<div class="g-heat-cell" style="background:${cellColor(v)}"
+        data-tip="${lbl}"
+        onmouseenter="gHeatTip(event,this)" onmouseleave="gHeatTipHide()"></div>`;
+    }
+  });
+  html += '</div>';
+
+  // Legend
+  const steps = 5;
+  let swatches = '';
+  for(let i=0; i<=steps; i++){
+    const v = Math.round((i/steps)*max);
+    swatches += `<div class="g-heat-legend-swatch" style="background:${cellColor(v)}" title="${v}"></div>`;
+  }
+  const weekLabel = $('gHeatmapWeek').selectedOptions[0]?.textContent || weekSel;
+  html += `<div class="g-heat-legend">
+    <span>Less</span>
+    <div class="g-heat-legend-bar">${swatches}</div>
+    <span>More</span>
+    <span style="margin-left:12px;opacity:.5">peak: ${max} ${metric}${max!==1?'s':''} · ${weekLabel}</span>
+  </div>`;
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+// Shared floating tooltip — avoids per-cell overflow clipping entirely
+function gHeatTip(e, cell){
+  let tip = document.getElementById('gHeatTipEl');
+  if(!tip){
+    tip = document.createElement('div');
+    tip.id = 'gHeatTipEl';
+    tip.style.cssText = 'position:fixed;z-index:9999;pointer-events:none;display:none;'
+      + 'background:var(--bg3);border:1px solid var(--border2);border-radius:6px;'
+      + 'padding:4px 10px;font-size:11px;font-family:var(--mono);color:var(--text);'
+      + 'box-shadow:0 2px 8px rgba(0,0,0,.18);white-space:nowrap';
+    document.body.appendChild(tip);
+  }
+  tip.textContent = cell.dataset.tip || '';
+  tip.style.display = 'block';
+  gHeatTipMove(e);
+  cell.addEventListener('mousemove', gHeatTipMove);
+}
+function gHeatTipMove(e){
+  const tip = document.getElementById('gHeatTipEl');
+  if(!tip) return;
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  let x = e.clientX + 12, y = e.clientY - th - 8;
+  if(x + tw > window.innerWidth  - 8) x = e.clientX - tw - 12;
+  if(y < 8) y = e.clientY + 16;
+  tip.style.left = x + 'px';
+  tip.style.top  = y + 'px';
+}
+function gHeatTipHide(){
+  const tip = document.getElementById('gHeatTipEl');
+  if(tip) tip.style.display = 'none';
 }
 
 
@@ -3458,7 +5566,7 @@ function gRenderDonut(byApp, total){
     const ix1=cx+r*Math.cos(angle),iy1=cy+r*Math.sin(angle);
     const ix2=cx+r*Math.cos(end),  iy2=cy+r*Math.sin(end);
     const lg=sweep>Math.PI?1:0;
-    const col=G_PALETTE[idx%G_PALETTE.length];
+    const col=G_PALETTE()[idx%G_PALETTE().length];
     const pct=Math.round((count/pTotal)*100);
     paths+=`<path fill="${col}" style="cursor:pointer;transition:opacity .15s" onmouseover="this.style.opacity='.75'" onmouseout="this.style.opacity='1'"
       d="M ${ix1} ${iy1} L ${x1} ${y1} A ${R} ${R} 0 ${lg} 1 ${x2} ${y2} L ${ix2} ${iy2} A ${r} ${r} 0 ${lg} 0 ${ix1} ${iy1} Z">
@@ -3467,6 +5575,7 @@ function gRenderDonut(byApp, total){
       <div class="g-legend-dot" style="background:${col}"></div>
       <div class="g-legend-name" title="${app}">${app}</div>
       <div class="g-legend-cnt">${count}</div>
+      <div class="g-legend-sep">|</div>
       <div class="g-legend-pct">${pct}%</div>
     </div>`;
     angle=end;
@@ -3484,17 +5593,16 @@ function gRenderCloud(words, filterApp){
   if(!words.length){el.innerHTML='<div class="g-empty"><span>💬</span>No word data yet</div>';return;}
   const maxC=words[0].count, minC=words[words.length-1].count, range=Math.max(maxC-minC,1);
   const appColors={};let ai=0;
-  words.forEach(w=>{if(!appColors[w.topApp])appColors[w.topApp]=G_PALETTE[ai++%G_PALETTE.length];});
+  words.forEach(w=>{if(!appColors[w.topApp])appColors[w.topApp]=G_PALETTE()[ai++%G_PALETTE().length];});
   let html='';
   words.forEach(w=>{
     const norm=(w.count-minC)/range;
     const size=Math.round(11+norm*18);
-    const opacity=(0.55+norm*0.45).toFixed(2);
+    const opacity=(0.65+norm*0.35).toFixed(2);
     const col=appColors[w.topApp];
-    html+=`<span class="g-word" style="font-size:${size}px;color:${col};opacity:${opacity};background:${col}18;border-color:${col}30">
-      ${w.word}<span style="font-size:9px;opacity:.55;margin-left:1px">${w.count}</span>
-      <span class="g-word-tip">App: ${w.topApp}</span>
-    </span>`;
+    const bgAlpha = document.documentElement.getAttribute('data-theme')==='dark' ? '22' : '18';
+    const bdAlpha = document.documentElement.getAttribute('data-theme')==='dark' ? '40' : '30';
+    html+=`<span class="g-word" style="font-size:${size}px;color:${col};opacity:${opacity};background:${col}${bgAlpha};border-color:${col}${bdAlpha}">${w.word}<span style="font-size:9px;opacity:.55;margin-left:2px">${w.count}</span><span class="g-word-tip">App: ${w.topApp}</span></span>`;
   });
   // legend
   html+=`<div class="g-cloud-legend">`;
