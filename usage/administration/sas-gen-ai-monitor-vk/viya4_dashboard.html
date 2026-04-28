@@ -1688,8 +1688,10 @@ var _lastFetchWasFull = false; // true after an ALL/History/Graphs fetch (not Ac
 // Only chats on/after this date with both applicationName and createdBy are shown.
 const _HISTORY_START = '2026-03-01T00:00:00.000Z';
 function isQualifiedChat(c){
-  if(!c || !c.applicationName || !c.createdBy || !c.modifiedBy) return false;
+  if(!c || !c.modifiedTimeStamp) return false;
   if((c.modifiedTimeStamp || '') < _HISTORY_START) return false;
+  // Require at least createdBy — filters out embedding/system chats with no user identity
+  if(!c.createdBy) return false;
   return true;
 }
 
@@ -1763,13 +1765,19 @@ async function _loadPersistedCache(){
         _cacheServerState[id] = e.modifiedTimeStamp;
         // Reconstruct a list-item with only display fields (not the msgs array).
         // Old cache entries (saved before metadata was stored) recover what they can from messages.
-        var recoveredBy  = e.createdBy;
-        var recoveredApp = e.applicationName;
+        var recoveredBy        = e.createdBy;
+        var recoveredApp       = e.applicationName;
+        var recoveredModifiedBy = e.modifiedBy;
         if(Array.isArray(e.msgs)){
           if(!recoveredBy){
             var um = e.msgs.find(function(m){ return m.createdBy && m.type !== 'copilotResponse'; })
                   || e.msgs.find(function(m){ return m.createdBy; });
             if(um) recoveredBy = um.createdBy;
+          }
+          if(!recoveredModifiedBy){
+            var mm = e.msgs.find(function(m){ return m.modifiedBy && m.type !== 'copilotResponse'; })
+                  || e.msgs.find(function(m){ return m.modifiedBy; });
+            if(mm) recoveredModifiedBy = mm.modifiedBy;
           }
           if(!recoveredApp){
             var fum = e.msgs.find(function(m){ return m.type === 'userPromptRequest'; });
@@ -1778,12 +1786,19 @@ async function _loadPersistedCache(){
               recoveredApp = (prov.analyticsProviderDetails && prov.analyticsProviderDetails.providerName)
                           || prov.serviceName || null;
             }
+            // Fallback: userRequest/userPromptRequest with no providers → SAS Landing doc query
+            if(!recoveredApp && e.msgs.find(function(m){ return m.type === 'userRequest' || m.type === 'userPromptRequest'; })){
+              recoveredApp = 'SAS Landing';
+            }
           }
         }
+        // Final fallback: null app + known user = SAS Landing chat
+        if(!recoveredApp && recoveredBy) recoveredApp = 'SAS Landing';
         // Backfill recovered metadata into _chatCache so keptOld enrichment and future saves pick it up
-        if(!e.createdBy && recoveredBy)   _chatCache[id].createdBy       = recoveredBy;
+        if(!e.createdBy && recoveredBy)        _chatCache[id].createdBy       = recoveredBy;
+        if(!e.modifiedBy && recoveredModifiedBy) _chatCache[id].modifiedBy    = recoveredModifiedBy;
         if(!e.applicationName && recoveredApp) _chatCache[id].applicationName = recoveredApp;
-        fromCache.push({ id: id, modifiedTimeStamp: e.modifiedTimeStamp, applicationName: recoveredApp, createdBy: recoveredBy, creationTimeStamp: e.creationTimeStamp, name: e.name });
+        fromCache.push({ id: id, modifiedTimeStamp: e.modifiedTimeStamp, applicationName: recoveredApp, createdBy: recoveredBy, modifiedBy: recoveredModifiedBy, creationTimeStamp: e.creationTimeStamp, name: e.name });
         loaded++;
       } else skipped++;
     });
@@ -1826,7 +1841,22 @@ async function fetchNow(){
       chatsPath += '&filter=ge(modifiedTimeStamp,"' + since + '")';
     }
     const chatsData = await proxyGetAll(chatsPath);
-    const freshItems = chatsData.items || [];
+    // Enrich API items with cached metadata for chats where the API returns null fields
+    // (e.g. SAS Landing doc queries have null applicationName/createdBy at the chat level)
+    const freshItems = (chatsData.items || []).map(function(item){
+      var ce = _chatCache[item.id];
+      var merged = (ce && !(item.applicationName && item.createdBy && item.modifiedBy))
+        ? Object.assign({}, item, {
+            applicationName: item.applicationName || ce.applicationName,
+            createdBy:       item.createdBy       || ce.createdBy,
+            modifiedBy:      item.modifiedBy      || ce.modifiedBy,
+          })
+        : item;
+      // SAS Landing fallback: null application + known user = SAS Landing chat
+      if(!merged.applicationName && merged.createdBy)
+        return Object.assign({}, merged, {applicationName: 'SAS Landing'});
+      return merged;
+    });
 
     // Merge freshItems with _lastAllItems: keep any chat that was in the grace set
     // even if the API temporarily stopped returning it (happens during copilot generation)
@@ -1938,8 +1968,21 @@ async function fetchNow(){
             const mData = await proxyGetAll(`/genAiGateway/v1/chats/${item.id}/messages`);
             const msgs  = mData.items || [];
             newMsgs[item.id] = msgs;
+            // Recover applicationName from messages if the API didn't provide one
+            let resolvedApp = item.applicationName;
+            if(!resolvedApp && msgs.length){
+              const pur = msgs.find(m=>m.type==='userPromptRequest');
+              if(pur && pur.context && Array.isArray(pur.context.providers) && pur.context.providers.length>0){
+                const prov = pur.context.providers[0];
+                resolvedApp = (prov.analyticsProviderDetails && prov.analyticsProviderDetails.providerName)||prov.serviceName||null;
+              }
+              if(!resolvedApp && msgs.find(m=>m.type==='userRequest'||m.type==='userPromptRequest'))
+                resolvedApp = 'SAS Landing';
+            }
+            // Final fallback: null app + known user = SAS Landing
+            if(!resolvedApp && (item.createdBy || item.modifiedBy)) resolvedApp = 'SAS Landing';
             // Update per-chat cache
-            _chatCache[item.id] = { modifiedTimeStamp: item.modifiedTimeStamp, msgs, applicationName: item.applicationName, createdBy: item.createdBy, creationTimeStamp: item.creationTimeStamp, name: item.name };
+            _chatCache[item.id] = { modifiedTimeStamp: item.modifiedTimeStamp, msgs, applicationName: resolvedApp, createdBy: item.createdBy, modifiedBy: item.modifiedBy, creationTimeStamp: item.creationTimeStamp, name: item.name };
           }
           catch(e){ newMsgs[item.id]=null; }
         }));
@@ -1951,11 +1994,12 @@ async function fetchNow(){
     unchanged.forEach(function(item){
       var ce = _chatCache[item.id];
       if(ce && !ce.applicationName){
-        ce.applicationName    = item.applicationName;
+        ce.applicationName    = item.applicationName || (item.createdBy ? 'SAS Landing' : null);
         ce.createdBy          = item.createdBy;
         ce.creationTimeStamp  = item.creationTimeStamp;
         ce.name               = item.name;
       }
+      if(ce && !ce.modifiedBy && item.modifiedBy) ce.modifiedBy = item.modifiedBy;
     });
 
     // ── Step 4: Build msgsMap — merge fresh fetches with cached results ───────
@@ -2169,7 +2213,7 @@ function render(chats,msgsMap,activeMins,cutoff){
       <div class="chat-header" onclick="toggleCard('${chat.id}')">
         <div class="chat-meta">
           <div class="chat-id" title="Click to copy ID &amp; filter" onclick="event.stopPropagation();copyChatId('${chat.id}')">${chat.id}</div>
-          <div class="chat-title">${chat.applicationName||'?'}</div>
+          <div class="chat-title">${chat.applicationName||'SAS Landing'}</div>
           <div class="chat-creator">by ${chat.createdBy||'?'}</div>
           <div class="chat-sub">
             <span>created ${fmtTs(chat.creationTimeStamp)}</span>
@@ -2179,7 +2223,7 @@ function render(chats,msgsMap,activeMins,cutoff){
         <div class="chat-badges">
           ${actTag}
           ${isPinned?'<span class="tag tag-pin">📌 Pinned</span>':''}
-          <span class="tag tag-blue">${chat.applicationName||'?'}</span>
+          <span class="tag tag-blue">${chat.applicationName||'SAS Landing'}</span>
           <span class="tag tag-purple">${copilot.id||'?'} ${copilot.version||''}</span>
           ${chip}
           <button class="pin-btn ${isPinned?'pinned':''}" title="${isPinned?'Unpin this chat':'Pin chat to top'}"
@@ -2543,7 +2587,7 @@ function globalSearch(term){
   </div>`;
 
   results.forEach(({chat, hits}) => {
-    const app  = escHtml(chat.applicationName||'?');
+    const app  = escHtml(chat.applicationName||'SAS Landing');
     const user = escHtml(chat.createdBy||'?');
     const ts   = chat.modifiedTimeStamp ? fmtTs(chat.modifiedTimeStamp) : '';
     const more = hits.length > 3 ? `<div class="gs-more">+${hits.length-3} more match${hits.length-3!==1?'es':''} in this chat</div>` : '';
@@ -3816,7 +3860,7 @@ function buildChatExportHtml(chatsToExport){
       +'<div style="border-bottom:1px solid '+border+';padding-bottom:14px;margin-bottom:18px">'
         +'<div style="font-size:10px;color:'+textMid+';font-family:monospace;margin-bottom:4px">'+chat.id+'</div>'
         +'<div style="font-size:16px;font-weight:700;color:'+text+';margin-bottom:6px">'
-          +(chat.applicationName||'Unknown App')+' &middot; '+(chat.createdBy||'?')
+          +(chat.applicationName||'SAS Landing')+' &middot; '+(chat.createdBy||'?')
         +'</div>'
         +'<div style="display:flex;gap:16px;font-size:11px;color:'+textMid+'">'
           +'<span>Modified: '+modTs+'</span>'
@@ -4664,7 +4708,7 @@ function gRenderJourney(username, targetEl){
       blocks+=`<div class="gj-block"
         style="left:${left}%;width:${width}%;background:${col}"
         data-id="${c.id}"
-        data-app="${escHtml(c.applicationName||'?')}"
+        data-app="${escHtml(c.applicationName||'SAS Landing')}"
         data-created="${fmtTs(c.creationTimeStamp)}"
         data-modified="${fmtTs(c.modifiedTimeStamp)}"
         data-msgs="${msgCount}"
@@ -4984,7 +5028,19 @@ async function fetchForGraphs(){
 
       // Step 1: fetch full chat list with no date filter
       const chatsData = await proxyGetAll('/genAiGateway/v1/chats?sortBy=modifiedTimeStamp:descending');
-      allChats = chatsData.items || [];
+      allChats = (chatsData.items || []).map(function(item){
+        var ce = _chatCache[item.id];
+        var merged = (ce && !(item.applicationName && item.createdBy))
+          ? Object.assign({}, item, {
+              applicationName: item.applicationName || ce.applicationName,
+              createdBy:       item.createdBy       || ce.createdBy,
+              modifiedBy:      item.modifiedBy      || ce.modifiedBy,
+            })
+          : item;
+        if(!merged.applicationName && merged.createdBy)
+          return Object.assign({}, merged, {applicationName: 'SAS Landing'});
+        return merged;
+      });
 
       // Merge into _lastAllItems so other modes benefit too
       const freshIdSet = new Set(allChats.map(c=>c.id));
@@ -5134,20 +5190,22 @@ function renderGraphs(){
   const _heatChats   = Array.from({length:7}, ()=>new Array(24).fill(0));
   let totalTokens = 0;  // estimated tokens: words in user prompts + copilot responses
 
-  // Use _gAllChats (set by fetchForGraphs from the server) as the definitive source.
-  // Fall back to _lastAllItems then _cachedChats if graphs haven't been fetched yet.
-  const allChats = (_gAllChats.length ? _gAllChats : null)
-                || (_lastAllItems.length ? _lastAllItems : null)
+  // Use _lastAllItems as the primary source — it is the most complete list (fresh API + keptOld).
+  // _gAllChats is a subset of _lastAllItems (fresh fetch only), so preferring _lastAllItems
+  // ensures the graph count matches ALL / HISTORY which also use _lastAllItems.
+  const allChats = (_lastAllItems.length ? _lastAllItems : null)
+                || (_gAllChats.length ? _gAllChats : null)
                 || _cachedChats;
 
   // Respect the user filter dropdown — empty = all users
   const userFilterVal = ($('userFilter').value||'').trim().toLowerCase();
 
-  // Total Chats: count from the same source, excluding embedding/expression and anonymous
+  // Total Chats: same exclusion rules as ALL/HISTORY — only hide embedding and anonymous.
+  // Expression chats are NOT excluded here so the count matches what ALL/HISTORY shows.
   const processedChatCount = allChats.filter(c => {
     if(userFilterVal && (c.createdBy||'').toLowerCase() !== userFilterVal) return false;
     const a = (c.applicationName||'').toLowerCase();
-    return !a.includes('embedding') && !a.includes('expression')
+    return !a.includes('embedding')
         && (c.modifiedBy||'').toLowerCase() !== 'anonymous';
   }).length;
 
@@ -5155,9 +5213,10 @@ function renderGraphs(){
     // Apply user filter if set
     if(userFilterVal && (chat.createdBy||'').toLowerCase() !== userFilterVal) return;
 
-    // Skip system/copilot-internal app types and anonymous (generating) chats
+    // Skip embedding chats (always system-only) and anonymous (mid-generation) chats.
+    // Expression chats are included — they appear in ALL/HISTORY and must match.
     const appLower = (chat.applicationName||'').toLowerCase();
-    if(appLower.includes('embedding') || appLower.includes('expression')) return;
+    if(appLower.includes('embedding')) return;
     if((chat.modifiedBy||'').toLowerCase() === 'anonymous') return;
 
     // Count this chat in its creation month (for "Chats by Month" view)

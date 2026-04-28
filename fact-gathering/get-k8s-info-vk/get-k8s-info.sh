@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.6.12'
+version='get-k8s-info v1.6.13'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -1609,7 +1609,7 @@ function captureCasLogs {
             if [[ ! ${containerStatusList[@]} =~ 'Waiting' ]]; then
                 logFinished='true'
                 for pid in ${logPid[@]}; do
-                    if [[ -d "/proc/$pid" ]]; then logFinished='false'; fi
+                    if kill -0 "$pid" 2>/dev/null; then logFinished='false'; fi
                 done
             fi
             currentTime=$(date +%s)
@@ -1633,12 +1633,12 @@ function waitForCas {
         captureCasLogsPid=$!
         # Wait a few seconds before checking the subprocess directory
         sleep 5
-        while [[ $currentTime -lt $targetTime && -d "/proc/$captureCasLogsPid" ]]; do
+        while [[ $currentTime -lt $targetTime ]] && kill -0 "$captureCasLogsPid" 2> /dev/null; do
             sleep 1
             currentTime=$(date +%s)
         done
         jobs=$(ps -o pid= --ppid $captureCasLogsPid 2> /dev/null)
-        if [[ ! -z $jobs || -d "/proc/$captureCasLogsPid" ]]; then
+        if [[ ! -z $jobs ]] || kill -0 "$captureCasLogsPid" 2> /dev/null; then
             echo "DEBUG: Killing log collector processes that were running on the background for namespace $namespace" >> $logfile
             kill $captureCasLogsPid > /dev/null 2>&1
             wait $captureCasLogsPid 2> /dev/null
@@ -1646,6 +1646,66 @@ function waitForCas {
         fi
     else
         echo "WARNING: The sas-cas-server-default-controller did not start" | tee -a $logfile
+    fi
+}
+monitorGridmon() {
+    local parentPid=$1
+    local ns=$2
+    local casPod=$3
+
+    local gridmonPid
+    local timeout=300
+
+    # Validate input
+    [[ -z "$parentPid" ]] && { echo "ERROR: monitorGridmon: missing parent PID" >> "$logfile"; return 1; }
+
+    # Wait for gridmon.sh to appear
+    while [[ -z "$gridmonPid" && $timeout -gt 0 ]]; do
+        gridmonPid=$(ps -e -o pid=,ppid=,args= \
+            | awk -v ppid="$parentPid" '$2 == ppid && $0 ~ /gridmon\.sh/ { print $1 }')
+
+        timeout=$((timeout - 1))
+        sleep 0.1
+    done
+
+    # If not found, exit
+    [[ -z "$gridmonPid" ]] && return 1
+
+    # Reset timeout for monitoring
+    timeout=30
+
+    echo "INFO: Gridmon capture started" >> "$logfile"
+    # Wait for process to finish, or kill if it takes too long
+    while kill -0 "$gridmonPid" 2>/dev/null; do
+        timeout=$((timeout - 1))
+        [[ $timeout -le 0 ]] && break
+        sleep 1
+    done
+
+    # If still alive after timeout, kill inside container first
+    if kill -0 "$gridmonPid" 2>/dev/null; then
+        echo 'WARNING: The gridmon record process timed out. Aborting gridmon capture' | tee -a "$logfile"
+        $timeoutCmd 10 "$KUBECTLCMD" -n "$ns" exec "$casPod" -c sas-cas-server -- bash <<'EOF' >> "$logfile" 2>&1
+pid=$(pgrep -f 'gridmon\.sh.*get-k8s-info_gridmon\.out')
+
+if [ -n "$pid" ]; then
+    echo "DEBUG: Killing hung gridmon process inside container (PID $pid)"
+    ps -ef | grep "$pid" | grep -v grep
+    pkill -TERM -P "$pid" 2>/dev/null || true
+    sleep 1
+    pkill -KILL -P "$pid" 2>/dev/null || true
+else
+    echo "DEBUG: No gridmon process found inside container"
+fi
+EOF
+
+        echo "WARNING: Killing hung $KUBECTLCMD exec process (PID $gridmonPid)" >> "$logfile"
+        ps -ef | grep "$gridmonPid" | grep -v grep >> "$logfile"
+        kill "$gridmonPid" 2>/dev/null
+        sleep 1
+        kill -9 "$gridmonPid" 2>/dev/null
+    else
+        echo "INFO: Gridmon capture finished successfully" >> "$logfile"
     fi
 }
 function captureGridmon() {
@@ -1659,12 +1719,16 @@ function captureGridmon() {
         casPods=($("$KUBECTLCMD" -n "$ns" get pod -l casoperator.sas.com/server="$casDeployment" -o name | cut -d '/' -f2))
         for casPod in "${casPods[@]}"; do
             echo "      - $casPod" | tee -a $logfile
+            monitorGridmon $$ "$ns" "$casPod" &
+            monitorGridmonPid=$!
             $KUBECTLCMD -n "$ns" exec -it "$casPod" -c sas-cas-server -- bash -c "timeout 10 echo 'Q' | /opt/sas/viya/home/SASFoundation/utilities/bin/gridmon.sh -record /tmp/get-k8s-info_gridmon.out" > /dev/null 2>> "$logfile"
             if [[ $? -eq 0 ]]; then
                 mkdir -p "$TEMPDIR/kubernetes/$ns/exec/$casPod"
-                $KUBECTLCMD -n "$ns" cp "$casPod:/tmp/get-k8s-info_gridmon.out" "$TEMPDIR/kubernetes/$ns/exec/$casPod/sas-cas-server_gridmon_-record.out" -c sas-cas-server >> "$logfile" 2>&1
+                $timeoutCmd 10 $KUBECTLCMD -n "$ns" cp "$casPod:/tmp/get-k8s-info_gridmon.out" "$TEMPDIR/kubernetes/$ns/exec/$casPod/sas-cas-server_gridmon_-record.out" -c sas-cas-server >> "$logfile" 2>&1
             fi
             $timeoutCmd 10 $KUBECTLCMD -n "$ns" exec "$casPod" -c sas-cas-server -- rm -f /tmp/get-k8s-info_gridmon.out /tmp/gridmon.hosts > /dev/null 2>> "$logfile"
+            kill $monitorGridmonPid > /dev/null 2>&1
+            wait $monitorGridmonPid 2> /dev/null
         done
     done
 }
@@ -2345,7 +2409,7 @@ function waitForTasks {
                 sleep $[ $waitForCasTimeout - $currentTime ]
             fi
             captureCasLogsPid=$(ps -o pid= --ppid "$waitForCasPid")
-            if [[ ! -z $captureCasLogsPid && -d /proc/$captureCasLogsPid ]]; then
+            if [[ ! -z $captureCasLogsPid ]] && kill -0 "$captureCasLogsPid" 2> /dev/null; then
                 jobs=$(ps -o pid= --ppid "$captureCasLogsPid")
                 kill $captureCasLogsPid > /dev/null 2>&1
                 wait $captureCasLogsPid 2> /dev/null
