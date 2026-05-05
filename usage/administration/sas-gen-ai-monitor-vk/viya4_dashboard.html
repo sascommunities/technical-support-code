@@ -71,6 +71,18 @@
   .cluster-chip-live.green{background:var(--green);box-shadow:0 0 5px var(--green);animation:blink 2s infinite}
 
   .toolbar{position:sticky;top:calc(56px + var(--statusbar-h, 36px));z-index:89;height:88px;display:flex;flex-direction:column;justify-content:center;overflow:hidden;padding:0 28px;border-bottom:1px solid var(--border);background:var(--bg2)}
+  .hist-date-input{background:transparent;border:none;color:var(--text);font-family:var(--mono);font-size:12px;padding:0;outline:none;cursor:pointer;color-scheme:dark;min-width:0;width:90px}
+  [data-theme=light] .hist-date-input{color-scheme:light}
+  /* When custom date range is active: filter groups become flexible and fill available space */
+  .toolbar.hist-custom #chatFilterGroup,
+  .toolbar.hist-custom #appFilterGroup,
+  .toolbar.hist-custom #searchGroup,
+  .toolbar.hist-custom .input-group:has(#userFilter){flex:1 1 auto;min-width:55px}
+  /* Inputs inside those groups grow to fill their group, no fixed width */
+  .toolbar.hist-custom #chatFilter,
+  .toolbar.hist-custom #userFilter,
+  .toolbar.hist-custom #appFilter,
+  .toolbar.hist-custom #msgSearch{flex:1 1 auto;width:auto!important;min-width:0!important}
   .toolbar-sep{width:1px;height:24px;background:var(--border);margin:0 2px;flex-shrink:0;align-self:center}
   .toolbar-row{display:flex;align-items:center;gap:8px;height:44px;flex-shrink:0;overflow:hidden}
 
@@ -82,7 +94,9 @@
   .input-group{display:flex;align-items:center;gap:6px;background:var(--bg3);border:1px solid var(--border);border-radius:7px;padding:3px 10px;flex-shrink:0}
   .input-group label{color:var(--text-dim);font-size:10px;white-space:nowrap;letter-spacing:.3px;text-transform:uppercase}
   input[type=text],input[type=number],input[type=password]{background:var(--bg3);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;padding:6px 10px;outline:none;transition:border-color .15s}
-  .input-group input[type=text],.input-group input[type=number],.input-group select{background:transparent;border:none;padding:0;font-size:12px;color:var(--text);font-family:var(--mono);outline:none;min-width:0;text-align:center}
+  .input-group input[type=text],.input-group input[type=number],.input-group input[type=date],.input-group select{background:transparent;border:none;padding:0;font-size:12px;color:var(--text);font-family:var(--mono);outline:none;min-width:0;text-align:center}
+  .input-group input[type=date]{color-scheme:dark;cursor:pointer}
+  [data-theme=light] .input-group input[type=date]{color-scheme:light}
   input:focus{border-color:var(--accent)}
   input[type=number]{width:64px}
 
@@ -132,6 +146,9 @@
   .chat-meta{flex:1;min-width:0}
   .chat-id{display:inline-block;font-size:10px;color:var(--text-dim);letter-spacing:.5px;margin-bottom:3px;cursor:pointer;transition:color .15s}
   .chat-id:hover{color:var(--accent)}
+  /* Compact mode: tighter cards, chat ID row hidden */
+  body.compact-mode .chat-header{padding:8px 14px 7px}
+  body.compact-mode .chat-id{display:none}
   .chat-title{font-family:var(--sans);font-size:14px;font-weight:700;color:var(--text);line-height:1.2}
   .chat-creator{font-size:11px;color:var(--text-mid);margin-top:2px;font-family:var(--mono)}
   .chat-sub{font-size:11px;color:var(--text-dim);margin-top:4px;display:flex;gap:12px;flex-wrap:wrap}
@@ -320,6 +337,77 @@
     font-size:10px;color:var(--text-dim);font-family:var(--mono);
     text-align:center;margin:6px 0 2px;opacity:.6
   }
+
+  /* ── Chat Comparison Modal ── */
+  #compareModal{
+    position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.5);
+    backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center
+  }
+  #compareModal.open{ display:flex }
+  .cmp-box{
+    background:var(--bg2);border:1px solid var(--border2);border-radius:16px;
+    width:min(1240px,97vw);height:88vh;display:flex;flex-direction:column;
+    box-shadow:0 16px 48px rgba(0,0,0,.3);overflow:hidden
+  }
+  .cmp-header{
+    padding:14px 20px 12px;border-bottom:1px solid var(--border);
+    display:flex;align-items:center;gap:12px;flex-shrink:0
+  }
+  .cmp-title{ font-family:var(--sans);font-weight:800;font-size:14px;color:var(--text) }
+  .cmp-hint{ font-size:11px;color:var(--text-dim);font-family:var(--mono);flex:1 }
+  .cmp-columns{ display:grid;grid-template-columns:1fr 1px 1fr;flex:1;overflow:hidden;min-height:0 }
+  .cmp-col{ display:flex;flex-direction:column;overflow:hidden;min-height:0 }
+  .cmp-divider{ background:var(--border) }
+  .cmp-col-header{
+    padding:12px 18px;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg3)
+  }
+  .cmp-col-app{ font-family:var(--sans);font-size:13px;font-weight:700;color:var(--text) }
+  .cmp-col-user{ font-size:11px;color:var(--text-mid);font-family:var(--mono);margin-top:2px }
+  .cmp-col-meta{ font-size:10px;color:var(--text-dim);font-family:var(--mono);margin-top:4px;display:flex;flex-direction:column;gap:2px }
+  .cmp-col-id{ font-size:9px;color:var(--text-dim);font-family:var(--mono);margin-top:4px;opacity:.55;letter-spacing:.3px;word-break:break-all }
+  .cmp-col-msgs{ flex:1;overflow-y:auto;min-height:0 }
+  .cmp-col-empty{ padding:40px;text-align:center;color:var(--text-dim);font-size:12px;font-family:var(--mono) }
+  .cmp-btn{
+    background:var(--bg3);border:1px solid var(--border2);border-radius:6px;
+    color:var(--text-dim);cursor:pointer;font-size:12px;padding:0;width:26px;height:26px;
+    display:inline-flex;align-items:center;justify-content:center;transition:all .15s;flex-shrink:0
+  }
+  .cmp-btn:hover{ border-color:var(--accent);color:var(--accent) }
+  .cmp-btn.active{ background:rgba(59,130,246,.15);border-color:var(--accent);color:var(--accent) }
+
+  /* ── User Deep-Dive Modal ── */
+  #userModal{position:fixed;inset:0;z-index:3100;background:rgba(0,0,0,.55);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center}
+  #userModal.open{display:flex}
+  .um-box{background:var(--bg2);border:1px solid var(--border2);border-radius:16px;width:min(860px,96vw);max-height:88vh;display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.35);overflow:hidden}
+  .um-header{padding:16px 20px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-shrink:0}
+  .um-avatar{width:38px;height:38px;border-radius:10px;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:#fff;font-family:var(--sans);flex-shrink:0;letter-spacing:-.5px}
+  .um-title{font-family:var(--sans);font-weight:800;font-size:15px;color:var(--text)}
+  .um-subtitle{font-size:10px;color:var(--text-dim);font-family:var(--mono);margin-top:1px}
+  .um-body{flex:1;overflow-y:auto;padding:20px;min-height:0;display:flex;flex-direction:column;gap:20px}
+  .um-stats{display:flex;gap:8px;flex-wrap:wrap}
+  .um-stat{background:var(--bg3);border:1px solid var(--border2);border-radius:8px;padding:10px 16px;flex:1 1 110px}
+  .um-stat-val{font-size:17px;font-weight:800;color:var(--accent);font-family:var(--sans);line-height:1.2}
+  .um-stat-val.sm{font-size:12px}
+  .um-stat-lbl{font-size:9px;color:var(--text-dim);margin-top:2px;text-transform:uppercase;letter-spacing:.5px}
+  .um-section-title{font-family:var(--sans);font-weight:700;font-size:10px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.6px;margin-bottom:10px}
+  .um-app-row{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+  .um-app-name{font-size:11px;font-family:var(--mono);color:var(--text);width:200px;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .um-app-bar-wrap{flex:1;height:8px;background:var(--bg3);border-radius:4px;overflow:hidden}
+  .um-app-bar{height:100%;border-radius:4px;background:var(--accent)}
+  .um-app-count{font-size:10px;font-family:var(--mono);color:var(--text-dim);min-width:28px;text-align:right}
+  .um-tl-outer{display:flex;flex-direction:column;gap:4px}
+  .um-tl-bars{display:flex;gap:2px;align-items:flex-end;height:72px}
+  .um-tl-bar{flex:1;min-width:3px;background:var(--accent);border-radius:2px 2px 0 0;cursor:default;transition:opacity .1s}
+  .um-tl-bar:hover{opacity:.6}
+  .um-tl-axis{display:flex;justify-content:space-between;font-size:9px;color:var(--text-dim);font-family:var(--mono)}
+  .um-recent{display:flex;flex-direction:column;gap:5px}
+  .um-recent-row{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg3);border-radius:6px;font-size:11px;font-family:var(--mono);border:1px solid var(--border)}
+  .um-recent-app{color:var(--accent);font-weight:700;font-size:9px;text-transform:uppercase;letter-spacing:.4px;flex-shrink:0;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .um-recent-name{color:var(--text-mid);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;cursor:pointer;transition:color .15s}
+  .um-recent-name:hover{color:var(--accent)}
+  .um-recent-ts{color:var(--text-dim);font-size:10px;flex-shrink:0}
+  .um-user-link{cursor:pointer;border-bottom:1px dashed var(--text-dim);transition:color .15s,border-color .15s}
+  .um-user-link:hover{color:var(--accent);border-bottom-color:var(--accent)}
 
   /* ── User Journey View ── */
   #gJourneyPanel{ margin-top:20px }
@@ -913,13 +1001,19 @@
     </div>
     <div class="input-group" id="historyDaysGroup" style="display:none">
       <label>period</label>
-      <select id="historyDays" onchange="applyHistoryFilter()">
+      <select id="historyDays" onchange="onHistoryPeriodChange()">
         <option value="3">Last 3 days</option>
         <option value="7" selected>Last 7 days</option>
         <option value="15">Last 15 days</option>
         <option value="30">Last 30 days</option>
         <option value="0">All time</option>
+        <option value="custom">Custom…</option>
       </select>
+      <span id="historyCustomInline" style="display:none;align-items:center;gap:4px">
+        <input type="date" id="historyFrom" class="hist-date-input" onchange="applyHistoryFilter()">
+        <span style="color:var(--text-dim);font-size:10px">–</span>
+        <input type="date" id="historyTo"   class="hist-date-input" onchange="applyHistoryFilter()">
+      </span>
     </div>
     <div class="input-group" id="chatFilterGroup">
       <label>chat</label>
@@ -957,6 +1051,8 @@
       <button class="btn btn-ghost" onclick="collapseAll()">⊟ Collapse All</button>
       <button class="btn btn-ghost" onclick="exportChatListCSV()" title="Export current chat list as CSV">⬇ CSV</button>
     </div>
+    <div class="toolbar-sep"></div>
+    <button class="btn btn-ghost" id="compactBtn" onclick="toggleCompact()" title="Toggle compact card view">⊟ Compact</button>
   </div>
 </div>
 
@@ -1124,6 +1220,37 @@
       <div class="replay-progress"><div class="replay-progress-bar" id="replayBar"></div></div>
       <span class="replay-counter" id="replayCounter">0 / 0</span>
     </div>
+  </div>
+</div>
+
+<!-- Chat Comparison Modal -->
+<div id="compareModal">
+  <div class="cmp-box">
+    <div class="cmp-header">
+      <span class="cmp-title">⇔ Chat Comparison</span>
+      <span class="cmp-hint" id="cmpHint"></span>
+      <button class="replay-btn ghost" onclick="closeComparison()" style="padding:4px 10px">&times;</button>
+    </div>
+    <div class="cmp-columns">
+      <div class="cmp-col" id="cmpColA"></div>
+      <div class="cmp-divider"></div>
+      <div class="cmp-col" id="cmpColB"></div>
+    </div>
+  </div>
+</div>
+
+<!-- User Deep-Dive Modal -->
+<div id="userModal">
+  <div class="um-box">
+    <div class="um-header">
+      <div class="um-avatar" id="userModalAvatar">?</div>
+      <div>
+        <div class="um-title" id="userModalTitle"></div>
+        <div class="um-subtitle">User activity summary</div>
+      </div>
+      <button class="replay-btn ghost" onclick="closeUserPanel()" style="margin-left:auto;padding:4px 12px;font-size:16px">&times;</button>
+    </div>
+    <div class="um-body" id="userModalBody"></div>
   </div>
 </div>
 
@@ -1327,6 +1454,8 @@ document.addEventListener('keydown',function(e){
       }
       if($('savedPanel').classList.contains('open')){ toggleSavedPanel(); e.preventDefault(); return; }
       if($('configPanel').classList.contains('open')){ toggleConfig();    e.preventDefault(); return; }
+      if($('userModal').classList.contains('open')){ closeUserPanel(); e.preventDefault(); return; }
+      if($('compareModal').classList.contains('open')){ closeComparison();  e.preventDefault(); return; }
       if($('replayModal').classList.contains('open')){ closeReplay();     e.preventDefault(); return; }
     }
     return;
@@ -1373,6 +1502,8 @@ document.addEventListener('keydown',function(e){
         $('msgSearch').value = ''; clearGlobalSearch(); applyClientFilters();
         e.preventDefault(); break;
       }
+      if($('userModal').classList.contains('open')){ closeUserPanel(); e.preventDefault(); break; }
+      if($('compareModal').classList.contains('open')){ closeComparison(); e.preventDefault(); break; }
       if($('replayModal').classList.contains('open')){ closeReplay(); e.preventDefault(); break; }
       if($('savedPanel').classList.contains('open')){ toggleSavedPanel(); e.preventDefault(); break; }
       if($('configPanel').classList.contains('open')){ toggleConfig();    e.preventDefault(); break; }
@@ -1526,6 +1657,8 @@ function setMode(m){
     stopLive(); $('liveBtn').style.display='none';
     // Always reset to Last 7 days when entering History tab
     $('historyDays').value = '7';
+    $('historyCustomInline').style.display = 'none';
+    document.querySelector('.toolbar').classList.remove('hist-custom');
   }
   else { $('liveBtn').style.display=''; if(!isLive) startLive(); }
   setTimeout(updateStickyOffsets, 50);
@@ -1557,16 +1690,21 @@ function setMode(m){
     const activeMins = parseInt($('activeMinutes').value)||10;
     const cutoff     = new Date(Date.now()-activeMins*60*1000);
     const allActive  = fullItems.filter(i=>new Date(i.modifiedTimeStamp)>=cutoff && isVisibleChat(i));
-    const histDays   = m==='history' ? parseInt($('historyDays').value) : 0;
-    const histCutoff = m==='history' && histDays>0 ? new Date(Date.now()-histDays*24*60*60*1000) : null;
+    const _hRange    = m==='history' ? _getHistoryCutoff() : {from:null,to:null};
     const displayed  = m==='active' ? allActive
-                     : histCutoff   ? fullItems.filter(c=>
-                         new Date(c.modifiedTimeStamp)>=histCutoff || loadPinned().has(c.id))
+                     : m==='history' && (_hRange.from||_hRange.to)
+                       ? fullItems.filter(c=>{
+                           if(loadPinned().has(c.id)) return true;
+                           const ts=new Date(c.modifiedTimeStamp);
+                           if(_hRange.from && ts<_hRange.from) return false;
+                           if(_hRange.to   && ts>_hRange.to)   return false;
+                           return true;
+                         })
                      : fullItems;
     const msgsMap = _msgsFromCache(displayed);
     render(displayed, msgsMap, activeMins, cutoff);
-    populateAppDropdown(displayed);
-    populateUserDropdown(displayed, msgsMap);
+    populateAppDropdown(m === 'history' ? fullItems : displayed);
+    populateUserDropdown(m === 'history' ? fullItems : displayed, msgsMap);
     applyClientFilters();
     $('activeCountBadge').textContent=`${allActive.length} active`;
     $('activeCountBadge').style.display=allActive.length?'':'none';
@@ -1580,20 +1718,67 @@ function setMode(m){
 }
 
 // ── History period filter ─────────────────────────────────────────────────────
+// Returns {from, to} Date objects (null = no bound) based on current dropdown + custom inputs.
+function _getHistoryCutoff(){
+  const val = $('historyDays').value;
+  if(val === 'custom'){
+    const fv = $('historyFrom').value;
+    const tv = $('historyTo').value;
+    return {
+      from: fv ? new Date(fv + 'T00:00:00') : null,
+      to:   tv ? new Date(tv + 'T23:59:59') : null
+    };
+  }
+  const days = parseInt(val);
+  return {
+    from: days > 0 ? new Date(Date.now() - days*24*60*60*1000) : null,
+    to:   null
+  };
+}
+
+function onHistoryPeriodChange(){
+  const isCustom = $('historyDays').value === 'custom';
+  $('historyCustomInline').style.display = isCustom ? 'inline-flex' : 'none';
+  document.querySelector('.toolbar').classList.toggle('hist-custom', isCustom);
+  if(isCustom){
+    // Pre-fill sensible defaults: last 7 days
+    if(!$('historyFrom').value){
+      const d = new Date(Date.now() - 7*24*60*60*1000);
+      $('historyFrom').value = d.toISOString().slice(0,10);
+    }
+    if(!$('historyTo').value){
+      $('historyTo').value = new Date().toISOString().slice(0,10);
+    }
+  }
+  applyHistoryFilter();
+}
+
 function applyHistoryFilter(){
   if(mode !== 'history') return;
-  if(!_cachedChats.length || !Object.keys(_cachedMsgsMap).length) return;
-  const days     = parseInt($('historyDays').value);
-  const cutoff   = days > 0 ? new Date(Date.now() - days*24*60*60*1000) : null;
-  const pins     = loadPinned();
-  const displayed = cutoff
-    ? _cachedChats.filter(c => new Date(c.modifiedTimeStamp) >= cutoff || pins.has(c.id))
-    : _cachedChats;
+  // Use _lastAllItems as the source — same as ALL mode — so "All time" counts match.
+  // Fall back to _cachedChats if _lastAllItems hasn't been populated yet.
+  const source = _lastAllItems.length ? _lastAllItems : _cachedChats;
+  if(!source.length) return;
+  const { from, to } = _getHistoryCutoff();
+  const pins = loadPinned();
+  const displayed = source.filter(c => {
+    if(pins.has(c.id)) return true;
+    const ts = new Date(c.modifiedTimeStamp);
+    if(from && ts < from) return false;
+    if(to   && ts > to)   return false;
+    return true;
+  });
+  // Build msgsMap from _chatCache (covers all accumulated chats, not just the last fetch)
+  const msgsMap = {};
+  displayed.forEach(c => { msgsMap[c.id] = _chatCache[c.id] ? _chatCache[c.id].msgs : (_cachedMsgsMap[c.id] != null ? _cachedMsgsMap[c.id] : null); });
   const activeMins = parseInt($('activeMinutes').value)||10;
   const activeCutoff = new Date(Date.now()-activeMins*60*1000);
-  render(displayed, _cachedMsgsMap, activeMins, activeCutoff);
-  populateAppDropdown(displayed);
-  populateUserDropdown(displayed, _cachedMsgsMap);
+  render(displayed, msgsMap, activeMins, activeCutoff);
+  // Populate dropdowns from the FULL source list so apps/users outside the current
+  // date range still appear as filter options (the date filter hides their cards,
+  // but the user may want to pick the app first and then adjust the period).
+  populateAppDropdown(source);
+  populateUserDropdown(source, msgsMap);
   applyClientFilters();
 }
 
@@ -1934,11 +2119,16 @@ async function fetchNow(){
       (_activeGraceSet[i.id] || 0) >= _graceFloor
     ));
 
-    const histDaysFetch = mode==='history' ? parseInt($('historyDays').value) : 0;
-    const histCutoffFetch = mode==='history' && histDaysFetch>0 ? new Date(Date.now()-histDaysFetch*24*60*60*1000) : null;
+    const _hRangeFetch = mode==='history' ? _getHistoryCutoff() : {from:null,to:null};
     let displayed = mode==='active' ? allActive
-                  : histCutoffFetch ? items.filter(c=>
-                      new Date(c.modifiedTimeStamp)>=histCutoffFetch || loadPinned().has(c.id))
+                  : mode==='history' && (_hRangeFetch.from||_hRangeFetch.to)
+                    ? items.filter(c=>{
+                        if(loadPinned().has(c.id)) return true;
+                        const ts=new Date(c.modifiedTimeStamp);
+                        if(_hRangeFetch.from && ts<_hRangeFetch.from) return false;
+                        if(_hRangeFetch.to   && ts>_hRangeFetch.to)   return false;
+                        return true;
+                      })
                   : items;
 
     // ── Step 2: Determine which chats actually need message re-fetching ───────
@@ -2078,8 +2268,8 @@ async function fetchNow(){
       if(allActive.length > 0) _lastRenderedIds = activeIds;
 
       render(displayed, msgsMap, activeMins, cutoff);
-      populateAppDropdown(displayed);
-      populateUserDropdown(displayed, msgsMap);
+      populateAppDropdown(mode === 'history' ? items : displayed);
+      populateUserDropdown(mode === 'history' ? items : displayed, msgsMap);
       applyClientFilters();
       if(hashChanged && !isFirstLoad) toast(`↺ Updated — ${displayed.length} chat${displayed.length!==1?'s':''}`);
     }
@@ -2214,7 +2404,7 @@ function render(chats,msgsMap,activeMins,cutoff){
         <div class="chat-meta">
           <div class="chat-id" title="Click to copy ID &amp; filter" onclick="event.stopPropagation();copyChatId('${chat.id}')">${chat.id}</div>
           <div class="chat-title">${chat.applicationName||'SAS Landing'}</div>
-          <div class="chat-creator">by ${chat.createdBy||'?'}</div>
+          <div class="chat-creator">by <span class="um-user-link" onclick="event.stopPropagation();openUserPanel('${escSavedAttr(chat.createdBy||'')}')">${escHtml(chat.createdBy||'?')}</span></div>
           <div class="chat-sub">
             <span>created ${fmtTs(chat.creationTimeStamp)}</span>
             <span>modified ${fmtTs(chat.modifiedTimeStamp)}</span>
@@ -2230,6 +2420,7 @@ function render(chats,msgsMap,activeMins,cutoff){
             onclick="event.stopPropagation();togglePinChat('${chat.id}')">📌</button>
           <button class="card-export-btn" title="Replay this conversation" onclick="event.stopPropagation();openReplay('${chat.id}')">▶</button>
           <button class="card-export-btn" title="Export this chat as HTML" onclick="event.stopPropagation();exportChatById('${chat.id}')">⬇</button>
+          <button class="cmp-btn${_compareSlotA===chat.id?' active':''}" title="Compare this chat (click ⇔ on two chats to open side-by-side)" onclick="event.stopPropagation();selectForCompare('${chat.id}')">⇔</button>
           <button class="note-btn ${_hasNote(chat.id)?'has-note':''}" title="${_hasNote(chat.id)?'Edit note':'Add note'}"
             onclick="event.stopPropagation();toggleNotePanel('${chat.id}')">📝</button>
           <span class="chevron">▾</span>
@@ -2407,11 +2598,6 @@ function toggleCard(id){
   } else {
     collapsedSet.delete(id);
     collapsedSet.add('expanded:'+id);
-    // If expanding a pinned chat in History mode, switch to All so its full context is visible
-    if(mode === 'history' && card.classList.contains('is-pinned')){
-      setMode('all');
-      toast('📌 Switched to All mode — pinned chat shown in full context');
-    }
   }
 }
 function expandAll(){
@@ -2598,7 +2784,7 @@ function globalSearch(term){
     html += `<div class="gs-card" onclick="globalSearchJump('${chat.id}')">
       <div class="gs-card-meta">
         <span class="gs-app">${app}</span>
-        <span class="gs-user">👤 ${user}</span>
+        <span class="gs-user">👤 <span class="um-user-link" onclick="event.stopPropagation();openUserPanel('${escSavedAttr(chat.createdBy||'')}')">${user}</span></span>
         <span class="gs-ts">${ts}</span>
       </div>
       ${snips}${more}
@@ -2999,6 +3185,8 @@ var _replayTimer   = null; // setTimeout handle
 var _replayPaused  = false;
 var _replayChatId  = null;
 
+var _compareSlotA  = null; // chatId of the first chat picked for side-by-side comparison
+
 function openReplay(chatId){
   // Ensure messages are loaded
   _ensureMsgsLoaded(chatId);
@@ -3125,12 +3313,214 @@ function closeReplay(){
   _replayChatId = null;
 }
 
+// ── Chat Comparison ──────────────────────────────────────────────────────────
+function selectForCompare(chatId){
+  if(_compareSlotA === chatId){
+    _compareSlotA = null;
+    _syncCompareBtns();
+    toast('Compare selection cleared');
+    return;
+  }
+  if(_compareSlotA === null){
+    _compareSlotA = chatId;
+    _syncCompareBtns();
+    toast('Chat A selected — click ⇔ on a second chat to compare');
+    return;
+  }
+  // Second pick — open the modal
+  const a = _compareSlotA, b = chatId;
+  _compareSlotA = null;
+  _syncCompareBtns();
+  openComparison(a, b);
+}
+
+function _syncCompareBtns(){
+  document.querySelectorAll('.cmp-btn').forEach(function(btn){
+    const card = btn.closest('.chat-card');
+    const id   = card ? card.id.replace('card-','') : null;
+    btn.classList.toggle('active', !!id && id === _compareSlotA);
+  });
+}
+
+function openComparison(chatIdA, chatIdB){
+  const allItems = _lastAllItems.length ? _lastAllItems : _cachedChats;
+  const chatA = allItems.find(function(c){ return c.id === chatIdA; });
+  const chatB = allItems.find(function(c){ return c.id === chatIdB; });
+  if(!chatA || !chatB){ toast('Chat not found — try Fetch first'); return; }
+
+  function getMsgs(id){
+    var c = _chatCache[id];
+    if(c && Array.isArray(c.msgs)) return c.msgs;
+    return (_cachedMsgsMap && _cachedMsgsMap[id]) || [];
+  }
+
+  function buildColHtml(chat, msgs){
+    var sorted = msgs
+      .filter(function(m){ return !HIDDEN_MSG_TYPES.has(m.type) && !HIDDEN_MSG_TYPES.has((m.type||'').toLowerCase()); })
+      .sort(function(a,b){ return (a.creationTimeStamp||'').localeCompare(b.creationTimeStamp||''); });
+    var userCount = sorted.filter(function(m){ var t=(m.type||'').toLowerCase(); return t.includes('user')||t.includes('prompt'); }).length;
+    var botCount  = sorted.filter(function(m){ return (m.type||'').toLowerCase().startsWith('copilot'); }).length;
+    var msgsHtml  = sorted.length
+      ? sorted.map(function(m){ return renderMessage(m); }).join('')
+      : '<div class="cmp-col-empty">No messages cached — try Fetch first</div>';
+    return ''
+      + '<div class="cmp-col-header">'
+      +   '<div class="cmp-col-app">'  + escHtml(chat.applicationName||'SAS Landing') + '</div>'
+      +   '<div class="cmp-col-user">👤 <span class="um-user-link" onclick="closeComparison();openUserPanel(\'' + escSavedAttr(chat.createdBy||'') + '\')">' + escHtml(chat.createdBy||'?') + '</span></div>'
+      +   '<div class="cmp-col-meta">'
+      +     '<span>Created ' + fmtTs(chat.creationTimeStamp) + '</span>'
+      +     '<span>Modified ' + fmtTs(chat.modifiedTimeStamp) + '</span>'
+      +     '<span>' + userCount + ' prompt' + (userCount!==1?'s':'') + ' · ' + botCount + ' response' + (botCount!==1?'s':'') + '</span>'
+      +   '</div>'
+      +   '<div class="cmp-col-id">' + escHtml(chat.id) + '</div>'
+      + '</div>'
+      + '<div class="cmp-col-msgs">' + msgsHtml + '</div>';
+  }
+
+  $('cmpColA').innerHTML = buildColHtml(chatA, getMsgs(chatIdA));
+  $('cmpColB').innerHTML = buildColHtml(chatB, getMsgs(chatIdB));
+  $('cmpHint').textContent = escHtml(chatA.applicationName||'Chat A') + '  vs  ' + escHtml(chatB.applicationName||'Chat B');
+  $('compareModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeComparison(){
+  $('compareModal').classList.remove('open');
+  document.body.style.overflow = '';
+  _compareSlotA = null;
+  _syncCompareBtns();
+}
+
+// ── User Deep-Dive Panel ────────────────────────────────────────────────────
+
+function openUserPanel(username){
+  if(!username) return;
+  const source = _lastAllItems.length ? _lastAllItems : _cachedChats;
+  const userChats = source.filter(c => (c.createdBy||'').toLowerCase() === username.toLowerCase());
+  if(!userChats.length){ toast('No chats found for ' + username); return; }
+
+  // Sort newest-first for recent list
+  const sorted = [...userChats].sort((a,b)=>(b.modifiedTimeStamp||'')>(a.modifiedTimeStamp||'')?1:-1);
+
+  // Stats
+  let totalPrompts = 0;
+  sorted.forEach(c=>{
+    const msgs = (_chatCache[c.id]||{}).msgs||[];
+    totalPrompts += msgs.filter(m=>{
+      const t=(m.type||'').toLowerCase();
+      return (t.includes('user')||t.includes('prompt')) && !['functionresult','copilotfunctionresponse'].includes(t);
+    }).length;
+  });
+
+  const appCounts = {};
+  sorted.forEach(c=>{ const a=c.applicationName||'Unknown'; appCounts[a]=(appCounts[a]||0)+1; });
+  const appList = Object.entries(appCounts).sort((a,b)=>b[1]-a[1]);
+
+  let totalDurMs=0, durCount=0;
+  sorted.forEach(c=>{
+    const dur=new Date(c.modifiedTimeStamp||'')-new Date(c.creationTimeStamp||'');
+    if(dur>0&&dur<86400000){ totalDurMs+=dur; durCount++; }
+  });
+  const avgDurMs  = durCount ? totalDurMs/durCount : 0;
+  const avgDurStr = avgDurMs<60000 ? Math.round(avgDurMs/1000)+'s' : Math.round(avgDurMs/60000)+'m';
+
+  const byCreation = [...sorted].sort((a,b)=>(a.creationTimeStamp||'').localeCompare(b.creationTimeStamp||''));
+  const firstSeen  = fmtTs(byCreation[0]?.creationTimeStamp||'');
+  const lastSeen   = fmtTs(sorted[0]?.modifiedTimeStamp||'');
+
+  // Activity timeline — last 30 days
+  const DAYS = 30;
+  const now  = new Date();
+  const dayCounts = {};
+  const dayKeys   = [];
+  for(let i=DAYS-1;i>=0;i--){
+    const d=new Date(now); d.setDate(d.getDate()-i);
+    const k=d.toISOString().slice(0,10);
+    dayCounts[k]=0; dayKeys.push(k);
+  }
+  sorted.forEach(c=>{ const d=(c.modifiedTimeStamp||'').slice(0,10); if(dayCounts.hasOwnProperty(d)) dayCounts[d]++; });
+  const dayCnts = dayKeys.map(k=>dayCounts[k]);
+  const maxCnt  = Math.max(...dayCnts, 1);
+
+  // Build HTML
+  const initials = username.slice(0,2).toUpperCase();
+  const maxApp   = appList[0]?.[1]||1;
+
+  const statsHtml = `
+    <div class="um-stat"><div class="um-stat-val">${sorted.length}</div><div class="um-stat-lbl">Total Chats</div></div>
+    <div class="um-stat"><div class="um-stat-val">${totalPrompts||'—'}</div><div class="um-stat-lbl">Prompts Sent</div></div>
+    <div class="um-stat"><div class="um-stat-val">${appList.length}</div><div class="um-stat-lbl">Apps Used</div></div>
+    <div class="um-stat"><div class="um-stat-val">${durCount?avgDurStr:'—'}</div><div class="um-stat-lbl">Avg Duration</div></div>
+    <div class="um-stat"><div class="um-stat-val sm">${firstSeen}</div><div class="um-stat-lbl">First Seen</div></div>
+    <div class="um-stat"><div class="um-stat-val sm">${lastSeen}</div><div class="um-stat-lbl">Last Active</div></div>`;
+
+  const appsHtml = appList.slice(0,12).map(([app,cnt])=>`
+    <div class="um-app-row">
+      <div class="um-app-name" title="${escHtml(app)}">${escHtml(app)}</div>
+      <div class="um-app-bar-wrap"><div class="um-app-bar" style="width:${Math.round(cnt/maxApp*100)}%"></div></div>
+      <div class="um-app-count">${cnt}</div>
+    </div>`).join('');
+
+  const tlBars = dayCnts.map((cnt,i)=>`<div class="um-tl-bar" style="height:${cnt?Math.max(Math.round(cnt/maxCnt*100),4):1}%;opacity:${cnt?'.8':'.12'}" title="${dayKeys[i]}: ${cnt} chat${cnt!==1?'s':''}"></div>`).join('');
+  const tlAxis = `<span>${dayKeys[0].slice(5)}</span><span>${dayKeys[14].slice(5)}</span><span>${dayKeys[29].slice(5)}</span>`;
+
+  const recentHtml = sorted.slice(0,8).map(c=>`
+    <div class="um-recent-row">
+      <span class="um-recent-app" title="${escHtml(c.applicationName||'')}">${escHtml((c.applicationName||'SAS Landing').slice(0,26))}</span>
+      <span class="um-recent-name" title="Click to copy ID" onclick="const el=this,orig=el.textContent;navigator.clipboard.writeText('${c.id}').then(()=>{el.textContent='✓ Copied!';el.style.color='var(--green)';setTimeout(()=>{el.textContent=orig;el.style.color=''},1400)});event.stopPropagation()">${escHtml(c.name||c.id)}</span>
+      <span class="um-recent-ts">${fmtTs(c.modifiedTimeStamp)}</span>
+    </div>`).join('');
+
+  $('userModalAvatar').textContent = initials;
+  $('userModalTitle').textContent  = username;
+  $('userModalBody').innerHTML = `
+    <div class="um-stats">${statsHtml}</div>
+    <div><div class="um-section-title">Apps Used</div>${appsHtml||'<div style="color:var(--text-dim);font-size:11px">No app data</div>'}</div>
+    <div>
+      <div class="um-section-title">Activity — Last 30 Days</div>
+      <div class="um-tl-outer"><div class="um-tl-bars">${tlBars}</div><div class="um-tl-axis">${tlAxis}</div></div>
+    </div>
+    <div><div class="um-section-title">Recent Chats</div><div class="um-recent">${recentHtml||'<div style="color:var(--text-dim);font-size:11px">No chats</div>'}</div></div>`;
+
+  $('userModal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeUserPanel(){
+  $('userModal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+function _jumpToChat(chatId){
+  const allItems = _lastAllItems.length ? _lastAllItems : _cachedChats;
+  const chat = allItems.find(c=>c.id===chatId);
+  if(!chat){ toast('Chat not in cache'); return; }
+  const activeMins = parseInt($('activeMinutes').value)||10;
+  const isActive   = new Date(chat.modifiedTimeStamp)>=new Date(Date.now()-activeMins*60*1000);
+  const targetMode = isActive ? 'active' : 'all';
+  if(mode!==targetMode) setMode(targetMode);
+  let attempts=0;
+  const tryJump=()=>{
+    const card=document.querySelector(`.chat-card[data-id="${chatId}"]`);
+    if(card){ card.scrollIntoView({behavior:'smooth',block:'center'}); return; }
+    if(++attempts<20) setTimeout(tryJump,100);
+  };
+  setTimeout(tryJump,80);
+}
+
 function toggleTheme(){
   const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
   const next = isDark ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', next);
   $('themeBtn').textContent = next === 'light' ? '🌙' : '☀️';
   try{ localStorage.setItem('viya4-theme', next); } catch(e){}
+}
+
+function toggleCompact(){
+  const on = document.body.classList.toggle('compact-mode');
+  const btn = $('compactBtn');
+  if(btn) btn.classList.toggle('active', on);
+  try{ localStorage.setItem('viya4-compact', on ? '1' : '0'); } catch(e){}
 }
 
 function disconnect(){
@@ -4282,6 +4672,14 @@ try{
   $('themeBtn').textContent = _savedTheme === 'light' ? '☀️' : '🌙';
 } catch(e){ document.documentElement.setAttribute('data-theme','light'); }
 
+// Compact mode
+try{
+  if(localStorage.getItem('viya4-compact') === '1'){
+    document.body.classList.add('compact-mode');
+    var _cb = $('compactBtn'); if(_cb) _cb.classList.add('active');
+  }
+} catch(e){}
+
 // Show login, render profile list
 $('loginScreen').style.display = 'flex';
 $('appShell').style.display    = 'none';
@@ -4293,7 +4691,7 @@ updateSavedBadge();
 // IDs to hide in graphs mode (all toolbar controls except mode tabs + user filter)
 const GRAPHS_HIDE = ['activeMinutesGroup','historyDaysGroup','chatFilterGroup',
   'appFilterGroup','searchGroup','fetchBtn','liveBtn','clearFiltersBtn',
-  'sortGroup','expandCollapseGroup'];
+  'sortGroup','expandCollapseGroup','compactBtn'];
 
 function setGraphsToolbar(isGraphs){
   GRAPHS_HIDE.forEach(id => {

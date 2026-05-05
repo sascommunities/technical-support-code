@@ -42,11 +42,13 @@ python --version
 # or
 python3 --version
 ```
-#### Get the code
+### Get the code
 
 ```shell
-git clone <repository-url>
-cd viya-genai-monitor
+git clone --no-checkout --depth 1 --filter=blob:none https://github.com/sascommunities/technical-support-code.git .
+git sparse-checkout init --no-cone
+git sparse-checkout set /usage/administration/sas-gen-ai-monitor-vk
+git checkout
 ```
 
 ### Windows
@@ -133,7 +135,7 @@ Import is always a **safe merge** — existing profiles and favorites are never 
 |---|---|
 | **● Active** | Chats modified within the active window (default: last 10 minutes). In Active mode, you can adjust the window size to widen or narrow the time range. |
 | **◎ All** | Every chat from the API |
-| **📋 History** | Manual fetch only—polling is paused. In History mode, use the period dropdown to filter chats by date (Last 3 / 7 / 15 / 30 days, or All time), with instant re-filtering from cache and no additional network requests. |
+| **📋 History** | Manual fetch only — polling is paused. Filter chats by date using the period dropdown (Last 3 / 7 / 15 / 30 days, All time, or **Custom…** for a precise from/to date range). Results re-filter instantly from cache with no additional network requests. |
 | **📊 Graphs** | Analytics view — see the [Graphs](#graphs) section below. |
 
 ## Filters
@@ -144,18 +146,28 @@ All filters combine with each other. Use the **✕ Clear** button to reset all a
 |---|---|
 | **Chat ID** | Type or paste any part of a chat UUID — partial matches are supported and results update instantly. Click any chat UUID in a card header to copy it to the clipboard. |
 | **User** | Filter to one user's chats (populated automatically from live data) |
-| **App** | Filter by application, e.g. `SAS Visual Analytics`, `SAS Landing` |
+| **App** | Filter by application, e.g. `SAS Visual Analytics`, `SAS Landing`. In History mode the app list always shows every app seen across all time, regardless of the active date range. |
 | **Search** | Full-text search across all message content — highlights matches, auto-expands cards, shows match count with next/previous navigation |
 
 ## Chat Cards
 
 Cards are collapsed by default and can be expanded individually from the header or globally using Expand All / Collapse All.
 
-The header shows the **application name** as the primary title, the **creator** (`by username`) on the secondary line, followed by creation and modification timestamps. The right side displays the status badge (● ACTIVE / ○ idle), message count chip, and action buttons (📌 pin, ▶ replay, ⬇ export, 📝 note).
+The header shows the **application name** as the primary title, the **creator** (`by username`) on the secondary line, followed by creation and modification timestamps. The right side displays the status badge (● ACTIVE / ○ idle), message count chip, and action buttons (📌 pin, ▶ replay, ⬇ export, ⇔ compare, 📝 note).
 
 **Click the grey chat UUID** at the top of any card to copy it to the clipboard.
 
+**Click the username** (`by username`) on any card to open the [User Deep-Dive Panel](#user-deep-dive-panel) for that user.
+
 Messages are ordered chronologically (oldest first) and display role, timestamp, message ID, full Markdown content, status flags, and a ⭐ bookmark option.
+
+### Compact Mode
+
+Click **▣ Compact** in the toolbar to toggle compact card density. In compact mode:
+- Card padding is reduced, fitting more cards on screen without scrolling
+- The chat UUID row is hidden (still accessible from the filter bar)
+
+The preference is saved automatically and persists across sessions.
 
 ## Pinned Chats
 
@@ -165,6 +177,31 @@ Pin any chat to keep it permanently at the top of the list, regardless of sort o
 - Pinned chats are separated from the rest by a `📌 Pinned above · other chats below` divider
 - Pins persist across sessions (stored in `localStorage`, scoped per cluster and user)
 - Pinned chats remain at the top even when switching between **↓ New** and **↑ Old** sort order
+- Pinned chats are always visible in History mode regardless of the active date range, and expand in place without switching modes
+
+## Chat Comparison
+
+Compare two conversations side by side.
+
+1. Click **⇔** on the first card — the button turns blue and a toast confirms the selection
+2. Click **⇔** on any second card — the comparison modal opens immediately
+
+The modal renders both full conversations in scrollable columns, with application name, creator, timestamps, and prompt/response counts in each header. Click the username in either column header to open the User Deep-Dive Panel for that user.
+
+Close with **×**, by clicking the backdrop, or pressing **Escape**.
+
+## User Deep-Dive Panel
+
+Click any username — on a chat card, in global search results, or in the comparison modal — to open a per-user activity summary.
+
+| Section | Content |
+|---|---|
+| **Stats** | Total chats, prompts sent, number of distinct apps used, average chat duration, first seen date, last active date |
+| **Apps Used** | All applications used, sorted by chat count, with a proportional bar showing relative usage |
+| **Activity — Last 30 Days** | Daily bar chart for the past 30 days. Hover any bar to see the exact date and count. |
+| **Recent Chats** | Last 8 chats, most recent first. Click the chat name / ID to copy the full chat ID to the clipboard — it briefly turns green and shows **✓ Copied!** as confirmation. |
+
+Close with **×** or **Escape**.
 
 ## Toolbar Controls
 
@@ -174,6 +211,7 @@ Pin any chat to keep it permanently at the top of the list, regardless of sort o
 | **⏸ Pause / ▶ Resume** | Pause or resume automatic polling |
 | **↓ Newest / ↑ Oldest** | Sort chat cards by modified timestamp. Pinned chats always remain at the top regardless of sort order. |
 | **Expand All / Collapse All** | Expand or collapse all visible chat cards |
+| **▣ Compact** | Toggle compact card density (see [Compact Mode](#compact-mode)) |
 
 > **Background tab behaviour** — polling is automatically paused when you switch to another browser tab and resumes immediately when you return, triggering an instant fetch. The status bar shows `tab hidden` while paused. This saves CPU and network on machines where the dashboard runs all day in a background tab.
 
@@ -239,7 +277,7 @@ The **📊 Graphs** tab provides a visual analytics overview of all GenAI activi
 
 When you enter Graphs mode, the dashboard fetches the complete chat history from the server (all apps, all users, no date filter) and loads all message content into the local cache before rendering.
 
-> Embedding and expression chats are automatically excluded from all graphs — they are background system calls, not real user conversations.
+> Embedding and expression chats are automatically excluded from all graphs — they are background system calls, not real user conversations. Chat and prompt counts in Graphs always match the counts shown in All and History modes.
 
 ### Stat Panel
 
@@ -292,6 +330,10 @@ Displays the 30 most frequent words found across all user prompt text, after rem
 - A color legend at the bottom maps each color to its application
 
 A **Filter by app** dropdown in the chart header lets you narrow the word cloud to a single application's prompts — all words, sizes, colors, and the legend will reflect only that application. Select **All applications** to restore the full cross-app view.
+
+### User Journey
+
+Click any username in the **User** dropdown to open a weekly activity timeline for that user. The timeline shows each chat as a coloured block positioned by time-of-day across a 7-day grid. Navigate between weeks using the **← Prev** / **Next →** buttons.
 
 ### User Filter
 
