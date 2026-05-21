@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.6.13'
+version='get-k8s-info v1.6.14'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -2068,6 +2068,26 @@ function getNamespaceData() {
                 echo "    - Getting license information" | tee -a $logfile
                 createTask "$KUBECTLCMD -n $namespace get $($KUBECTLCMD get secret -n $namespace -o name 2>> $logfile | grep sas-license) -o jsonpath='{.data.SAS_LICENSE}' | base64 -d 2>> $logfile | cut -d '.' -f2 | base64 -d" "$TEMPDIR/versions/${namespace}_license.txt"
 
+                # Capture ingress certificate
+                echo "    - Getting ingress certificate information" | tee -a $logfile
+                ingressCertificateSecrets=($($KUBECTLCMD get secret -n $namespace -o custom-columns=NAME:.metadata.name 2> /dev/null | grep '^sas-ingress-certificate-'))
+                if [[ ! -z $ingressCertificateSecrets ]]; then
+                    {
+                    echo -e "Certificates found:\n"
+                    printf '>> %s\n' "${ingressCertificateSecrets[@]}"
+                    echo
+                    } >> "$TEMPDIR/reports/ingress-certificates.txt"
+
+                    for secret in "${ingressCertificateSecrets[@]}"; do
+                        echo -e "\nDetails of $secret:\n" >> "$TEMPDIR"/reports/ingress-certificates.txt
+                        if type openssl > /dev/null 2>&1; then
+                            $KUBECTLCMD get secret -n $namespace "$secret" -o jsonpath='{.data.tls\.crt}' 2>> $logfile | base64 -d | openssl x509 -text >> "$TEMPDIR"/reports/ingress-certificates.txt
+                        else
+                            $KUBECTLCMD get secret -n $namespace "$secret" -o jsonpath='{.data.tls\.crt}' 2>> $logfile | base64 -d >> "$TEMPDIR"/reports/ingress-certificates.txt
+                        fi
+                    done
+                fi
+
                 # config debugtag
                 if [[ "$CONFIG" = true ]]; then
                     echo "    - Running sas-bootstrap-config kv read" | tee -a $logfile
@@ -2163,8 +2183,8 @@ function getNamespaceData() {
                         for opendistroPod in $($KUBECTLCMD -n $namespace get pod -l 'sas.com/master-role=true' --no-headers 2>> $logfile | awk '{print $1}'); do
                             mkdir -p $TEMPDIR/kubernetes/$namespace/exec/$opendistroPod
                             createTask "$KUBECTLCMD -n $namespace exec $opendistroPod -c sas-opendistro -- curl -sk --url $opendistroProtocol://localhost:9200/_cluster/health?pretty=true --header 'Authorization: Basic $opendistroToken'" "$TEMPDIR/kubernetes/$namespace/exec/$opendistroPod/sas-opendistro_cluster_health.txt"
-                            createTask "$KUBECTLCMD -n $namespace exec $opendistroPod -c sas-opendistro -- curl -sk --url $opendistroProtocol://localhost:9200/_cat/indices?s=index --header 'Authorization: Basic $opendistroToken'" "$TEMPDIR/kubernetes/$namespace/exec/$opendistroPod/sas-opendistro_cat_indices.txt"
-                            createTask "$KUBECTLCMD -n $namespace exec $opendistroPod -c sas-opendistro -- curl -sk --url $opendistroProtocol://localhost:9200/_cat/shards  --header 'Authorization: Basic $opendistroToken'" "$TEMPDIR/kubernetes/$namespace/exec/$opendistroPod/sas-opendistro_cat_shards.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec $opendistroPod -c sas-opendistro -- curl -sk --url $opendistroProtocol://localhost:9200/_cat/indices?s=index\&v --header 'Authorization: Basic $opendistroToken'" "$TEMPDIR/kubernetes/$namespace/exec/$opendistroPod/sas-opendistro_cat_indices.txt"
+                            createTask "$KUBECTLCMD -n $namespace exec $opendistroPod -c sas-opendistro -- curl -sk --url $opendistroProtocol://localhost:9200/_cat/shards?v  --header 'Authorization: Basic $opendistroToken'" "$TEMPDIR/kubernetes/$namespace/exec/$opendistroPod/sas-opendistro_cat_shards.txt"
                         done
                     fi
                 fi
