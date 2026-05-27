@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.6.14'
+version='get-k8s-info v1.6.15'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -759,14 +759,16 @@ function environmentDetails {
     if [[ ! -z $1 ]]; then
         ARGNAMESPACE=$1
     fi
+    # Fetch all node metadata
+    nodesJson="$($KUBECTLCMD get nodes -o json 2>/dev/null)"
     # What Platform?
-    if [[ $($KUBECTLCMD get node -l kubernetes.azure.com/cluster -o name | wc -l) -gt 0 ]]; then
+    if echo "$nodesJson" | grep -q '"kubernetes.azure.com/cluster"'; then
         platform='AKS (Microsoft Azure)'
-    elif [[ $($KUBECTLCMD get node -l topology.k8s.aws/zone-id -o name | wc -l) -gt 0 ]]; then
+    elif echo "$nodesJson" | grep -q '"topology.k8s.aws/zone-id"'; then
         platform='EKS (Amazon AWS)'
-    elif [[ $($KUBECTLCMD get node -l topology.gke.io/zone -o name | wc -l) -gt 0 ]]; then
+    elif echo "$nodesJson" | grep -q '"topology.gke.io/zone"'; then
         platform='GKE (Google Cloud)'
-    elif [[ $($KUBECTLCMD get node -l node.openshift.io/os_id -o name | wc -l) -gt 0 ]]; then
+    elif echo "$nodesJson" | grep -q '"node.openshift.io/os_id"'; then
         ocpPlatform=$($KUBECTLCMD get cm -n kube-system cluster-config-v1 -o yaml 2> /dev/null | grep -A1 '^    platform' | tail -1 | cut -d ':' -f1)
         if [[ $ocpPlatform == 'azure' ]]; then
             platform='Red Hat OpenShift (Azure)'
@@ -780,11 +782,51 @@ function environmentDetails {
             platform='Red Hat OpenShift (oVirt)'
         elif [[ $ocpPlatform == 'baremetal' ]]; then
             platform='Red Hat OpenShift (Bare-metal)'
+        elif [[ $ocpPlatform == 'gcp' ]]; then
+            platform='Red Hat OpenShift (Google Cloud)'
+        elif [[ $ocpPlatform == 'none' ]]; then
+            platform='Red Hat OpenShift (UPI / Custom Infrastructure)'
+        elif [[ $ocpPlatform == 'equinixmetal' ]]; then
+            platform='Red Hat OpenShift (Equinix Metal)'
+        elif [[ $ocpPlatform == 'nutanix' ]]; then
+            platform='Red Hat OpenShift (Nutanix)'
+        elif [[ $ocpPlatform == 'libvirt' ]]; then
+            platform='Red Hat OpenShift (Libvirt)'
         else
             platform='Red Hat OpenShift'
         fi
+    elif echo "$nodesJson" | grep -q '"node.kubernetes.io/instance-type"[[:space:]]*:[[:space:]]*"rke2"'; then
+        platform='RKE2 (Rancher)'
+    elif echo "$nodesJson" | grep -q '"node.kubernetes.io/instance-type"[[:space:]]*:[[:space:]]*"k3s"\|"k3s.io/hostname"'; then
+        platform='k3s (Lightweight Kubernetes)'
+    elif echo "$nodesJson" | grep -q '"microk8s.io/cluster"'; then
+        platform='MicroK8s (Canonical)'
+    elif echo "$nodesJson" | grep -q '"vmware.com/tanzu"\|"run.tanzu.vmware.com/cluster-name"\|"tkg.tanzu.vmware.com/cluster-name"'; then
+        platform='VMware Tanzu (TKG)'
+    elif echo "$nodesJson" | grep -q '"k0s.k0sproject.io/node"'; then
+        platform='k0s (Mirantis)'
+    elif echo "$nodesJson" | grep -q '"ibm-cloud.kubernetes.io/worker-id"'; then
+        platform='IBM Cloud Kubernetes Service ("IKS")'
+    elif echo "$nodesJson" | grep -q '"doks.digitalocean.com/node-id"'; then
+        platform='DOKS (DigitalOcean)'
+    elif echo "$nodesJson" | grep -q '"lke.linode.com/node-id"'; then
+        platform='LKE (Linode)'
+    elif echo "$nodesJson" | grep -q '"oke.oraclecloud.com/nodepool-id"'; then
+        platform='OKE (Oracle)'
+    elif echo "$nodesJson" | grep -q '"ack.aliyun.com/nodepool-id"'; then
+        platform='ACK (Alibaba)'
+    elif echo "$nodesJson" | grep -q '"cce.cloud.huawei.com/node-id"'; then
+        platform='CCE (Huawei)'
+    elif echo "$nodesJson" | grep -q '"tke.cloud.tencent.com/node-id"'; then
+        platform='TKE (Tencent)'
+    elif echo "$nodesJson" | grep -q '"platform9.com/cluster"\|"platform9.io/cluster"'; then
+        platform='PMK (Platform9)'
+    elif echo "$nodesJson" | grep -q '"juju.is/unit"'; then
+        platform='CK - Charmed Kubernetes (Canonical)'
+    elif $KUBECTLCMD get cm -n kube-system kubeadm-config >/dev/null 2>&1; then
+        platform='Upstream Kubernetes / Bare-metal'
     else
-        platform='Bare-metal / Unknown Cloud Platform'
+        platform='Unknown Kubernetes Distribution'
     fi
     # Was the IaC used?
     if $KUBECTLCMD -n kube-system get cm sas-iac-buildinfo > /dev/null 2>&1; then
@@ -801,6 +843,8 @@ function environmentDetails {
     clientVersion=$($KUBECTLCMD version -o yaml 2>/dev/null | grep clientVersion -A9 | grep gitVersion | cut -d ' ' -f4 | cut -d '+' -f1 | cut -d '-' -f1)
 
     # Viya Details
+    # Age
+    namespaceCreateDt=$($KUBECTLCMD get ns $ARGNAMESPACE -o jsonpath='{.metadata.creationTimestamp}' 2> /dev/null | cut -d 'T' -f1)
     # Version
     deploymentCm=($($KUBECTLCMD get cm -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' sas-deployment-metadata-' | sort -k1 -t ' ' -r | awk '{print $2}'))
     viyaCadence=$($KUBECTLCMD -n $ARGNAMESPACE get cm ${deploymentCm[0]} -o jsonpath='{.data.SAS_CADENCE_DISPLAY_NAME}' 2> /dev/null)
@@ -1041,6 +1085,7 @@ function environmentDetails {
     echo -e "\nViya Environment"
     echo -e "----------------"
     printf "%-25s %-s\n" 'Namespace:' "$ARGNAMESPACE"
+    printf "%-25s %-s\n" 'Created:' "$namespaceCreateDt"
     printf "%-25s %-s\n" 'Deployment Method:' "$deploymentMethod"
     if [[ $deploymentMethod =~ 'SAS Deployment Operator' ]]; then
         printf "%-25s %-s\n" 'Operator Mode:' "$operatorMode"
