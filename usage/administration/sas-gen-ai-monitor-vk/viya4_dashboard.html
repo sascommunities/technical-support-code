@@ -1547,17 +1547,18 @@ async function _checkIsAdmin(viyaUrl, bearerToken){
         url:    viyaUrl,
         token:  bearerToken,
         method: 'GET',
-        path:   '/identities/users/' + encodeURIComponent(cfg.user) +
-                '/memberships?limit=100&filter=eq(name,"SASAdministrators")',
+        path:   '/identities/groups/SASAdministrators/userMembers?limit=200',
         accept: 'application/vnd.sas.collection+json',
       })
     });
-    if(!r.ok) return false;
     var data = await r.json();
-    return (data.items||[]).some(function(g){
-      return (g.name||'').toLowerCase() === 'sasadministrators';
+    console.log('[GenAI Monitor] Admin check — HTTP', r.status, '— members:', JSON.stringify((data.items||[]).map(function(u){ return u.id; })));
+    if(!r.ok) return false;
+    return (data.items||[]).some(function(u){
+      return (u.id||'').toLowerCase() === (cfg.user||'').toLowerCase();
     });
   } catch(e){
+    console.warn('[GenAI Monitor] Admin check error:', e.message);
     return false;  // fail-closed: deny on error
   }
 }

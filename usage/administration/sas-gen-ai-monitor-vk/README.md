@@ -75,12 +75,12 @@ chmod +x genai-monitor.sh
 #### Additional commands
 
 ```bash
-./genai-monitor.sh start [--port PORT]    Start in the background (default: 8899)
-./genai-monitor.sh stop                   Stop the server
-./genai-monitor.sh restart [--port PORT]  Stop then start
-./genai-monitor.sh status                 Show state, PID, uptime, and access URLs
-./genai-monitor.sh logs [--lines N]       Tail the log file (default: 50 lines)
-./genai-monitor.sh help                   Show all options
+./gen-ai-monitor.sh start [--port PORT]    Start in the background (default: 8899)
+./gen-ai-monitor.sh stop                   Stop the server
+./gen-ai-monitor.sh restart [--port PORT]  Stop then start
+./gen-ai-monitor.sh status                 Show state, PID, uptime, and access URLs
+./gen-ai-monitor.sh logs [--lines N]       Tail the log file (default: 50 lines)
+./gen-ai-monitor.sh help                   Show all options
 ```
 #### Additional content
 
