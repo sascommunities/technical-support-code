@@ -5,25 +5,25 @@
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-version='kviya-recorder v1.1.12'
+version='kviya-recorder v1.1.13'
 
-# SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
-# ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
-# AGREE TO THESE TERMS. YOUR USE OF THE CODE IS AT YOUR OWN RISK. SAS INSTITUTE INC. MAKES NO REPRESENTATION 
-# OR WARRANTY, EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY, FITNESS FOR 
+# SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE")
+# ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU
+# AGREE TO THESE TERMS. YOUR USE OF THE CODE IS AT YOUR OWN RISK. SAS INSTITUTE INC. MAKES NO REPRESENTATION
+# OR WARRANTY, EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, WARRANTIES OF MERCHANTABILITY, FITNESS FOR
 # A PARTICULAR PURPOSE, NONINFRINGEMENT AND TITLE, WITH RESPECT TO THE CODE.
-# 
-# The Code is intended to be used solely as part of a product ("Software") you currently have licensed from 
-# SAS Institute Inc. or one of its subsidiaries or authorized agents ("SAS"). The Code is designed to either 
-# correct an error in the Software or to add functionality to the Software, but has not necessarily been tested. 
-# Accordingly, SAS makes no representation or warranty that the Code will operate error-free. SAS is under no 
+#
+# The Code is intended to be used solely as part of a product ("Software") you currently have licensed from
+# SAS Institute Inc. or one of its subsidiaries or authorized agents ("SAS"). The Code is designed to either
+# correct an error in the Software or to add functionality to the Software, but has not necessarily been tested.
+# Accordingly, SAS makes no representation or warranty that the Code will operate error-free. SAS is under no
 # obligation to maintain or support the Code.
-# 
-# Neither SAS nor its licensors shall be liable to you or any third party for any general, special, direct, 
-# indirect, consequential, incidental or other damages whatsoever arising out of or related to your use or 
+#
+# Neither SAS nor its licensors shall be liable to you or any third party for any general, special, direct,
+# indirect, consequential, incidental or other damages whatsoever arising out of or related to your use or
 # inability to use the Code, even if SAS has been advised of the possibility of such damages.
 #
-# Except as otherwise provided above, the Code is governed by the same agreement that governs the Software. 
+# Except as otherwise provided above, the Code is governed by the same agreement that governs the Software.
 # If you do not have an existing agreement with SAS governing the Software, you may not use the Code.
 
 echo -e "$version\n$(date)\n$(bash --version | head -1)\n$(uname -a)\nCommand: ${0} ${@}\n"
@@ -95,7 +95,7 @@ function ctrl_c() {
         rm -rf $TEMPDIR/.kviya
     fi
 
-    if [ $(ls -p $TEMPDIR | grep -v / | wc -l) -gt 0 ]; then 
+    if [ $(ls -p $TEMPDIR | grep -v / | wc -l) -gt 0 ]; then
         tar -czf $ARGPLAYBACKPATH --directory=$TEMPDIR .
         if [ $? -ne 0 ]; then
             echo;echo "ERROR: Error while saving kviya playback file $ARGPLAYBACKPATH";echo
@@ -152,7 +152,7 @@ ARGWATCH='true'
 if ! type kubectl > /dev/null 2>&1; then
     echo;echo "ERROR: 'kubectl' not installed in PATH."
     exit 1
-elif [ -z "$KUBECONFIG" ] && [ ! -f ~/.kube/config ]; then 
+elif [ -z "$KUBECONFIG" ] && [ ! -f ~/.kube/config ]; then
     echo;echo "ERROR: KUBECONFIG environment variable not set and no default config file available."
     exit 1
 fi
@@ -199,14 +199,14 @@ while getopts "vh?l:n:st:i:o:" opt; do
             exit 1
         fi
       ;;
-    t)  
+    t)
         # Validate provided time
         if [ ! $(echo $OPTARG | grep -E '^[0-9]?[0-9]*\.?[0-9]+[0-9]?$') ]; then
             echo;echo "ERROR: '$OPTARG' is not a valid time interval.";echo
             exit 1
         fi
         currentTime=$(date +%s)
-        targetTime=$[ $currentTime + $OPTARG ]
+        targetTime=$(( $currentTime + $OPTARG ))
       ;;
     * ) # Check for null option
         echo "ERROR: Option $opt is not valid."
@@ -237,7 +237,7 @@ if [ -z $ARGNAMESPACE ]; then
 fi
 
 # Set default tgz filename
-if [ -d $ARGPLAYBACKPATH ]; then 
+if [ -d $ARGPLAYBACKPATH ]; then
     ARGPLAYBACKPATH=$ARGPLAYBACKPATH/kviya-playback.tgz
 fi
 # Check write permission
@@ -253,7 +253,7 @@ function addPod {
         if [ -z $podCount ];then podCount=0;fi
         if [[ ! ${podList[@]} =~ "$pod" ]]; then
             podList[$podCount]="$pod"
-            podCount=$[ $podCount + 1 ]
+            podCount=$(( $podCount + 1 ))
         fi
     done
 }
@@ -272,6 +272,9 @@ function describePod {
             mv $TEMPDIR/.kviya/describePod/$1\_$2.txt $TEMPDIR/.kviya/logMon/describe/$1\_$2.txt
         fi
     fi
+}
+function logmon_log {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> $TEMPDIR/.kviya/logMon/logs/kviya-recorder_logmon.log
 }
 function logMon {
     wasDeleted=()
@@ -292,15 +295,17 @@ function logMon {
                 containers=($($KUBECTLCMD -n $ARGNAMESPACE get pod ${podList[$podIndex]} -o=jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}' 2> /dev/null))
                 if [[ ${wasDeleted[$podIndex]} -ne 1 ]]; then
                     if [[ ${#containers[@]} -eq 0 ]]; then
+                        logmon_log "INFO: Pod '${podList[$podIndex]}' is no longer available. Stopping log collection."
                         wasDeleted[$podIndex]=1
                     else
                         describePod ${podList[$podIndex]} ${podInstance[$podIndex]} &
-                        for container in ${containers[@]}; do 
+                        for container in ${containers[@]}; do
                             if [ -z ${containerStatus[$podIndex$containerIndex]} ]; then
                                 containerStatus[$podIndex$containerIndex]=0
                             fi
                             if [[ ${containerStatus[$podIndex$containerIndex]} -eq 0 ]]; then
                                 if $KUBECTLCMD -n $ARGNAMESPACE logs ${podList[$podIndex]} $container --tail=1 > /dev/null 2>&1; then
+                                    logmon_log "INFO: Starting log collection for pod '${podList[$podIndex]}', container '$container' (instance ${podInstance[$podIndex]})."
                                     if [[ $ARGWATCH == 'true' ]]; then
                                         stdbuf -i0 -o0 -e0 $KUBECTLCMD -n $ARGNAMESPACE logs ${podList[$podIndex]} $container -f --tail=-1 > $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log 2>> $TEMPDIR/.kviya/logMon/logs/kviya-recorder_logmon.log &
                                     else
@@ -310,42 +315,53 @@ function logMon {
                                     logPid[$podIndex$containerIndex]=$!
                                     containerStatus[$podIndex$containerIndex]=1
                                 fi
-                            elif [[ containerStatus[$podIndex$containerIndex] -eq 1 ]]; then
+                            elif [[ ${containerStatus[$podIndex$containerIndex]} -eq 1 ]]; then
                                 if [[ ! -d "/proc/${logPid[$podIndex$containerIndex]}" ]]; then
-                                    containerStatus[$podIndex$containerIndex]=2
-                                    tar -czf $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.tgz --remove-files --directory=$TEMPDIR/.kviya/logMon/logs ${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log 2> /dev/null
+                                    containerRunning=$($KUBECTLCMD -n $ARGNAMESPACE get pod ${podList[$podIndex]} -o jsonpath="{.status.containerStatuses[?(@.name==\"$container\")].state.running}{.status.initContainerStatuses[?(@.name==\"$container\")].state.running}" 2>/dev/null)
+                                    if [[ -n "$containerRunning" ]]; then
+                                        logmon_log "WARNING: Log collector for pod '${podList[$podIndex]}', container '$container' (instance ${podInstance[$podIndex]}) exited unexpectedly while container is still running. Possible log rotation. Scheduling restart."
+                                        wasDeleted[$podIndex]=1
+                                    else
+                                        logmon_log "INFO: Log collector process for pod '${podList[$podIndex]}', container '$container' (instance ${podInstance[$podIndex]}) has exited and container is no longer running. Archiving log."
+                                        containerStatus[$podIndex$containerIndex]=2
+                                        tar -czf $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.tgz --remove-files --directory=$TEMPDIR/.kviya/logMon/logs ${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log 2> /dev/null
+                                    fi
                                 elif [[ $(expr $(expr $(date +%s) - $(stat $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log -c %Y)) / 60) -gt 1 ]]; then
-                                    echo "DEBUG: Log file '$TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log' wasn't updated for more than a minute." >> $TEMPDIR/.kviya/logMon/logs/kviya-recorder_logmon.log
+                                    logmon_log "WARNING: Log file for pod '${podList[$podIndex]}', container '$container' (instance ${podInstance[$podIndex]}) has not been updated for more than a minute. Checking for log roll-over."
                                     unset lastLogLine lastCapturedLine
                                     lastLogLine=$($KUBECTLCMD -n $ARGNAMESPACE logs ${podList[$podIndex]} $container --tail=1)
                                     lastCapturedLine=$(tail -1 $TEMPDIR/.kviya/logMon/logs/${podList[$podIndex]}\_$container\_${podInstance[$podIndex]}.log)
                                     if [[ "${lastLogLine}" != "${lastCapturedLine}" ]]; then
-                                        echo "DEBUG: Restarting 'kubectl logs -f' process as it didn't collect the most recent log messages." >> $TEMPDIR/.kviya/logMon/logs/kviya-recorder_logmon.log
+                                        logmon_log "WARNING: Log roll-over detected for pod '${podList[$podIndex]}', container '$container' (instance ${podInstance[$podIndex]}). Most recent log line differs from last captured line. Killing stale collector (PID ${logPid[$podIndex$containerIndex]}) and scheduling restart."
                                         kill -9 ${logPid[$podIndex$containerIndex]} 2>> $TEMPDIR/.kviya/logMon/logs/kviya-recorder_logmon.log
                                         wasDeleted[$podIndex]=1
+                                    else
+                                        logmon_log "INFO: Log file for pod '${podList[$podIndex]}', container '$container' (instance ${podInstance[$podIndex]}) is stale but matches the latest pod log. No roll-over detected; continuing to monitor."
                                     fi
                                 fi
                             fi
-                            containerIndex=$[ $containerIndex + 1 ]
+                            containerIndex=$(( $containerIndex + 1 ))
                         done
                     fi
                 else
                     if [[ ${#containers[@]} -gt 0 ]]; then
+                        logmon_log "INFO: Pod '${podList[$podIndex]}' is available again (instance ${podInstance[$podIndex]} -> $(( ${podInstance[$podIndex]} + 1 ))). Restarting log collection for all containers."
                         # pod got recreated with the same name
                         wasDeleted[$podIndex]=0
-                        for container in ${containers[@]}; do 
+                        for container in ${containers[@]}; do
                             containerStatus[$podIndex$containerIndex]=0
-                            containerIndex=$[ $containerIndex + 1 ]
+                            containerIndex=$(( $containerIndex + 1 ))
                         done
-                        podInstance[$podIndex]=$[ ${podInstance[$podIndex]} + 1 ]
+                        podInstance[$podIndex]=$(( ${podInstance[$podIndex]} + 1 ))
                     fi
                 fi
             done
-            if [[ $ARGWATCH == 'false' ]]; then 
+            if [[ $ARGWATCH == 'false' ]]; then
                 wait ${logPid[@]}
                 break
             fi
         fi
+        sleep 0.1
     done
 }
 function captureSnapshot {
@@ -362,7 +378,7 @@ function captureSnapshot {
 function main {
     TEMPDIR=$(mktemp -d --tmpdir=$(pwd) -t .kviya.tmp.XXXXXXXXXX 2> /dev/null)
     if [[ ! -d $TEMPDIR ]]; then TEMPDIR=$(mktemp -d -t .kviya.tmp.XXXXXXXXXX); fi
-    if [[ ! -d $TEMPDIR ]]; then 
+    if [[ ! -d $TEMPDIR ]]; then
         echo "ERROR: Unable to create a temporary directory in '$(pwd)' or '/tmp'.";echo
         exit 1
     fi
@@ -373,7 +389,7 @@ function main {
         logMon $ARGLOGMON 2>> $TEMPDIR/.kviya/logMon/logs/kviya-recorder_logmon.log &
         logMonPid=$!
     fi
-    if [ "$ARGWATCH" == 'true' ]; then 
+    if [ "$ARGWATCH" == 'true' ]; then
         if [ -z $targetTime ]; then
             echo -e "INFO: Capturing events from the '$ARGNAMESPACE' namespace every '$ARGINTERVAL'\n\nPress Ctrl+C to stop..."
             count=0
@@ -381,7 +397,7 @@ function main {
             while true; do
                 captureSnapshot
                 sleep $ARGINTERVAL
-                count=$[ $count + 1 ]
+                count=$(( $count + 1 ))
                 echo -e "\e[1A\e[KSnapshots captured: $count. Current file size: $(du -h $TEMPDIR --max-depth 0 | awk '{print $1}'). Available Disk Space: $(df -h $TEMPDIR | grep -v Filesystem | awk '{print $4}')."
             done
         else
@@ -391,7 +407,7 @@ function main {
             while [ $currentTime -lt $targetTime ]; do
                 captureSnapshot
                 sleep $ARGINTERVAL
-                count=$[ $count + 1 ]
+                count=$(( $count + 1 ))
                 echo -e "\e[1A\e[KCurrent time: $(date). Snapshots captured: $count. Current file size: $(du -h $TEMPDIR --max-depth 0 | awk '{print $1}'). Available Disk Space: $(df -h $TEMPDIR | grep -v Filesystem | awk '{print $4}')."
                 currentTime=$(date +%s)
             done
