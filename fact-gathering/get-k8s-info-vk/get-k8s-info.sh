@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.6.15'
+version='get-k8s-info v1.6.18'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -119,7 +119,7 @@ function cleanUp() {
     # Kill Subshells
     if [[ -d $TEMPDIR/.get-k8s-info ]]; then
         # Kill Workers
-        for worker in $(seq 1 $workers); do
+        for worker in $(seq 1 $WORKERS); do
             if [[ -f $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid ]]; then
                 workerPid=$(cat $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid)
                 jobs=$(ps -o pid= --ppid $workerPid 2> /dev/null)
@@ -147,6 +147,9 @@ CONFIG=true
 BACKUPS=true
 SASTSDRIVE=false
 WORKERS=5
+
+# Snapshot the arguments before the parsing loop shifts them away, so they can be passed to the new script after an update
+originalArgs=("$@")
 
 POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
@@ -263,7 +266,7 @@ if [[ $UPDATE == 'true' ]]; then
                     curl -s -o $updatedScript https://raw.githubusercontent.com/sascommunities/technical-support-code/main/fact-gathering/get-k8s-info-vk/get-k8s-info.sh >> $logfile 2>&1
                     if [[ $? -eq 0 ]]; then
                         scriptPath=$(dirname $(realpath -s $0))
-                        if cp $updatedScript $scriptPath/$script > /dev/null 2>> $logfile; then echo -e "INFO: Script updated successfully. Restarting...\n";rm -f $updatedScript;$scriptPath/$script ${@};exit $?;else echo -e "ERROR: Script update failed!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile;cleanUp 1;fi
+                        if cp $updatedScript $scriptPath/$script > /dev/null 2>> $logfile; then echo -e "INFO: Script updated successfully. Restarting...\n";rm -f $updatedScript;$scriptPath/$script "${originalArgs[@]}";exit $?;else echo -e "ERROR: Script update failed!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile;cleanUp 1;fi
                     else
                         echo -e "ERROR: Error while downloading the script!\n\nINFO: Update it manually from https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk" | tee -a $logfile
                         cleanUp 1
@@ -1460,6 +1463,9 @@ function deviceThroughputReports {
 
         lsblkFile="$TEMPDIR/performance/nodes/$node/commands/lsblk.txt"
 
+        # Skip this node if the lsblk output wasn't collected
+        if [[ ! -s "$lsblkFile" ]]; then continue; fi
+
         # Read the header line
         read -r header < "$lsblkFile"
 
@@ -1810,6 +1816,7 @@ function runTask() {
 }
 function taskWorker() {
     worker=$1
+    taskManagerPid=$2
     echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] - Started" >> $TEMPDIR/.get-k8s-info/workers/workers.log
     currentTask=0
     lastTask=0
@@ -1825,8 +1832,10 @@ function taskWorker() {
         if [[ $currentTask -ne $lastTask && ! -z $currentTask ]]; then
             runTask $currentTask
             lastTask=$currentTask
+        else
+            sleep 0.1
         fi
-        if [[ ! -f $TEMPDIR/.get-k8s-info/taskmanager/pid ]]; then
+        if ! kill -0 $taskManagerPid 2> /dev/null; then
             echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Worker #$worker] - Exiting (taskmanager was terminated)" >> $TEMPDIR/.get-k8s-info/workers/workers.log
             rm -f $TEMPDIR/.get-k8s-info/workers/worker${worker}/pid
             exit 1
@@ -1834,9 +1843,12 @@ function taskWorker() {
     done
 }
 function taskManager() {
-    echo $BASHPID > $TEMPDIR/.get-k8s-info/taskmanager/pid
+    # $BASHPID cannot be used as an argument of a background command, because it would be expanded after the fork with the pid of the child process itself
+    ownPid=$BASHPID
+    echo $ownPid > $TEMPDIR/.get-k8s-info/taskmanager/pid
 
     workers=$1
+    mainPid=$2
     nextTask=1
     totalTasks=0
     endSignal=0
@@ -1853,7 +1865,7 @@ function taskManager() {
     # Initialize workers
     for worker in $(seq 1 $workers); do
         workersStatus[$worker]='running'
-        taskWorker $worker &
+        taskWorker $worker $ownPid &
         while [[ ! -f "$TEMPDIR/.get-k8s-info/workers/worker$worker/pid" ]]; do
             sleep 0.1
         done
@@ -1910,9 +1922,12 @@ function taskManager() {
         if [[ $endSignal -eq 2 && $assignedTasks -eq $totalTasks ]]; then
             endSignal=3
         fi
-        if [[ ! -f $TEMPDIR/.get-k8s-info/pid ]]; then
+        if ! kill -0 $mainPid 2> /dev/null; then
+            echo "$(date +"%Y-%m-%d %H:%M:%S:%N") [Task Manager] - Exiting (get-k8s-info is no longer running)" >> $TEMPDIR/.get-k8s-info/workers/workers.log
+            rm -f $TEMPDIR/.get-k8s-info/taskmanager/pid
             exit 1
         fi
+        sleep 0.1
     done
 }
 function getNamespaceData() {
@@ -2387,14 +2402,14 @@ function waitForTasks {
     while [[ $completedTasks -lt $totalTasks || $totalTasks -eq 0 ]]; do
         newCompletedTasks=$(cat $TEMPDIR/.get-k8s-info/taskmanager/completed)
         if [[ ! -z $newCompletedTasks ]]; then
-            newTotalTasks=$(cat $TEMPDIR/.get-k8s-info/taskmanager/total)
-            if [[ ! -z $newTotalTasks ]]; then 
+            newTotalTasks=$(wc -l < $TEMPDIR/.get-k8s-info/taskmanager/tasks 2>> $logfile)
+            if [[ ! -z $newTotalTasks ]]; then
                 completedTasks=$newCompletedTasks
                 totalTasks=$newTotalTasks
             fi
         fi
 
-        if [[ -f $TEMPDIR/.get-k8s-info/taskmanager/pid ]]; then
+        if kill -0 $taskManagerPid 2> /dev/null; then
             tput cup $[ $(tput lines) - $WORKERS - 5 ] 0
             showProgress
             printf "\n\n$rows" Worker Task Time Command
@@ -2437,6 +2452,10 @@ function waitForTasks {
             tput cup $[ $(tput lines) - $WORKERS - 5 ] 0
             showProgress
             tput ed
+            if [[ $completedTasks -lt $totalTasks ]]; then
+                echo -e "\n\nERROR: The taskmanager process stopped unexpectedly with only $completedTasks out of $totalTasks tasks completed. Some information may be missing from the output." | tee -a $logfile
+                rm -f $TEMPDIR/.get-k8s-info/taskmanager/pid
+            fi
             break
         fi
         if [[ $loadingIndex -eq 3 ]]; then loadingIndex=0; else loadingIndex=$[ $loadingIndex + 1 ]; fi
@@ -2503,8 +2522,9 @@ echo $BASHPID > $TEMPDIR/.get-k8s-info/pid
 echo "JumpBox Logical Processors: $(getconf _NPROCESSORS_ONLN 2>> $logfile)" > $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
 echo "get-k8s-info workers: $WORKERS" >> $TEMPDIR/.get-k8s-info/jumpBoxMetrics.txt
 
-# Launch workers
-taskManager $WORKERS &
+# Launch workers ($$ is used instead of $BASHPID because it is not re-expanded by the forked child process)
+taskManager $WORKERS $$ &
+taskManagerPid=$!
 
 echo -e "\nINFO: Capturing environment information...\n" | tee -a $logfile
 
