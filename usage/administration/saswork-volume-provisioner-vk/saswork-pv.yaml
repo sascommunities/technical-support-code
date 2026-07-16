@@ -14,7 +14,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: local-storage
   local:
-    path: /mnt/saswork
+    path: /saswork
   nodeAffinity:
     required:
       nodeSelectorTerms: []

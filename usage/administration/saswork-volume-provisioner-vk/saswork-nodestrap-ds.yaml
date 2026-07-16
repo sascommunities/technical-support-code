@@ -33,7 +33,7 @@ spec:
           preferredDuringSchedulingIgnoredDuringExecution: []
           requiredDuringSchedulingIgnoredDuringExecution: []
       containers:
-      - image: "google/pause"
+      - image: "registry.k8s.io/pause"
         name: pause
         securityContext:
           runAsNonRoot: true

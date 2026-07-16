@@ -33,6 +33,22 @@ target:
 apiVersion: builtin
 kind: PatchTransformer
 metadata:
+  name: saswork-pv-claimref-patch
+patch: |-
+  - op: add
+    path: /spec/claimRef
+    value:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      name: saswork-pvc
+      namespace: {{ NAMESPACE }}
+target:
+  name: saswork-pv
+  kind: PersistentVolume
+---
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
   name: saswork-pvc-size-patch
 patch: |-
   - op: add

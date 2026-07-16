@@ -12,28 +12,21 @@ In other cases, these disks must be manually formatted and mounted to be usable.
 
 The script provided here performs the preparation actions necessary to make use of these temporary disks.
 
-The daemonset runs on nodes tagged with the workload.sas.com/class label of compute or cas.
+The daemonset runs on nodes tagged with the workload.sas.com/class label of compute, cas, cascontroller, or casworker.
 
 ## Functionality
 
 The daemonset runs a script that performs the following actions on each node with the configured labels:
 
-1. Check if the mountpath already exists on the node, and if so whether it is already mounted to a block device and has the correct permissions.
-2. Check if there are any unused/unpartitioned NVMe devices. (/sys/block/nvme*)
-3. If there is one NVMe device:
-- Create an ext4 or xfs file system on the device
-- Mount it to the supplied mount path (e.g. /mnt/saswork)
-4. If there are multiple NVMe devices:
-- Stripe them (RAID 0) to a single device ID (/dev/md0)
-- Create an ext4 or xfs file system on the RAID device
-- Mount it to the mount path.
-5. If there are no NVMe devices:
-- Check if there are any unused/unpartitioned SSD devices (/sys/block/sd*)
-- If so, perform same actions as 2 and 3 for them.
-- If not, check if /mnt/resource exists (sometimes this is where Azure mounts its Temp disk).
-- If so, create /mnt/resource/saswork and link to /mnt/saswork
-- If not, create /mnt/saswork
-- Make /mnt/saswork globally writable
+1. Check if there are any unused/unpartitioned NVMe devices. (/sys/block/nvme*)
+2. Check if there are any unused/unpartitioned SSD devices (/sys/block/sd*)
+3. Check if there are any formatted but unmounted NVMe or SSD devices.
+4. If there are multiple unused devices, create a RAID 0 array with the devices and mount it to the configured mount path.
+5. If there is a single unused device, format it and mount it to the configured mount path.
+6. If there is a single formatted but unmounted device (RAID, NVMe, or SSD), mount it to the configured mount path.
+7. If there are no unused or unmounted devices, create the mount path directly or as a symlink to /mnt/<mountpath> if /mnt exists (or /mnt/resource/<mountpath> if /mnt/resource exists).
+
+The end result is our defined mountpath is available on the node making use of the instance's temp storage whether it is preformatted and mounted, unformatted and unmounted, or not present at all.
 
 The project consists of 8 files:
 - README.md - this readme file
@@ -121,12 +114,64 @@ saswork-nodestrap-fmssw   1/1     Running   0          2d21h
 
 You can use the kubectl logs command to see the operation of the script. You must specify the container "saswork-nodestrap" in this command as the script runs in the initContainer of the pod. The main container, pause, performs no actions.
 
+### Example Log Output 
+#### Multiple NVMe devices and RAID 0 creation
+
 ```
 $ kubectl -n namespace logs saswork-nodestrap-xxxxx -c saswork-nodestrap
-+ cp /saswork-nodestrap-script/saswork-nodestrap.sh /node-local-script-dir/
-+ /usr/bin/nsenter -m/proc/1/ns/mnt -- chmod u+x /mnt/saswork-nodestrap.sh
-+ /usr/bin/nsenter -m/proc/1/ns/mnt /mnt/saswork-nodestrap.sh
-Device /dev/sda has a filesystem or partition table.
-Device /dev/sdb has a filesystem or partition table.
-No unused block devices found. Creating mount point /mnt/saswork with permissions 777.
+Creating RAID array with devices: /dev/nvme0n1 /dev/nvme1n1
+Command mdadm is available.
+mdadm: Defaulting to version 1.2 metadata
+mdadm: array /dev/md0 started.
+RAID array created at /dev/md0.
+Command mkfs.ext4 is available.
+mke2fs 1.46.5 (30-Dec-2021)
+Discarding device blocks: done                            
+Creating filesystem with 937620992 4k blocks and 234405888 inodes
+Filesystem UUID: fab40925-3b42-4ac4-9f5e-906510d6c850
+Superblock backups stored on blocks: 
+        32768, 98304, 163840, 229376, 294912, 819200, 884736, 1605632, 2654208, 
+        4096000, 7962624, 11239424, 20480000, 23887872, 71663616, 78675968, 
+        102400000, 214990848, 512000000, 550731776, 644972544
+
+Allocating group tables: done                            
+Writing inode tables: done                            
+Creating journal (262144 blocks): done
+Writing superblocks and filesystem accounting information: done       
+
+Formatted device /dev/md0 with filesystem ext4.
+UUID for device /dev/md0 is fab40925-3b42-4ac4-9f5e-906510d6c850.
+Ensured /etc/fstab entry for UUID=fab40925-3b42-4ac4-9f5e-906510d6c850 on /saswork.
+```
+
+#### Single NVMe device
+
+```
+$ kubectl -n namespace logs saswork-nodestrap-xxxxx -c saswork-nodestrap
+Command mkfs.ext4 is available.
+mke2fs 1.46.5 (30-Dec-2021)
+Discarding device blocks: done                            
+Creating filesystem with 468843606 4k blocks and 117211136 inodes
+Filesystem UUID: 2828d0ad-3d76-480a-9ad1-21e84ce7c21d
+Superblock backups stored on blocks: 
+        32768, 98304, 163840, 229376, 294912, 819200, 884736, 1605632, 2654208, 
+        4096000, 7962624, 11239424, 20480000, 23887872, 71663616, 78675968, 
+        102400000, 214990848
+
+Allocating group tables: done                            
+Writing inode tables: done                            
+Creating journal (262144 blocks): done
+Writing superblocks and filesystem accounting information: done       
+
+Formatted device /dev/nvme0n1 with filesystem ext4.
+UUID for device /dev/nvme0n1 is 2828d0ad-3d76-480a-9ad1-21e84ce7c21d.
+Ensured /etc/fstab entry for UUID=2828d0ad-3d76-480a-9ad1-21e84ce7c21d on /saswork.
+```
+
+#### No unmounted NVMe or SSD devices
+
+```
+Device /dev/nvme0n1 has a filesystem or partition table.
+No unused block devices found. Creating mount point /saswork with permissions 777.
+Found existing path /mnt. Using /mnt/saswork as fallback backing storage.
 ```
