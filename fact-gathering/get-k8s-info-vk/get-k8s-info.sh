@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.6.18'
+version='get-k8s-info v1.7.00'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -39,6 +39,16 @@ else
     logfile="$(pwd)/get-k8s-info.log"
 fi
 echo -e "$version\n$(date)\n$(bash --version | head -1)\n$(uname -a)\nCommand: ${0} ${@}\n" > $logfile
+
+# Check if we are running from a gki-container.sh
+if [[ "${GKI_CONTAINER}" == 1 ]]; then
+    isGkiContainer='true'
+    echo "Running from gki-container" >> $logfile
+    echo " > gki-container script version: $GKI_CONTAINER_VERSION" >> $logfile
+    echo -e " > base image: $GKI_BASE_IMAGE\n" >> $logfile
+else
+    isGkiContainer='false'
+fi
 
 script=$(echo $0 | rev | cut -d '/' -f1 | rev)
 function usage {
@@ -76,7 +86,7 @@ function version {
     echo "$version"
 }
 
-if type timeout > /dev/null 2>> $logfile; then
+if type timeout > /dev/null 2>&1; then
     timeoutCmd='timeout'
 else
     echo "DEBUG: 'timeout' command not available. Using custom timeout function" > $logfile
@@ -106,14 +116,18 @@ else
 fi
 
 # Handle ctrl+c
-trap cleanUp SIGINT
+trap 'cleanUp 130' SIGINT
 function cleanUp() {
     tput cnorm
     tput smam
     if [ -f $logfile ]; then 
-        if [[ $1 -eq 1 || -z $1 ]]; then 
-            if [[ -z $1 ]]; then echo -e "\nFATAL: The script was terminated unexpectedly." | tee -a $logfile; fi
-            echo -e "\nScript log saved at: $logfile"
+        if [[ $1 -eq 1 || $1 -eq 130 || -z $1 ]]; then
+            if [[ $1 -eq 130 || -z $1 ]]; then echo -e "\nFATAL: The script was terminated unexpectedly." | tee -a $logfile; fi
+            if [[ $isGkiContainer == 'false' ]]; then
+                echo -e "\nScript log saved at: $logfile"
+            else
+                echo -e "\nScript log saved at: ${GKI_OUT_HOST_PATH}/get-k8s-info.log"
+            fi
         else rm -f $logfile; fi
     fi
     # Kill Subshells
@@ -133,7 +147,7 @@ function cleanUp() {
             kill $taskManagerPid > /dev/null 2>&1
         fi
     fi
-    rm -rf $TEMPDIR $updatedScript $k8sApiResources
+    rm -rf ${TEMPDIR:+"$TEMPDIR"} ${updatedScript:+"$updatedScript"} ${k8sApiResources:+"$k8sApiResources"}
     exit $1
 }
 
@@ -291,7 +305,7 @@ if [[ $UPDATE == 'true' ]]; then
         echo -e "\n  Before proceeding, please verify that this ($version) is the latest available version from:" | tee -a $logfile
         echo -e "    https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk \n" | tee -a $logfile
     fi
-else
+elif [[ $isGkiContainer == 'false' ]]; then
     echo "INFO: This script will not check for updates. Please verify that you're using the latest available version from:" | tee -a $logfile
     echo -e "\n  https://github.com/sascommunities/technical-support-code/tree/main/fact-gathering/get-k8s-info-vk \n" | tee -a $logfile
 fi
@@ -304,9 +318,9 @@ if type kubectl > /dev/null 2>&1 && type oc > /dev/null 2>&1; then
     else
         KUBECTLCMD='kubectl'
     fi
-elif type kubectl > /dev/null 2>> $logfile; then
+elif type kubectl > /dev/null 2>&1; then
     KUBECTLCMD='kubectl'
-elif type oc > /dev/null 2>> $logfile; then
+elif type oc > /dev/null 2>&1; then
     KUBECTLCMD='oc'
 else
     echo;echo "ERROR: Neither 'kubectl' or 'oc' are installed in PATH." | tee -a $logfile
@@ -345,8 +359,9 @@ if [ -z $DEPLOYPATH ]; then
     DEPLOYPATH="${DEPLOYPATH/#\~/$HOME}"
     if [ -z $DEPLOYPATH ]; then DEPLOYPATH=$(pwd); fi
 fi
-if [ $DEPLOYPATH != 'unavailable' ]; then
+if [ "$DEPLOYPATH" != 'unavailable' ]; then
     DEPLOYPATH=$(realpath $DEPLOYPATH 2> /dev/null)
+    displayDeployPath="${GKI_DEPLOY_HOST_PATH:-$DEPLOYPATH}"
     # Exit if deployment assets are not found
     if [[ ! -d $DEPLOYPATH/site-config || ! -f $DEPLOYPATH/kustomization.yaml ]]; then 
         echo ERROR: Deployment assets were not found inside the provided \$deploy path: $(echo -e "site-config/\nkustomization.yaml" | grep -E -v $(ls $DEPLOYPATH 2>> $logfile | grep "^site-config$\|^kustomization.yaml$" | tr '\n' '\|')^dummy$)  | tee -a $logfile
@@ -356,7 +371,11 @@ if [ $DEPLOYPATH != 'unavailable' ]; then
 else
     echo "WARNING: --deploypath set as 'unavailable'. Please note that SAS Tech Support may still require and request information from the \$deploy directory" | tee -a $logfile
 fi
-echo DEPLOYPATH: $DEPLOYPATH >> $logfile
+if [ "$DEPLOYPATH" != 'unavailable' ]; then
+    echo DEPLOYPATH: "$displayDeployPath" >> $logfile
+else
+    echo DEPLOYPATH: unavailable >> $logfile
+fi
 
 namespaces=('kube-system')
 # Look for Viya namespaces
@@ -372,7 +391,7 @@ if [ -z $USER_NS ]; then
                 echo "[$nsCount] ${viyans[$nsCount]}" | tee -a $logfile
                 nsCount=$[ $nsCount + 1 ]
             done
-            echo;read -n 1 -p " -> Select the namespace where the information should be collected from: " nsCount;echo
+            echo;read -p " -> Select the namespace where the information should be collected from: " nsCount
             if [ ! ${viyans[$nsCount]} ]; then
                 echo -e "\nERROR: Option '$nsCount' invalid." | tee -a $logfile
                 cleanUp 1
@@ -420,40 +439,51 @@ fi
 
 # Check if an IaC Github Project was used
 if [ -z $TFVARSFILE ]; then 
-    if $KUBECTLCMD -n kube-system get cm sas-iac-buildinfo > /dev/null 2>&1; then 
-        read -p " -> A viya4-iac project was used to create the infrastructure of this environment. Specify the path of the "terraform.tfvars" file that was used (leave blank if not known): " TFVARSFILE
-        echo "DEBUG: The IaC was used. User provided: $TFVARSFILE" >> $logfile
-        TFVARSFILE="${TFVARSFILE/#\~/$HOME}"
+    if $KUBECTLCMD -n kube-system get cm sas-iac-buildinfo > /dev/null 2>&1; then
+        if [[ "${isGkiContainer}" == 'false' ]]; then
+            read -p " -> A viya4-iac project was used to create the infrastructure of this environment. Specify the path of the "terraform.tfvars" file that was used (leave blank if not known): " TFVARSFILE
+            echo "DEBUG: The IaC was used. User provided: $TFVARSFILE" >> $logfile
+            TFVARSFILE="${TFVARSFILE/#\~/$HOME}"
+        else
+            gkiContainerMissingIaC='true'
+        fi
     fi
 fi
 if [ ! -z $TFVARSFILE ]; then
     if [[ $TFVARSFILE != 'unavailable' ]]; then
         TFVARSFILE=$(realpath $TFVARSFILE 2> /dev/null)
         if [ -d $TFVARSFILE ]; then TFVARSFILE="$TFVARSFILE/terraform.tfvars";fi
+        displayTfvarsPath="${GKI_TFVARS_HOST_PATH:-$TFVARSFILE}"
         if [ ! -f $TFVARSFILE ]; then
-            echo "ERROR: --tfvars file '$TFVARSFILE' doesn't exist" | tee -a $logfile
+            echo "ERROR: --tfvars file '$displayTfvarsPath' doesn't exist" | tee -a $logfile
             cleanUp 1
         elif [ $(grep -c '"outputs": {' $TFVARSFILE) -gt 0 ]; then
-            echo "ERROR: The '$TFVARSFILE' file specified appears to be a .tfstate file. Please provide the correct path to a .tfvars file instead." | tee -a $logfile
+            echo "ERROR: The '$displayTfvarsPath' file specified appears to be a .tfstate file. Please provide the correct path to a .tfvars file instead." | tee -a $logfile
             cleanUp 1
         fi
+        echo TFVARSFILE: "$displayTfvarsPath" >> $logfile
     else
+        echo TFVARSFILE: unavailable >> $logfile
         TFVARSFILE=''
     fi
 fi
-echo TFVARSFILE: $TFVARSFILE >> $logfile
 
 # Check if the viya4-deployment project was used
+ANSIBLEVARSFILES=()
 if [ -z $ANSIBLEVARSFILE ]; then
     for ns in $(echo $USER_NS | tr ',' ' '); do
-        if $KUBECTLCMD -n $ns get cm sas-deployment-buildinfo > /dev/null 2>&1; then 
-            read -p " -> The viya4-deployment project was used to deploy the environment in the '$ns' namespace. Specify the path of the "ansible-vars.yaml" file that was used (leave blank if not known): " ANSIBLEVARSFILE
-            echo "DEBUG: The DaC was used. User provided: $ANSIBLEVARSFILE" >> $logfile
-            ANSIBLEVARSFILE="${ANSIBLEVARSFILE/#\~/$HOME}"
+        if $KUBECTLCMD -n $ns get cm sas-deployment-buildinfo > /dev/null 2>&1; then
+            if [[ "${isGkiContainer}" == 'false' ]]; then
+                read -p " -> The viya4-deployment project was used to deploy the environment in the '$ns' namespace. Specify the path of the "ansible-vars.yaml" file that was used (leave blank if not known): " ANSIBLEVARSFILE
+                echo "DEBUG: The DaC was used. User provided: $ANSIBLEVARSFILE" >> $logfile
+                ANSIBLEVARSFILE="${ANSIBLEVARSFILE/#\~/$HOME}"
+            else
+                gkiContainerMissingDaC='true'
+            fi
         fi
         if [ ! -z $ANSIBLEVARSFILE ]; then 
             ANSIBLEVARSFILE=$(realpath $ANSIBLEVARSFILE 2> /dev/null)
-            if [ -d $ANSIBLEVARSFILE ]; then 
+            if [ -d $ANSIBLEVARSFILE ]; then
                 if [ -f "$ANSIBLEVARSFILE/ansible-vars.yaml" ]; then
                     ANSIBLEVARSFILE="$ANSIBLEVARSFILE/ansible-vars.yaml"
                 elif [ -f "$ANSIBLEVARSFILE/ansible-vars-iac.yaml" ]; then
@@ -483,8 +513,9 @@ elif [[ $ANSIBLEVARSFILE != 'unavailable' ]]; then
             cleanUp 1
         fi
     fi
+    displayAnsiblevarsPath="${GKI_ANSIBLE_HOST_PATH:-$ANSIBLEVARSFILE}"
     if [ ! -f $ANSIBLEVARSFILE ]; then
-        echo "ERROR: File '$ANSIBLEVARSFILE' doesn't exist" | tee -a $logfile
+        echo "ERROR: File '$displayAnsiblevarsPath' doesn't exist" | tee -a $logfile
         cleanUp 1
     else
         # include dac namespace
@@ -500,7 +531,44 @@ elif [[ $ANSIBLEVARSFILE != 'unavailable' ]]; then
         ANSIBLEVARSFILES+=("$ANSIBLEVARSFILE"$'\x1F'"$dacns")
     fi
 fi
-echo ANSIBLEVARSFILES: ${ANSIBLEVARSFILES[*]} >> $logfile
+if [ "$ANSIBLEVARSFILE" = 'unavailable' ]; then
+    echo 'ANSIBLEVARSFILES: unavailable' >> $logfile
+elif [ ${#ANSIBLEVARSFILES[@]} -gt 0 ]; then
+    if [[ "${isGkiContainer}" == 'false' ]]; then
+        echo "ANSIBLEVARSFILES: ${ANSIBLEVARSFILES[*]}" >> $logfile
+    else
+        echo "ANSIBLEVARSFILES: $displayAnsiblevarsPath $dacns" >> $logfile
+    fi
+fi
+
+# Check if running from a gki-container.sh and either IaC or DaC files were not provided
+if [[ "${gkiContainerMissingIaC}" == 'true' || "${gkiContainerMissingDaC}" == 'true' ]]; then
+    # Pick the message + matching restart exit code for whichever files are missing
+    if [[ "${gkiContainerMissingIaC}" == 'true' && "${gkiContainerMissingDaC}" == 'true' ]]; then
+        missingMsg='the terraform.tfvars (viya4-iac) and ansible-vars.yaml (viya4-deployment) files were'
+        missingLead='These files are'
+        missingRef='them'
+        restartCode=5
+    elif [[ "${gkiContainerMissingIaC}" == 'true' ]]; then
+        missingMsg='the terraform.tfvars (viya4-iac) file was'
+        missingLead='This file is'
+        missingRef='it'
+        restartCode=3
+    else
+        missingMsg='the ansible-vars.yaml (viya4-deployment) file was'
+        missingLead='This file is'
+        missingRef='it'
+        restartCode=4
+    fi
+
+    unset k
+    echo "WARNING: $missingMsg not provided to the gki-container.sh script." >> $logfile
+    read -p " -> ${missingLead} usually useful to understand how the environment was deployed. Do you want to restart the container to specify ${missingRef}? (y/n) " k
+    echo "DEBUG: Wants to restart and provide IaC / DaC files? $k" >> $logfile
+    if [ "$k" == 'y' ] || [ "$k" == 'Y' ]; then
+        cleanUp $restartCode
+    fi
+fi
 
 # Check OUTPATH
 if [ -z $OUTPATH ]; then 
@@ -509,15 +577,17 @@ if [ -z $OUTPATH ]; then
     if [ -z $OUTPATH ]; then OUTPATH=$(pwd); fi
 fi
 OUTPATH=$(realpath $OUTPATH 2> /dev/null)
-echo OUTPATH: $OUTPATH >> $logfile
+displayOutPath="${GKI_OUT_HOST_PATH:-$OUTPATH}"
+echo OUTPATH: "$displayOutPath" >> $logfile
 if [ ! -d $OUTPATH ]; then 
-    echo "ERROR: Output path '$OUTPATH' doesn't exist" | tee -a $logfile
+    echo "ERROR: Output path '$displayOutPath' doesn't exist" | tee -a $logfile
     cleanUp 1
 else
-    outputFile="$OUTPATH/${CASENUMBER}_$(date +"%Y%m%d_%H%M%S").tgz"
+    outputFileName="${CASENUMBER}_$(date +"%Y%m%d_%H%M%S").tgz"
+    outputFile="$OUTPATH/$outputFileName"
     touch $outputFile 2>> $logfile
     if [ $? -ne 0 ]; then
-        echo "ERROR: Unable to write output file '$outputFile'." | tee -a $logfile
+        echo "ERROR: Unable to write output file '$displayOutPath/$outputFileName'." | tee -a $logfile
         cleanUp 1
     fi
 fi
@@ -538,14 +608,21 @@ function removeSensitiveData {
                     if [[ $(tail -1 $file) != '---' ]]; then
                         sed -i '$ a\---' $file
                     fi
-                    secretStartLines=($(grep -n '^---$\|^kind: Secret$' $file | grep 'kind: Secret' -B1 | grep -v Secret | cut -d ':' -f1))
-                    secretEndLines=($(grep -n '^---$\|^kind: Secret$' $file | grep 'kind: Secret' -A1 | grep -v Secret | cut -d ':' -f1))
+                    secretStartLines=($(grep -n '^---$\|^kind: Secret$' $file | grep 'kind: Secret' -B1 --no-group-separator | grep -v Secret | cut -d ':' -f1))
+                    secretEndLines=($(grep -n '^---$\|^kind: Secret$' $file | grep 'kind: Secret' -A1 --no-group-separator | grep -v Secret | cut -d ':' -f1))
                     if [[ $[ ${secretStartLines[0]} -1 ] -ne 0 ]]; then
                         sed -n 1,$[ ${secretStartLines[0]} -1 ]p $file > $file.parsed 2>> $logfile
                     fi
                     i=0
                     while [ $i -lt ${#secretStartLines[@]} ]
                     do
+                        if [[ $i -gt 0 && ${secretStartLines[i]} -gt ${secretEndLines[i-1]} ]]; then
+                            # Preserve documents located between this Secret and the previous one
+                            printf '%s\n' "---" >> $file.parsed 2>> $logfile
+                            if [[ $[ ${secretStartLines[i]} - 1 ] -ge $[ ${secretEndLines[i-1]} + 1 ] ]]; then
+                                sed -n $[ ${secretEndLines[i-1]} + 1 ],$[ ${secretStartLines[i]} - 1 ]p $file >> $file.parsed 2>> $logfile
+                            fi
+                        fi
                         isSensitive='false'
                         secretName=''
                         printf '%s\n' "---" >> $file.parsed 2>> $logfile
@@ -562,8 +639,8 @@ function removeSensitiveData {
                                 fi
                             else
                                 if [ "${p}" != '---' ]; then printf '%s\n' "${p}" >> $file.parsed 2>> $logfile; fi
-                                if grep -q '^  name: ' <<< "$p"; then secretName="${p##*: }"; fi
-                                if grep -q '^data:\|^stringData:' <<< "$p"; then isSensitive='true'; fi
+                                if [[ "${p}" == '  name: '* ]]; then secretName="${p##*: }"; fi
+                                if [[ "${p}" == 'data:'* || "${p}" == 'stringData:'* ]]; then isSensitive='true'; fi
                             fi
                         done < <(sed -n $[ ${secretStartLines[i]} + 1 ],$[ ${secretEndLines[i]} - 1 ]p $file 2>> $logfile)
                         i=$[ $i + 1 ]
@@ -580,14 +657,21 @@ function removeSensitiveData {
                     if [[ $(tail -1 $file) != '---' ]]; then
                         sed -i '$ a\---' $file
                     fi
-                    secretGenStartLines=($(grep -n '^---$\|^kind: SecretGenerator$' $file | grep 'kind: SecretGenerator' -B1 | grep -v SecretGenerator | cut -d ':' -f1))
-                    secretGenEndLines=($(grep -n '^---$\|^kind: SecretGenerator$' $file | grep 'kind: SecretGenerator' -A1 | grep -v SecretGenerator | cut -d ':' -f1))
+                    secretGenStartLines=($(grep -n '^---$\|^kind: SecretGenerator$' $file | grep 'kind: SecretGenerator' -B1 --no-group-separator | grep -v SecretGenerator | cut -d ':' -f1))
+                    secretGenEndLines=($(grep -n '^---$\|^kind: SecretGenerator$' $file | grep 'kind: SecretGenerator' -A1 --no-group-separator | grep -v SecretGenerator | cut -d ':' -f1))
                     if [[ $[ ${secretGenStartLines[0]} -1 ] -ne 0 ]]; then
                         sed -n 1,$[ ${secretGenStartLines[0]} -1 ]p $file > $file.parsed 2>> $logfile
                     fi
                     i=0
                     while [ $i -lt ${#secretGenStartLines[@]} ]
                     do
+                        if [[ $i -gt 0 && ${secretGenStartLines[i]} -gt ${secretGenEndLines[i-1]} ]]; then
+                            # Preserve documents located between this SecretGenerator and the previous one
+                            printf '%s\n' "---" >> $file.parsed 2>> $logfile
+                            if [[ $[ ${secretGenStartLines[i]} - 1 ] -ge $[ ${secretGenEndLines[i-1]} + 1 ] ]]; then
+                                sed -n $[ ${secretGenEndLines[i-1]} + 1 ],$[ ${secretGenStartLines[i]} - 1 ]p $file >> $file.parsed 2>> $logfile
+                            fi
+                        fi
                         isSensitive='false'
                         isCertificate='false'
                         printf '%s\n' "---" >> $file.parsed 2>> $logfile
@@ -611,7 +695,7 @@ function removeSensitiveData {
                                 fi
                             else
                                 printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
-                                if grep -q '^literals:' <<< "$p"; then isSensitive='true'; fi
+                                if [[ "${p}" == 'literals:'* ]]; then isSensitive='true'; fi
                             fi
                         done < <(sed -n $[ ${secretGenStartLines[i]}+1 ],$[ ${secretGenEndLines[i]}-1 ]p $file 2>> $logfile)
                         i=$[ $i + 1 ]
@@ -628,14 +712,21 @@ function removeSensitiveData {
                     if [[ $(tail -1 $file) != '---' ]]; then
                         sed -i '$ a\---' $file
                     fi
-                    patchStartLines=($(grep -n '^---$\|^kind: PatchTransformer$' $file | grep 'kind: PatchTransformer' -B1 | grep -v PatchTransformer | cut -d ':' -f1))
-                    patchEndLines=($(grep -n '^---$\|^kind: PatchTransformer$' $file | grep 'kind: PatchTransformer' -A1 | grep -v PatchTransformer | cut -d ':' -f1))
+                    patchStartLines=($(grep -n '^---$\|^kind: PatchTransformer$' $file | grep 'kind: PatchTransformer' -B1 --no-group-separator | grep -v PatchTransformer | cut -d ':' -f1))
+                    patchEndLines=($(grep -n '^---$\|^kind: PatchTransformer$' $file | grep 'kind: PatchTransformer' -A1 --no-group-separator | grep -v PatchTransformer | cut -d ':' -f1))
                     if [[ $[ ${patchStartLines[0]} -1 ] -ne 0 ]]; then
                         sed -n 1,$[ ${patchStartLines[0]} -1 ]p $file > $file.parsed 2>> $logfile
                     fi
                     i=0
                     while [ $i -lt ${#patchStartLines[@]} ]
                     do
+                        if [[ $i -gt 0 && ${patchStartLines[i]} -gt ${patchEndLines[i-1]} ]]; then
+                            # Preserve documents located between this PatchTransformer and the previous one
+                            printf '%s\n' "---" >> $file.parsed 2>> $logfile
+                            if [[ $[ ${patchStartLines[i]} - 1 ] -ge $[ ${patchEndLines[i-1]} + 1 ] ]]; then
+                                sed -n $[ ${patchEndLines[i-1]} + 1 ],$[ ${patchStartLines[i]} - 1 ]p $file >> $file.parsed 2>> $logfile
+                            fi
+                        fi
                         isSensitive='false'
                         inTarget='false'
                         printf '%s\n' "---" >> $file.parsed 2>> $logfile
@@ -684,12 +775,12 @@ function removeSensitiveData {
                     elif [[ "${p::6}" != 'config' ]]; then
                         # Multi-line value
                         isSensitive='false'
-                        p_lower=$(tr '[:upper:]' '[:lower:]' <<< ${p})
+                        p_lower="${p,,}"
                         if [[ "${p_lower}" =~ 'password' || "${p_lower}" =~ 'pass' || "${p_lower}" =~ 'pwd' || "${p_lower}" =~ 'secret' || "${p_lower}" =~ 'token' ]]; then
                             printf '%s\n' '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
                         elif [ $isCertificate == 'true' ]; then
                             if [[ "${p}" =~ '-----END' ]]; then
-                                $isCertificate == 'false'
+                                isCertificate='false'
                             fi
                         else
                             printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
@@ -765,13 +856,7 @@ function environmentDetails {
     # Fetch all node metadata
     nodesJson="$($KUBECTLCMD get nodes -o json 2>/dev/null)"
     # What Platform?
-    if echo "$nodesJson" | grep -q '"kubernetes.azure.com/cluster"'; then
-        platform='AKS (Microsoft Azure)'
-    elif echo "$nodesJson" | grep -q '"topology.k8s.aws/zone-id"'; then
-        platform='EKS (Amazon AWS)'
-    elif echo "$nodesJson" | grep -q '"topology.gke.io/zone"'; then
-        platform='GKE (Google Cloud)'
-    elif echo "$nodesJson" | grep -q '"node.openshift.io/os_id"'; then
+    if echo "$nodesJson" | grep -q '"node.openshift.io/os_id"'; then
         ocpPlatform=$($KUBECTLCMD get cm -n kube-system cluster-config-v1 -o yaml 2> /dev/null | grep -A1 '^    platform' | tail -1 | cut -d ':' -f1)
         if [[ $ocpPlatform == 'azure' ]]; then
             platform='Red Hat OpenShift (Azure)'
@@ -798,6 +883,12 @@ function environmentDetails {
         else
             platform='Red Hat OpenShift'
         fi
+    elif echo "$nodesJson" | grep -q '"kubernetes.azure.com/cluster"'; then
+        platform='AKS (Microsoft Azure)'
+    elif echo "$nodesJson" | grep -q '"topology.k8s.aws/zone-id"'; then
+        platform='EKS (Amazon AWS)'
+    elif echo "$nodesJson" | grep -q '"topology.gke.io/zone"'; then
+        platform='GKE (Google Cloud)'
     elif echo "$nodesJson" | grep -q '"node.kubernetes.io/instance-type"[[:space:]]*:[[:space:]]*"rke2"'; then
         platform='RKE2 (Rancher)'
     elif echo "$nodesJson" | grep -q '"node.kubernetes.io/instance-type"[[:space:]]*:[[:space:]]*"k3s"\|"k3s.io/hostname"'; then
@@ -912,7 +1003,7 @@ function environmentDetails {
     if [[ $? -eq 0 && -z $tlsMode ]]; then tlsMode='No TLS'; fi
     # Ingress Certificate
     ingressCertificateSecret=($($KUBECTLCMD get secret -n $ARGNAMESPACE -o custom-columns=CREATED:.metadata.creationTimestamp,NAME:.metadata.name 2> /dev/null | grep ' sas-ingress-certificate' | sort -k1 -t ' ' -r | awk '{print $2}'))
-    if [[ ! -z $ingressCertificateSecret[@] ]]; then
+    if [[ ${#ingressCertificateSecret[@]} -gt 0 ]]; then
         if openssl x509 -text -noout <<< $($KUBECTLCMD -n $ARGNAMESPACE get secret ${ingressCertificateSecret[0]} -o jsonpath='{.data.tls\.crt}' 2> /dev/null | base64 -d 2> /dev/null) | grep 'Issuer: ' | grep sas-viya-root-ca-certificate > /dev/null ; then
             ingressCertificate='Generated'
         else
@@ -1009,7 +1100,9 @@ function environmentDetails {
     if [[ -z $computeWork ]]; then
         computeWork=($($KUBECTLCMD -n $ARGNAMESPACE get podtemplate sas-compute-job-config -o jsonpath='{.template.spec.containers[?(@.name=="sas-programming-environment")].env[?(@.name=="COMPUTESERVER_VAR_PATH")].value}' 2> /dev/null))
     fi
-    if [[ ${computeWork[-1]: -1} == '/' ]]; then
+    if [[ -z $computeWork ]]; then
+        computeWork='/opt/sas/viya/config/var'
+    elif [[ ${computeWork[-1]: -1} == '/' ]]; then
         computeWork=${computeWork[-1]::-1}
     else
         computeWork=${computeWork[-1]}
@@ -1221,7 +1314,7 @@ function nodeMon {
             fi
         fi
     done
-    unset nodeNames nodeStatuses nodeTaints nodeLabels nodeConditions nodePods nodeTop nodeResources nodeZone nodeVm
+    unset nodeFiles nodeNames nodeStatuses nodeTaints nodeLabels nodeConditions nodePods nodeTop nodeResources nodeZone nodeVm
     rm -f $TEMPDIR/.kviya/work/k8snode*
 }
 function podMon {
@@ -1378,7 +1471,7 @@ function kviyaReport {
     cp -r $TEMPDIR/kubernetes/$namespace/.kviya/$(ls $TEMPDIR/kubernetes/$namespace/.kviya | grep -Ei '[0-9]{4}D[0-9]{2}D[0-9]{2}_[0-9]{2}T[0-9]{2}T[0-9]{2}$')/* $TEMPDIR/.kviya/work
     nodeMon; podMon
     cat $TEMPDIR/.kviya/work/environmentDetails.out $TEMPDIR/.kviya/work/nodeMon.out $TEMPDIR/.kviya/work/podMon.out > $TEMPDIR/reports/kviya-report_$namespace.txt
-    rm -rf $TEMPDIR/.kviya/work
+    rm -rf "$TEMPDIR/.kviya/work"
 }
 function nodesTimeReport {
     mkdir -p $TEMPDIR/.get-k8s-info/nodesTimeReport
@@ -1487,8 +1580,8 @@ function deviceThroughputReports {
             echo "$line" >> $TEMPDIR/.get-k8s-info/processed_lsblk.txt
         done
 
-        while read name type size parent size mount; do
-            sector_size["$name"]=$size
+        while read name type sector parent size mount; do
+            sector_size["$name"]=$sector
             device_type["$name"]=$type
             parent_device["$name"]=$parent
             size_map["$name"]=$size
@@ -1607,10 +1700,11 @@ function performanceTasks {
     nodesPerformanceFiles=('/proc/cpuinfo' '/proc/mdstat' '/proc/meminfo' '/proc/diskstats' '/proc/cmdline' '/proc/interrupts' '/proc/partitions')
 
     # Look for pods running on each node that have the performance commands available
+    runningPodsWide=$($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep " Running ")
     for nodeIndex in ${!nodes[@]}; do
         # Test Viya pods first
-        availablePods=($($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep ' sas-' | grep " Running " | grep " ${nodes[$nodeIndex]} " | awk '{print $1"/"$2}'))
-        availablePods+=($($KUBECTLCMD get pod --all-namespaces -o wide 2>> $logfile | grep -v ' sas-' | grep " Running " | grep " ${nodes[$nodeIndex]} " | awk '{print $1"/"$2}'))
+        availablePods=($(grep " ${nodes[$nodeIndex]} " <<< "$runningPodsWide" | grep ' sas-' | awk '{print $1"/"$2}'))
+        availablePods+=($(grep " ${nodes[$nodeIndex]} " <<< "$runningPodsWide" | grep -v ' sas-' | awk '{print $1"/"$2}'))
         for pod in ${availablePods[@]}; do
             if $timeoutCmd 10 $KUBECTLCMD -n ${pod%%/*} exec ${pod#*/} -- type ${nodesPerformanceCommands[@]%% *} > /dev/null 2>&1; then
                 nodePerformancePods[$nodeIndex]=$pod
@@ -2051,15 +2145,8 @@ function getNamespaceData() {
                     opendistroPods=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-opendistro' --no-headers 2>> $logfile | awk '{print $1}'))
                     
                     riskPods=()
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-data-mining-risk-models' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-app' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-builder' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-core' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-cirrus-objects' --no-headers 2>> $logfile | awk '{print $1}'))
+                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app in (sas-data-mining-risk-models,sas-risk-cirrus-app,sas-risk-cirrus-builder,sas-risk-cirrus-core,sas-risk-cirrus-objects,sas-risk-data,sas-risk-modeling-app,sas-risk-modeling-core)' --no-headers 2>> $logfile | awk '{print $1}'))
                     riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app.kubernetes.io/name=sas-risk-cirrus-rcc' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-data' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-modeling-app' --no-headers 2>> $logfile | awk '{print $1}'))
-                    riskPods+=($($KUBECTLCMD -n $namespace get pod -l 'app=sas-risk-modeling-core' --no-headers 2>> $logfile | awk '{print $1}'))
                     
                     computePods=()
                     runningPods=($($KUBECTLCMD -n $namespace get pods -o=jsonpath="{.items[?(@.status.phase=='Running')].metadata.name}" 2>> $logfile))
@@ -2305,7 +2392,9 @@ function getNamespaceData() {
                     fi
                 elif [[ $object == 'secrets' ]]; then
                     viyaLicenses=($($KUBECTLCMD -n $namespace get secrets -o name 2>> $logfile | grep 'sas-viya$\|sas-cas-license\|sas-license'))
-                    createTask "$KUBECTLCMD -n $namespace get ${viyaLicenses[*]} -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
+                    if [[ ${#viyaLicenses[@]} -gt 0 ]]; then
+                        createTask "$KUBECTLCMD -n $namespace get ${viyaLicenses[*]} -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
+                    fi
                 else
                     createTask "$KUBECTLCMD -n $namespace get $object -o yaml" "$TEMPDIR/kubernetes/$namespace/yaml/$object.yaml"
                 fi
@@ -2324,7 +2413,9 @@ function getNamespaceData() {
                     fi
                 elif [[ $object == 'secrets' ]]; then
                     viyaLicenses=($($KUBECTLCMD -n $namespace get secrets -o name 2>> $logfile | grep 'sas-viya$\|sas-cas-license\|sas-license'))
-                    createTask "$KUBECTLCMD -n $namespace get ${viyaLicenses[*]} -o json" "$TEMPDIR/kubernetes/$namespace/json/$object.json"
+                    if [[ ${#viyaLicenses[@]} -gt 0 ]]; then
+                        createTask "$KUBECTLCMD -n $namespace get ${viyaLicenses[*]} -o json" "$TEMPDIR/kubernetes/$namespace/json/$object.json"
+                    fi
                 else
                     createTask "$KUBECTLCMD -n $namespace get $object -o json" "$TEMPDIR/kubernetes/$namespace/json/$object.json"
                 fi
@@ -2370,8 +2461,8 @@ function generateKviyaReport() {
         echo "DEBUG: Generating kviya report for namespace $namespace" >> $logfile
         kviyaReport $namespace
     fi
-    tar -czf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime.tgz --directory=$TEMPDIR/kubernetes/$namespace/.kviya $saveTime 2>> $logfile
-    rm -rf $TEMPDIR/kubernetes/$namespace/.kviya/$saveTime 2>> $logfile
+    tar -czf "$TEMPDIR/kubernetes/$namespace/.kviya/$saveTime.tgz" --directory="$TEMPDIR/kubernetes/$namespace/.kviya" $saveTime 2>> $logfile
+    rm -rf "$TEMPDIR/kubernetes/$namespace/.kviya/$saveTime" 2>> $logfile
 }
 function showProgress {
     percent=$[ 100 * $completedTasks / $totalTasks ]
@@ -2620,7 +2711,7 @@ if [ ${#sasoperatorns[@]} -gt 0 ]; then
         echo -e "SASOPERATOR MODE: $operatorMode" >> $logfile
         createTask "$KUBECTLCMD -n $SASOPERATOR_NS get deploy -l 'app.kubernetes.io/name=sas-deployment-operator' -o jsonpath='{.items[0].spec.template.spec.containers[].image}'" "$TEMPDIR/versions/${SASOPERATOR_NS}_sas-deployment-operator-version.txt"
     done
-    if type docker > /dev/null 2>> $logfile; then
+    if type docker > /dev/null 2>&1; then
         docker image ls 2>> $logfile | grep $(docker image ls 2>> $logfile | grep '^sas-orchestration' | awk '{print $3}') > $TEMPDIR/versions/sas-orchestration-docker-image-version.txt 2>> $logfile
     fi
 fi
@@ -2729,7 +2820,7 @@ getNamespaceData ${namespaces[@]}
 echo "  - Kubernetes and Kustomize versions" | tee -a $logfile
 $KUBECTLCMD version -o yaml > $TEMPDIR/versions/kubernetes.txt 2>> $logfile
 cat $TEMPDIR/versions/kubernetes.txt >> $logfile
-if type kustomize > /dev/null 2>> $logfile; then
+if type kustomize > /dev/null 2>&1; then
     kustomize version -o yaml > $TEMPDIR/versions/kustomize.txt 2>> $logfile
     cat $TEMPDIR/versions/kustomize.txt >> $logfile
 fi
@@ -2739,13 +2830,13 @@ echo "  - Capturing nodes time information" | tee -a $logfile
 nodesTimeReport
 
 # Collect deployment assets
-if [ $DEPLOYPATH != 'unavailable' ]; then
+if [ "$DEPLOYPATH" != 'unavailable' ]; then
     echo "  - Collecting deployment assets" | tee -a $logfile
     mkdir $TEMPDIR/assets 2>> $logfile
     cd $DEPLOYPATH 2>> $logfile
-    find . \( -path "./.get-k8s-info.tmp.*" -o -path "*sas-bases*" \) -prune -false -o \( -name "*.yaml" -o \( -path "*sas-risk*" -type f -name "*.env" \) -o \( -path "*sas-aml-provisioning-job*" -type f -name "config.properties" \) \) 2>> $logfile | tar -cf $TEMPDIR/assets/assets.tar -T - 2>> $logfile    
-    tar xf $TEMPDIR/assets/assets.tar --directory $TEMPDIR/assets 2>> $logfile
-    rm -rf $TEMPDIR/assets/assets.tar 2>> $logfile
+    find . \( -path "./.get-k8s-info.tmp.*" -o -path "*sas-bases*" \) -prune -false -o \( -name "*.yaml" -o \( -path "*sas-risk*" -type f -name "*.env" \) -o \( -path "*sas-aml-provisioning-job*" -type f -name "config.properties" \) \) 2>> $logfile | tar -cf "$TEMPDIR/assets/assets.tar" -T - 2>> $logfile    
+    tar xf "$TEMPDIR/assets/assets.tar" --directory "$TEMPDIR/assets" 2>> $logfile
+    rm -rf "$TEMPDIR/assets/assets.tar" 2>> $logfile
     removeSensitiveData $(find $TEMPDIR/assets -type f)
     if [[ -d ./sas-bases ]]; then
         cp -R ./sas-bases $TEMPDIR/assets/sas-bases 2>> $logfile
@@ -2770,14 +2861,14 @@ if [[ -f $TEMPDIR/.get-k8s-info/sendToCase.out ]]; then
     echo '' | tee -a $logfile
     rm $TEMPDIR/.get-k8s-info/sendToCase.out
 fi
-rm -rf $TEMPDIR/.kviya
+rm -rf "$TEMPDIR/.kviya"
 
 cp $logfile $TEMPDIR/.get-k8s-info
-tar -czf $outputFile --directory=$TEMPDIR .
+tar -czf "$outputFile" --directory="$TEMPDIR" .
 if [ $? -eq 0 ]; then
     if [ $SASTSDRIVE == 'true' ]; then
         tput cnorm
-        echo -e "\nDone! File '$outputFile' was successfully created."
+        echo -e "\nDone! File '$displayOutPath/$outputFileName' was successfully created."
         # use an sftp batch file since the user password is expected from stdin
         cat > $TEMPDIR/SASTSDrive.batch <<< "put $outputFile $CASENUMBER"
         echo -e "\nINFO: Performing SASTSDrive login. Use only an email that was authorized by SAS Tech Support for the case\n"
@@ -2785,18 +2876,18 @@ if [ $? -eq 0 ]; then
         echo ''
         sftp -oPubkeyAuthentication=no -oPasswordAuthentication=no -oNumberOfPasswordPrompts=2 -oConnectTimeout=1 -oBatchMode=no -b $TEMPDIR/SASTSDrive.batch "${EMAIL}"@sft.sas.com > /dev/null
         if [ $? -ne 0 ]; then 
-            echo -e "\nERROR: Failed to send the '$outputFile' file to SASTSDrive through sftp. Will not retry."
-            echo -e "\nSend the '$outputFile' file to SAS Tech Support using a browser (https://support.sas.com/kb/65/014.html#upload) or through the case.\n"
+            echo -e "\nERROR: Failed to send the '$displayOutPath/$outputFileName' file to SASTSDrive through sftp. Will not retry."
+            echo -e "\nSend the '$displayOutPath/$outputFileName' file to SAS Tech Support using a browser (https://support.sas.com/kb/65/014.html#upload) or through the case.\n"
             cleanUp 1
         else 
             echo -e "\nFile successfully sent to SASTSDrive.\n"
             cleanUp 0
         fi
     else
-        echo -e "\nDone! File '$outputFile' was successfully created. Send it to SAS Tech Support.\n"
+        echo -e "\nDone! File '$displayOutPath/$outputFileName' was successfully created. Send it to SAS Tech Support.\n"
         cleanUp 0
     fi
 else
-    echo "\nERROR: Failed to save output file '$outputFile'."
+    echo -e "\nERROR: Failed to save output file '$displayOutPath/$outputFileName'."
     cleanUp 1
 fi
