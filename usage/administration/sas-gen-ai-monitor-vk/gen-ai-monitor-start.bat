@@ -154,7 +154,7 @@ start "" http://localhost:!PORT!
 
 echo.
 echo Viya4 GenAI Monitor running on http://localhost:!PORT!
-echo Browser opened. To stop, run stop-genai-monitor.bat
+echo Browser opened. To stop, run gen-ai-monitor-stop.bat
 echo.
 timeout /t 6 /nobreak >nul
 endlocal

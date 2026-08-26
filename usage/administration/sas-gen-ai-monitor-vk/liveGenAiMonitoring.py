@@ -19,9 +19,11 @@ import argparse
 import base64
 import gzip
 import json
+import re
 import ssl
 import subprocess
 import threading
+import time
 import urllib.request
 import urllib.parse
 import urllib.error
@@ -35,12 +37,206 @@ DASHBOARD_HTML = Path(__file__).parent / "viya4_dashboard.html"
 CACHE_DIR      = Path(__file__).parent / "cache"
 SUMMARY_DIR    = Path(__file__).parent / "summaries"
 SUMMARY_CONFIG = Path(__file__).parent / "summary-config.json"
+PII_CONFIG     = Path(__file__).parent / "pii-config.json"
 
 # -- Cache filename helper ----------------------------------------------------
 def _cache_filename(cluster: str, user: str) -> Path:
-    import re
     safe = re.sub(r"[^a-z0-9._-]", "_", (cluster + "__" + user).lower())
     return CACHE_DIR / (safe + ".json")
+
+
+# =============================================================================
+# Guard-rails: server-side admin check + function-call redaction / PII scan
+#
+# copilotFunctionResponse / functionResult messages carry the raw arguments
+# and results of every Copilot tool call (which tables/datasources were
+# touched, what was returned). This is exactly the data a non-admin viewer
+# must never receive — so it is checked and stripped here, server-side,
+# before it ever reaches the browser. Doing it client-side (as the earlier
+# Graphs-tab admin gate does) only hides the DOM; the raw JSON would still
+# have been sent to every viewer's browser.
+# =============================================================================
+
+_CHAT_MESSAGES_RE = re.compile(r"/genAiGateway/v1/chats/[^/]+/messages")
+_FUNCTION_MSG_TYPES = {"functionresult", "copilotfunctionresponse"}
+
+# search_capability_registry only returns tool/skill documentation (schemas,
+# generic descriptions) — never real user/query data — so scanning it for PII
+# words just produces false positives on doc text (e.g. "address" showing up
+# in a search-syntax example). Excluded from the PII scan; the raw payload is
+# still shown to admins, just never flagged.
+_PII_SCAN_EXCLUDED_FUNCTIONS = {"search_capability_registry"}
+
+# Fields that are pure repeated boilerplate (full tool schemas, skill prompts,
+# report snapshots) on every function-related message — never useful for
+# audit/PII purposes, just cache/bandwidth bloat. Stripped for every viewer.
+_NOISE_KEYS = ("reservedTools", "systemSkills", "chatReport", "report")
+
+# -- Admin check: consult Viya's Identities API using the caller's own bearer
+#    token, so a forged client-side flag can never grant access to real data.
+_ADMIN_CACHE      = {}
+_ADMIN_CACHE_LOCK = threading.Lock()
+_ADMIN_CACHE_TTL  = 60  # seconds — bounds how stale a membership change can be
+
+def _is_admin(viya_url: str, token: str, user: str) -> bool:
+    user_l = (user or "").lower()
+    if user_l == "sasboot":
+        return True
+    if not token or not viya_url:
+        return False
+
+    cache_key = (viya_url, user_l)
+    now = time.time()
+    with _ADMIN_CACHE_LOCK:
+        cached = _ADMIN_CACHE.get(cache_key)
+        if cached is not None and (now - cached[1]) < _ADMIN_CACHE_TTL:
+            return cached[0]
+
+    is_admin = False
+    try:
+        req = urllib.request.Request(
+            "%s/identities/groups/SASAdministrators/userMembers?limit=200" % viya_url,
+            headers={
+                "Authorization": "Bearer %s" % token,
+                "Accept":        "application/vnd.sas.collection+json",
+            },
+            method="GET",
+        )
+        with urllib.request.urlopen(req, context=SSL_CTX, timeout=15) as r:
+            data = json.loads(r.read())
+        is_admin = any((item.get("id") or "").lower() == user_l for item in data.get("items", []))
+    except Exception as e:
+        print("  [admin-check] error for %s: %s" % (user_l, e))
+        is_admin = False  # fail-closed: deny on error
+
+    with _ADMIN_CACHE_LOCK:
+        _ADMIN_CACHE[cache_key] = (is_admin, now)
+    return is_admin
+
+
+# -- Admin-managed custom PII word list ("PII's" panel in the header) --------
+# Lets admins define what counts as sensitive instead of us guessing regexes.
+# Stored as {"words": [...]} and merged into _pii_flags() below.
+_pii_words_cache = {"words": [], "mtime": 0.0}
+_pii_words_lock  = threading.Lock()
+
+def _parse_pii_words(text: str) -> list:
+    """Parse the "word1, word2, 'multi word'" format the PII's panel uses.
+    A single wrapping pair of double quotes around the whole value is optional."""
+    text = (text or "").strip()
+    if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
+        text = text[1:-1]
+    words = []
+    for token in text.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if len(token) >= 2 and token[0] == "'" and token[-1] == "'":
+            token = token[1:-1].strip()
+        if token:
+            words.append(token)
+    return words
+
+
+def _format_pii_words(words: list) -> str:
+    if not words:
+        return ""
+    parts = ["'%s'" % w if " " in w else w for w in words]
+    return '"' + ", ".join(parts) + '"'
+
+
+def _load_pii_words() -> list:
+    if not PII_CONFIG.exists():
+        return []
+    try:
+        mtime = PII_CONFIG.stat().st_mtime
+    except Exception:
+        return []
+    with _pii_words_lock:
+        if _pii_words_cache["mtime"] != mtime:
+            try:
+                data  = json.loads(PII_CONFIG.read_text(encoding="utf-8"))
+                words = [w for w in data.get("words", []) if isinstance(w, str) and w]
+            except Exception:
+                words = []
+            _pii_words_cache["words"] = words
+            _pii_words_cache["mtime"] = mtime
+        return list(_pii_words_cache["words"])
+
+
+def _pii_flags(obj) -> list:
+    """Scan a JSON-serialisable object for admin-defined words from the PII's
+    panel — the only source of PII flags; nothing here is guessed/built-in.
+    Returns a sorted list of matched words, or [] if nothing found."""
+    try:
+        blob = json.dumps(obj, ensure_ascii=False, default=str)
+    except Exception:
+        blob = str(obj)
+    lower = blob.lower()
+    flags = set()
+    for w in _load_pii_words():
+        if w.lower() in lower:
+            flags.add(w)
+    return sorted(flags)
+
+
+def _strip_noise(msg: dict):
+    """Remove known boilerplate fields from a message's context/data/
+    functionCall.arguments in place. Applied regardless of admin status."""
+    if not isinstance(msg, dict):
+        return
+    for key in _NOISE_KEYS:
+        msg.pop(key, None)
+    for sub_key in ("context", "data"):
+        sub = msg.get(sub_key)
+        if isinstance(sub, dict):
+            for key in _NOISE_KEYS:
+                sub.pop(key, None)
+    fc = msg.get("functionCall")
+    if isinstance(fc, dict):
+        args = fc.get("arguments")
+        if isinstance(args, dict):
+            args.pop("embedding", None)
+
+
+def _scrub_chat_messages(messages: list, is_admin: bool) -> list:
+    """Strip boilerplate from every message. For function-call/result
+    messages: admins keep the real payload (annotated with piiFlags, except
+    for _PII_SCAN_EXCLUDED_FUNCTIONS); non-admins get a redacted placeholder
+    so the raw data never leaves the server for them."""
+    if not isinstance(messages, list):
+        return messages
+
+    # functionResult messages don't carry the function name themselves —
+    # only the copilotFunctionResponse call does. Build id -> name so a
+    # result can be traced back to the call that produced it.
+    call_names = {}
+    for m in messages:
+        if isinstance(m, dict) and (m.get("type") or "").lower() == "copilotfunctionresponse":
+            fc = m.get("functionCall")
+            if isinstance(fc, dict) and m.get("id"):
+                call_names[m["id"]] = fc.get("name")
+
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        _strip_noise(m)
+        mtype = (m.get("type") or "").lower()
+        if mtype not in _FUNCTION_MSG_TYPES:
+            continue
+        if is_admin:
+            fn_name = (m.get("functionCall") or {}).get("name") if mtype == "copilotfunctionresponse" \
+                      else call_names.get(m.get("copilotFunctionResponseId"))
+            if fn_name not in _PII_SCAN_EXCLUDED_FUNCTIONS:
+                flags = _pii_flags(m.get("functionCall") or m.get("data"))
+                if flags:
+                    m["piiFlags"] = flags
+        else:
+            if "functionCall" in m:
+                m["functionCall"] = {"redacted": True}
+            if "data" in m:
+                m["data"] = {"redacted": True}
+    return messages
 
 # -- Dashboard cache: read once from disk, serve many times --------------------
 _dash_cache = {"data": None, "mtime": 0.0}
@@ -426,6 +622,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             viya_url  = payload.get("url", "").rstrip("/")
             api_path  = payload.get("path", "")
             bearer    = payload.get("token", "")
+            requester = payload.get("user", "")
             page_size = int(payload.get("limit", 100))
             if not api_path:
                 self.send_json(400, {"error": "missing path"}); return
@@ -460,6 +657,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         for s in sorted(pages):
                             result.extend(pages[s])
 
+                # Guard-rail: chat-messages listings carry raw function-call
+                # arguments/results (which tables/data were touched, actual
+                # returned rows). Scrub before it leaves the server.
+                if _CHAT_MESSAGES_RE.search(api_path):
+                    is_admin = _is_admin(viya_url, bearer, requester)
+                    _scrub_chat_messages(result, is_admin)
+
                 self.send_json(200, {
                     "count": len(result), "start": 0,
                     "limit": len(result), "items": result,
@@ -484,7 +688,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.send_json(200, {"found": False, "data": {}}); return
                 try:
                     data = json.loads(cf.read_text(encoding="utf-8"))
-                    print("  [cache] load %s  entries=%d" % (cf.name, len(data)))
+                    # Guard-rail: the cache file may have been written while this
+                    # user WAS a SAS Administrator. Re-check current admin status
+                    # on every load and re-scrub — a persisted cache must never
+                    # let a since-demoted user keep seeing old function-call data.
+                    viya_url = payload.get("url", "").rstrip("/")
+                    bearer   = payload.get("token", "")
+                    is_admin = _is_admin(viya_url, bearer, user)
+                    for entry in data.values():
+                        if isinstance(entry, dict) and isinstance(entry.get("msgs"), list):
+                            _scrub_chat_messages(entry["msgs"], is_admin)
+                    print("  [cache] load %s  entries=%d  admin=%s" % (cf.name, len(data), is_admin))
                     self.send_json(200, {"found": True, "data": data}, compress=True)
                 except Exception as e:
                     self.send_json(500, {"error": str(e)})
@@ -566,6 +780,46 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 import traceback
                 traceback.print_exc()
                 self.send_json(500, {"error": str(e)})
+            return
+
+        # -- /api/is-admin: the ONLY place "who is a SAS Administrator" is
+        #    decided. The frontend calls this purely to toggle UI visibility;
+        #    it never computes admin status itself. -------------------------
+        if path == "/api/is-admin":
+            viya_url  = payload.get("url", "").rstrip("/")
+            bearer    = payload.get("token", "")
+            requester = payload.get("user", "")
+            self.send_json(200, {"isAdmin": _is_admin(viya_url, bearer, requester)})
+            return
+
+        # -- /api/pii-words: admin-managed custom PII keyword list -------------
+        # Guarded server-side (never trusts the client's "isAdmin" flag) so a
+        # demoted or non-admin user can neither read nor overwrite this list
+        # even by calling the endpoint directly.
+        if path == "/api/pii-words":
+            action    = payload.get("action", "")
+            viya_url  = payload.get("url", "").rstrip("/")
+            bearer    = payload.get("token", "")
+            requester = payload.get("user", "")
+            if not _is_admin(viya_url, bearer, requester):
+                self.send_json(403, {"error": "SAS Administrators only"}); return
+
+            if action == "load":
+                words = _load_pii_words()
+                self.send_json(200, {"words": words, "formatted": _format_pii_words(words)})
+            elif action == "save":
+                text = payload.get("text", "")
+                if len(text) > 500:
+                    self.send_json(400, {"error": "500 character limit exceeded"}); return
+                words = _parse_pii_words(text)
+                try:
+                    PII_CONFIG.write_text(json.dumps({"words": words}, indent=2), encoding="utf-8")
+                    print("  [pii] saved %d custom word(s) by %s" % (len(words), requester))
+                    self.send_json(200, {"saved": True, "words": words, "formatted": _format_pii_words(words)})
+                except Exception as e:
+                    self.send_json(500, {"error": str(e)})
+            else:
+                self.send_json(400, {"error": "unknown action: " + action})
             return
 
         self.send_json(404, {"error": "unknown route"})

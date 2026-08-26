@@ -1,0 +1,7 @@
+services:
+  gen-ai-monitor:
+    build: .
+    container_name: gen-ai-monitor
+    restart: unless-stopped
+    ports:
+      - "8899:8899"

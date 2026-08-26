@@ -14,12 +14,15 @@ genaiproject/
 ├── gen-ai-monitor-start.bat  # Windows: double-click to start
 ├── gen-ai-monitor-stop.bat   # Windows: double-click to stop
 ├── gen-ai-monitor.sh         # Linux / macOS: start / stop / status / logs
+├── Dockerfile                # Container image definition
+├── docker-compose.yml        # Docker Compose service definition
 └── README.md
 
 # Files created automatically at runtime:
 ├── .venv/                    # Python virtual environment
 ├── .genai-monitor.pid        # PID of the running server
-└── genai-monitor.log         # Server log
+├── genai-monitor.log         # Server log
+└── pii-config.json           # Admin-defined PII keyword list (see PII Detection)
 ```
 
 ## Quick Start
@@ -63,13 +66,13 @@ git checkout
 2. Make the script executable:
 
 ```bash
-chmod +x genai-monitor.sh
+chmod +x gen-ai-monitor.sh
 ```
 3. Start the server as a background process:
 
 ```bash
 # Start on default port
-./genai-monitor.sh start
+./gen-ai-monitor.sh start
 ```
 
 #### Additional commands
@@ -86,6 +89,46 @@ chmod +x genai-monitor.sh
 
 - *You can delete `.venv/` at any time to force a clean rebuild on the next start.*
 - *By default, the script binds to `0.0.0.0` so the dashboard is reachable from the network. Use a firewall rule if you want to restrict access to specific IPs.*
+
+### Docker
+
+1. Ensure Docker and Docker Compose are installed
+2. From the project folder, build and start the container:
+
+```bash
+docker compose up -d --build
+```
+3. Access the dashboard at `http://localhost:8899`
+4. View logs:
+
+```bash
+docker compose logs -f
+```
+5. Stop the container:
+
+```bash
+docker compose down
+```
+
+> Inside the container, `gen-ai-monitor.sh start` runs automatically and binds to `0.0.0.0` on port 8899 (mapped to the host via `docker-compose.yml`). `.venv/`, `genai-monitor.log`, and `.genai-monitor.pid` are created inside the container's filesystem — since no volume is configured, they are lost when the container is removed. Mount a volume (e.g. `./data:/app`) if you need the log or cache to survive a `docker compose down`.
+>
+> After changing any source file, rebuild the image with `docker compose up -d --build` — the `Dockerfile` copies the code in at build time, so changes are not picked up automatically.
+
+### Command-line reference
+
+`liveGenAiMonitoring.py` can also be run directly (used internally by all the methods above):
+
+```bash
+python3 liveGenAiMonitoring.py [options]
+```
+
+| Option | Description |
+|---|---|
+| `--host HOST` | Bind address. Default: `127.0.0.1` (local only). Use `0.0.0.0` for network access. |
+| `--port PORT` | Port to listen on. Default: `8899` |
+| `--no-browser` | Do not open the browser automatically |
+| `--server` | Server mode: bind to `0.0.0.0` and skip opening the browser (same as `--host 0.0.0.0 --no-browser`) |
+| `--launch` | Spawn as a silent background process and exit (used by the Windows `.bat` scripts) |
 
 # Users Guide
 
@@ -168,6 +211,36 @@ Click **▣ Compact** in the toolbar to toggle compact card density. In compact 
 - The chat UUID row is hidden (still accessible from the filter bar)
 
 The preference is saved automatically and persists across sessions.
+
+## PII Detection (SAS Administrators Only)
+
+Function-call/tool-call payloads — the `copilotFunctionResponse` / `functionResult` messages carrying the raw arguments and results behind every Copilot tool call — are hidden from regular users entirely. The server never sends this raw payload to a non-admin browser (it arrives pre-redacted as `{redacted: true}`), regardless of any PII settings.
+
+For **SAS Administrators**, a **🔒 PII's** button appears in the top-right header (same server-side admin check as the [Graphs](#graphs) tab, re-verified against Viya on every request — a forged client-side admin flag cannot unlock this).
+
+### Defining PII keywords
+
+Click **🔒 PII's** to open the panel and enter a comma-separated list of words or names to flag as sensitive, e.g.:
+
+```
+cpf, email, 'full name', 'social security number'
+```
+
+- Multi-word terms must be wrapped in single quotes
+- 500-character limit
+- Click **Save** — the list is stored server-side (`pii-config.json`) and shared by every admin connected to that server; nothing is built-in or auto-guessed, admins fully control what counts as sensitive
+
+### How flags appear
+
+Once saved, every function-call/result message (already-cached chats included) is re-scanned for the configured words:
+- Chats containing at least one match show a **⚠ PII** badge on the chat card header, with a tooltip listing which words matched
+- The individual function-call/result message — visible to admins in the expandable audit block — shows its own **⚠ PII: word1, word2** tag
+- `search_capability_registry` calls are always excluded from scanning — they only return generic tool/skill documentation, never real user or query data, so flagging them would just be noise
+
+### Security notes
+
+- The word list can only be read or changed by users the server itself confirms are SAS Administrators (checked against the Viya Identities API on every request) — the client's `isAdmin` flag is never trusted
+- Non-admin viewers never receive the raw function-call/result payload at all, so PII flags are meaningless — and invisible — to them regardless of what words are configured
 
 ## Pinned Chats
 
@@ -390,12 +463,17 @@ python -m venv .venv
 
 ## Port 8899 already in use
 
-Run `stop-genai-monitor.bat`, or free it manually:
+Run `gen-ai-monitor-stop.bat`, or free it manually:
 ```bat
 netstat -ano | findstr :8899
 taskkill /PID <pid> /F
 ```
-# 
+
+## Docker issues
+
+- **Port already allocated** — another process or container is already using 8899 on the host. Stop it, or change the host-side port mapping in `docker-compose.yml` (e.g. `"9000:8899"`).
+- **Code changes not showing up** — rebuild the image after editing source files: `docker compose up -d --build`.
+- **Container exits immediately** — check the logs with `docker compose logs -f` for the same errors described in [Server does not start](#server-does-not-start).
 
 ## Security Notes
 
@@ -405,6 +483,7 @@ taskkill /PID <pid> /F
 | Bearer tokens | Session memory only — never persisted |
 | Profile data | Stored in `localStorage` — does not include passwords or tokens |
 | Chat cache | Stored in `localStorage` and included in exports — treat the export file as internal data |
+| Function-call / tool payloads | Redacted server-side (`{redacted: true}`) for non-admins — the raw data never leaves the server for them. Admins see the real payload, optionally flagged against the admin-defined PII word list (`pii-config.json`) — see [PII Detection](#pii-detection-sas-administrators-only) |
 | SSL | Certificate verification disabled to support self-signed Viya4 certificates |
 | Network binding | Default `127.0.0.1` (local only). Use `--server` only on trusted internal networks |
 

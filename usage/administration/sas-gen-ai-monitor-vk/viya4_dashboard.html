@@ -159,6 +159,7 @@
   .tag-purple{background:rgba(167,139,250,.1);border-color:rgba(167,139,250,.3);color:var(--purple)}
   .tag-dim{background:rgba(74,90,120,.1);border-color:rgba(74,90,120,.3);color:var(--text-dim)}
   .tag-yellow{background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.3);color:var(--yellow)}
+  .tag-pii{background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.3);color:var(--red);cursor:default}
   .chevron{color:var(--text-dim);font-size:16px;transition:transform .2s;flex-shrink:0;padding:0;background:none;border:none;cursor:pointer;width:24px;height:26px;display:inline-flex;align-items:center;justify-content:center;opacity:.5}
   .chat-card.collapsed .chevron{transform:rotate(-90deg)}
   .messages-wrap{overflow:hidden;transition:max-height .3s ease}
@@ -178,6 +179,14 @@
   .copilot .msg-role{color:var(--accent2)}
   .msg-ts{font-size:10px;color:var(--text-dim)}
   .msg-id-badge{font-size:10px;color:var(--text-dim);background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:0 5px}
+  /* Admin-only function-call/result audit block */
+  .message.function-msg{background:rgba(167,139,250,.04)}
+  .function-msg .msg-avatar{background:rgba(167,139,250,.15);border-color:rgba(167,139,250,.3)}
+  .function-msg .msg-role{color:var(--purple)}
+  .function-details{margin-top:2px}
+  .function-details summary{cursor:pointer;font-size:11.5px;color:var(--text-mid);font-family:var(--mono);user-select:none}
+  .function-details summary:hover{color:var(--text)}
+  .function-json{background:var(--bg);border:1px solid var(--border2);border-radius:6px;padding:10px 12px;margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--code-color);white-space:pre-wrap;word-break:break-word;max-height:400px;overflow:auto}
   /* ── Markdown (Obsidian-style via marked.js) ── */
   .msg-content{color:var(--text);line-height:1.75;word-break:break-word;font-size:12.5px}
   .msg-content.is-empty{color:var(--text-dim);font-style:italic}
@@ -268,6 +277,10 @@
   #toast.show{opacity:1}
   .icon-btn{background:none;border:none;border-radius:8px;color:var(--text-dim);cursor:pointer;padding:6px 8px;font-size:15px;transition:all .15s;width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center}
   .icon-btn:hover{background:var(--bg3);color:var(--text);border-color:var(--text-mid)}
+
+  /* Admin-only "PII's" header button */
+  .pii-words-btn{background:rgba(167,139,250,.1);border:1px solid rgba(167,139,250,.3);color:var(--purple);border-radius:20px;padding:6px 12px;font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;transition:all .15s;white-space:nowrap;margin-right:4px}
+  .pii-words-btn:hover{background:rgba(167,139,250,.2)}
   ::-webkit-scrollbar{width:6px}
   ::-webkit-scrollbar-track{background:var(--bg)}
   ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
@@ -945,6 +958,7 @@
     <span class="badge blue-badge" id="modeBadge">● ACTIVE</span>
     <span class="badge" id="nsBadge" style="display:none;border-color:var(--purple);color:var(--purple)">ns</span>
     <button class="icon-btn saved-panel-open-btn" onclick="toggleSavedPanel()" title="Saved Prompts">⭐<span class="saved-panel-badge" id="savedPanelBadge"></span></button>
+    <button class="pii-words-btn" id="btn-pii" onclick="togglePiiPanel()" style="display:none" title="Admins only. Define your own PII keywords/names — used to flag possible PII in function-call results instead of relying on built-in guesses.&#10;&#10;Format rules:&#10;1) The whole value is wrapped in double quotes.&#10;2) Words are separated by comma + space: &quot;word1, word2&quot;.&#10;3) Multi-word terms must be wrapped in single quotes: &quot;word1, 'word two'&quot;.&#10;4) 500 character limit total.&#10;&#10;Example: &quot;cpf, email, 'full name', 'social security number'&quot;">🔒 PII's</button>
     <button class="icon-btn" id="themeBtn" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
     <button class="icon-btn" onclick="toggleShortcutHelp()" title="Keyboard shortcuts (?)">⌨</button>
     <button class="icon-btn" onclick="toggleConfig()" title="Settings">⚙</button>
@@ -1273,6 +1287,31 @@
   </div>
 </div>
 
+<!-- PII words panel (SAS Administrators only — server re-checks on every save/load) -->
+<div class="config-panel" id="piiPanel">
+  <div class="config-header">🔒 PII's <button class="icon-btn" onclick="togglePiiPanel()">X</button></div>
+  <div class="config-body">
+    <div class="config-field">
+      <label>Custom PII words / names</label>
+      <input type="text" id="pii-words-input" maxlength="500"
+             placeholder='&quot;cpf, email, &#39;full name&#39;&quot;'
+             oninput="updatePiiWordsCounter()" onblur="normalizePiiWordsInput()">
+      <div style="display:flex;justify-content:flex-end">
+        <span id="pii-words-count" style="font-size:10px;color:var(--text-dim);font-family:var(--mono)">0/500</span>
+      </div>
+    </div>
+    <button class="btn" onclick="savePiiWords()">Save</button>
+    <div class="config-note">
+      <strong>Format:</strong><br>
+      Whole value wrapped in double quotes &middot; words separated by comma + space &middot;
+      multi-word terms wrapped in single quotes &middot; 500 character limit.<br><br>
+      Example: <code>"cpf, email, 'full name', audit"</code><br><br>
+      These words are scanned in function-call results and flagged for admins as possible PII —
+      lets you define what counts as sensitive instead of us guessing.
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -1388,8 +1427,9 @@ async function doLogin(){
 
     $('loginScreen').style.display='none';
     $('appShell').style.display='block';
-    // Hide graphs tab by default — shown only for SAS Administrators after check
+    // Hide graphs tab + PII words button by default — shown only for SAS Administrators after check
     $('btn-graphs').style.display='none';
+    $('btn-pii').style.display='none';
     setConn('green','Authenticated as '+user+' @ '+url.replace(/^https?:\/\//,''));
     // Populate cluster chip with current profile identity
     (function(){
@@ -1419,9 +1459,15 @@ async function doLogin(){
     if(mode!=='history') startLive();
     fetchNow();
 
-    // Show Graphs tab only for SAS Administrators
+    // Show Graphs tab + PII words button only for SAS Administrators.
+    // NOTE: this only toggles UI visibility — the actual guard-rail (whether
+    // function-call data reaches this browser at all, and whether /api/pii-words
+    // accepts a save) is enforced server-side via _is_admin() on every request.
     _checkIsAdmin(url, token).then(function(isAdmin){
-      if(isAdmin) $('btn-graphs').style.display = '';
+      if(isAdmin){
+        $('btn-graphs').style.display = '';
+        $('btn-pii').style.display = '';
+      }
     });
 
   } catch(e){
@@ -1454,6 +1500,7 @@ document.addEventListener('keydown',function(e){
       }
       if($('savedPanel').classList.contains('open')){ toggleSavedPanel(); e.preventDefault(); return; }
       if($('configPanel').classList.contains('open')){ toggleConfig();    e.preventDefault(); return; }
+      if($('piiPanel').classList.contains('open')){ togglePiiPanel();    e.preventDefault(); return; }
       if($('userModal').classList.contains('open')){ closeUserPanel(); e.preventDefault(); return; }
       if($('compareModal').classList.contains('open')){ closeComparison();  e.preventDefault(); return; }
       if($('replayModal').classList.contains('open')){ closeReplay();     e.preventDefault(); return; }
@@ -1507,6 +1554,7 @@ document.addEventListener('keydown',function(e){
       if($('replayModal').classList.contains('open')){ closeReplay(); e.preventDefault(); break; }
       if($('savedPanel').classList.contains('open')){ toggleSavedPanel(); e.preventDefault(); break; }
       if($('configPanel').classList.contains('open')){ toggleConfig();    e.preventDefault(); break; }
+      if($('piiPanel').classList.contains('open')){ togglePiiPanel();    e.preventDefault(); break; }
       if(($('userFilter').value||$('appFilter').value||$('msgSearch').value)){
         clearFilters(); e.preventDefault(); break;
       }
@@ -1535,28 +1583,24 @@ async function getToken(){
 }
 
 // ── Admin check ───────────────────────────────────────────────────────────────
-// Check if the logged-in user is a member of SASAdministrators via Viya Identities API
+// This ONLY drives cosmetic UI (showing/hiding the Graphs tab and PII's button).
+// The actual "who is a SAS Administrator" logic — the group name, the sasboot
+// bypass, the Viya Identities API call — lives exclusively server-side in
+// _is_admin() (liveGenAiMonitoring.py). The browser never computes this itself;
+// it just asks and displays the answer. Every request that touches real data
+// (function-call results, PII words) re-verifies independently on the server,
+// so tampering with this flag in DevTools cannot expose anything — it can only
+// mis-show/hide a button whose backend calls would still be denied.
 async function _checkIsAdmin(viyaUrl, bearerToken){
-  // sasboot is always an admin (built-in superuser, may not be in the group)
-  if((cfg.user||'').toLowerCase() === 'sasboot') return true;
   try {
-    var r = await fetch(proxyUrl('/api/proxy'), {
+    var r = await fetch(proxyUrl('/api/is-admin'), {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        url:    viyaUrl,
-        token:  bearerToken,
-        method: 'GET',
-        path:   '/identities/groups/SASAdministrators/userMembers?limit=200',
-        accept: 'application/vnd.sas.collection+json',
-      })
+      body: JSON.stringify({ url: viyaUrl, token: bearerToken, user: cfg.user }),
     });
     var data = await r.json();
-    console.log('[GenAI Monitor] Admin check — HTTP', r.status, '— members:', JSON.stringify((data.items||[]).map(function(u){ return u.id; })));
     if(!r.ok) return false;
-    return (data.items||[]).some(function(u){
-      return (u.id||'').toLowerCase() === (cfg.user||'').toLowerCase();
-    });
+    return !!data.isAdmin;
   } catch(e){
     console.warn('[GenAI Monitor] Admin check error:', e.message);
     return false;  // fail-closed: deny on error
@@ -1584,7 +1628,9 @@ async function proxyGetAll(apiPath){
   const r = await fetch(proxyUrl('/api/proxy-all'),{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ url: cfg.viyaUrl, path: apiPath, token, limit: 100 }),
+    // 'user' lets the server decide server-side whether this caller is a
+    // SAS Administrator before it redacts function-call data — see _is_admin()
+    body: JSON.stringify({ url: cfg.viyaUrl, path: apiPath, token, user: cfg.user, limit: 100 }),
   });
   if(r.status===401){ token=null; await ensureToken(); return proxyGetAll(apiPath); }
   const data = await r.json();
@@ -1607,12 +1653,155 @@ function applyConfig(){
   if(liveTimer) { clearInterval(liveTimer); startLive(); }
 }
 
+// ── PII words panel (admin only) ────────────────────────────────────────────
+// The list itself is just UX affordance — the server re-verifies admin status
+// on every load/save via _is_admin() and is the only place these words are
+// actually used (merged into the PII scan applied to function-call results).
+function _parsePiiWords(text){
+  text = (text||'').trim();
+  if(text.length>=2 && text[0]==='"' && text[text.length-1]==='"') text = text.slice(1,-1);
+  const words = [];
+  text.split(',').forEach(function(tok){
+    tok = tok.trim();
+    if(!tok) return;
+    if(tok.length>=2 && tok[0]==="'" && tok[tok.length-1]==="'") tok = tok.slice(1,-1).trim();
+    if(tok) words.push(tok);
+  });
+  return words;
+}
+function _formatPiiWords(words){
+  if(!words.length) return '';
+  return '"' + words.map(function(w){ return w.indexOf(' ')!==-1 ? "'"+w+"'" : w; }).join(', ') + '"';
+}
+function updatePiiWordsCounter(){
+  $('pii-words-count').textContent = $('pii-words-input').value.length + '/500';
+}
+function normalizePiiWordsInput(){
+  const el = $('pii-words-input');
+  el.value = _formatPiiWords(_parsePiiWords(el.value));
+  updatePiiWordsCounter();
+}
+async function togglePiiPanel(){
+  const panel = $('piiPanel');
+  panel.classList.toggle('open');
+  if(panel.classList.contains('open')) await loadPiiWords();
+}
+async function loadPiiWords(){
+  try{
+    const r = await fetch(proxyUrl('/api/pii-words'), {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'load', url: cfg.viyaUrl, token, user: cfg.user }),
+    });
+    const j = await r.json();
+    if(!r.ok){ toast('❌ ' + (j.error || 'Failed to load PII words')); return; }
+    $('pii-words-input').value = j.formatted || '';
+    updatePiiWordsCounter();
+  } catch(e){ toast('❌ ' + e.message); }
+}
+// Mirrors the server's _pii_flags() so already-cached messages reflect a new
+// word list immediately, without waiting for the next real fetch/page reload
+// (the server only re-scans on a genuine fetch — cached, unchanged chats
+// otherwise keep whatever piiFlags they were shipped with).
+// search_capability_registry only returns tool/skill documentation, never
+// real data — excluded so its generic descriptions don't false-positive.
+// Mirrors _PII_SCAN_EXCLUDED_FUNCTIONS in liveGenAiMonitoring.py.
+const PII_SCAN_EXCLUDED_FUNCTIONS = new Set(['search_capability_registry']);
+
+function _rescanPiiFlags(words){
+  const list = words || [];
+  Object.keys(_chatCache).forEach(function(id){
+    const entry = _chatCache[id];
+    if(!entry || !Array.isArray(entry.msgs)) return;
+
+    // functionResult doesn't carry the function name itself — trace it back
+    // to the copilotFunctionResponse call via copilotFunctionResponseId.
+    const callNames = {};
+    entry.msgs.forEach(function(m){
+      if((m.type||'').toLowerCase() === 'copilotfunctionresponse' && m.functionCall && m.id){
+        callNames[m.id] = m.functionCall.name;
+      }
+    });
+
+    entry.msgs.forEach(function(m){
+      const type = (m.type||'').toLowerCase();
+      if(type !== 'functionresult' && type !== 'copilotfunctionresponse') return;
+      const src = type === 'copilotfunctionresponse' ? m.functionCall : m.data;
+      if(!src || src.redacted) return;  // non-admin placeholder — nothing to scan
+      const fnName = type === 'copilotfunctionresponse' ? (m.functionCall||{}).name : callNames[m.copilotFunctionResponseId];
+      if(PII_SCAN_EXCLUDED_FUNCTIONS.has(fnName)){ m.piiFlags = []; return; }
+      let blob;
+      try { blob = JSON.stringify(src); } catch(e){ blob = String(src); }
+      const lower = blob.toLowerCase();
+      m.piiFlags = list.filter(function(w){ return lower.indexOf(w.toLowerCase()) !== -1; });
+    });
+  });
+}
+
+async function savePiiWords(){
+  const text = $('pii-words-input').value;
+  if(text.length > 500){ toast('❌ 500 character limit exceeded'); return; }
+  try{
+    const r = await fetch(proxyUrl('/api/pii-words'), {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'save', url: cfg.viyaUrl, token, user: cfg.user, text }),
+    });
+    const j = await r.json();
+    if(!r.ok){ toast('❌ ' + (j.error || 'Failed to save PII words')); return; }
+    $('pii-words-input').value = j.formatted || '';
+    updatePiiWordsCounter();
+    _rescanPiiFlags(j.words);
+    // Full re-render of the current tab from the now-corrected cache — covers
+    // chats whose card wasn't even in the DOM yet (e.g. filtered out of the
+    // current tab), which a targeted DOM patch would silently miss.
+    _rerenderCurrentModeFromCache();
+    toast('✓ PII words saved (' + j.words.length + ')');
+  } catch(e){ toast('❌ ' + e.message); }
+}
+
 // ── Mode ──────────────────────────────────────────────────────────────────────
 // Cache of last fetched data for instant mode-switch re-renders
 var _cachedChats   = [];
 var _cachedMsgsMap = {};
 var _cachedActive  = 0;
 var _cachedCutoff  = null;
+
+// Build a msgsMap from _chatCache for any list of items. Hoisted out of
+// setMode() so other code (e.g. savePiiWords' instant re-render) can reuse it.
+function _msgsFromCache(items){
+  const map = {};
+  items.forEach(c => { map[c.id] = _chatCache[c.id] ? _chatCache[c.id].msgs : null; });
+  return map;
+}
+
+// Re-renders the CURRENTLY active mode straight from _chatCache — no network
+// call. This is the exact "instant" path setMode() uses on tab switch; reused
+// after savePiiWords() so card badges reflect the new word list immediately
+// instead of only after a manual tab switch or page reload.
+function _rerenderCurrentModeFromCache(){
+  if(mode === 'graphs'){ renderGraphs(); return; }
+  const fullItems = _lastAllItems.length ? _lastAllItems : _cachedChats;
+  const hasCachedData = fullItems.length > 0 && (
+    mode === 'active' || mode === 'history' || _lastFetchWasFull
+  );
+  if(!hasCachedData) return;
+  const activeMins = parseInt($('activeMinutes').value)||10;
+  const cutoff     = new Date(Date.now()-activeMins*60*1000);
+  const allActive  = fullItems.filter(i=>new Date(i.modifiedTimeStamp)>=cutoff && isVisibleChat(i));
+  const _hRange    = mode==='history' ? _getHistoryCutoff() : {from:null,to:null};
+  const displayed  = mode==='active' ? allActive
+                   : mode==='history' && (_hRange.from||_hRange.to)
+                     ? fullItems.filter(c=>{
+                         if(loadPinned().has(c.id)) return true;
+                         const ts=new Date(c.modifiedTimeStamp);
+                         if(_hRange.from && ts<_hRange.from) return false;
+                         if(_hRange.to   && ts>_hRange.to)   return false;
+                         return true;
+                       })
+                     : fullItems;
+  const msgsMap = _msgsFromCache(displayed);
+  render(displayed, msgsMap, activeMins, cutoff);
+  applyClientFilters();
+}
 
 function setMode(m){
   mode=m;
@@ -1663,13 +1852,6 @@ function setMode(m){
   }
   else { $('liveBtn').style.display=''; if(!isLive) startLive(); }
   setTimeout(updateStickyOffsets, 50);
-
-  // Helper: build msgsMap from _chatCache for any list of items
-  function _msgsFromCache(items){
-    const m = {};
-    items.forEach(c => { m[c.id] = _chatCache[c.id] ? _chatCache[c.id].msgs : null; });
-    return m;
-  }
 
   // If a fetch is already running, wait for it then re-render
   if(_isFetching && _fetchPromise){
@@ -1937,7 +2119,9 @@ async function _loadPersistedCache(){
     var r = await fetch(proxyUrl('/api/cache'), {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'load', cluster:_cacheCluster(), user:_cacheUser() })
+      // url + token let the server re-check current admin status and re-scrub
+      // the persisted cache on every load — see _is_admin() / _scrub_chat_messages()
+      body: JSON.stringify({ action:'load', cluster:_cacheCluster(), user:_cacheUser(), url: cfg.viyaUrl, token })
     });
     var j = await r.json();
     if(!j.found || !j.data){ console.log('[GenAI Monitor] No server cache found for:', _persistCacheKey()); return; }
@@ -2334,6 +2518,18 @@ function _ensureAllMsgsLoaded(selector){
 
 
 // ── Render ────────────────────────────────────────────────────────────────────
+// Union of piiFlags across every message in a chat — drives the card-level
+// "⚠ PII" badge. Empty for non-admins since the server never sends piiFlags
+// to them (functionCall/data arrive redacted instead).
+function _chatPiiFlags(msgs){
+  if(!Array.isArray(msgs)) return [];
+  const set = new Set();
+  msgs.forEach(function(m){
+    if(Array.isArray(m.piiFlags)) m.piiFlags.forEach(function(f){ set.add(f); });
+  });
+  return [...set];
+}
+
 function render(chats,msgsMap,activeMins,cutoff){
   const main=$('main');
 
@@ -2395,6 +2591,14 @@ function render(chats,msgsMap,activeMins,cutoff){
     const msgCount = (msgs != null && msgs !== undefined) ? msgs.length : '?';
     const chip=`<span class="counter-chip ${isActive?'green-chip':''}">${msgCount}</span>`;
 
+    // PII badge: piiFlags only ever arrive on a message for admins — the
+    // server redacts function-call data (and never computes flags) for
+    // everyone else — so this naturally shows for admins only.
+    const piiWords = _chatPiiFlags(msgs);
+    const piiTag = piiWords.length
+      ? `<span class="tag tag-pii" title="Possible PII detected: ${escHtml(piiWords.join(', '))}">⚠ PII</span>`
+      : '';
+
     // Lazy rendering: only inject message HTML when the card is expanded.
     // Collapsed cards get an empty placeholder — saves DOM nodes and parse time on initial load.
     const msgsLoaded = !collapsed; // expanded cards get messages immediately; collapsed ones wait
@@ -2413,6 +2617,7 @@ function render(chats,msgsMap,activeMins,cutoff){
         </div>
         <div class="chat-badges">
           ${actTag}
+          ${piiTag}
           ${isPinned?'<span class="tag tag-pin">📌 Pinned</span>':''}
           <span class="tag tag-blue">${chat.applicationName||'SAS Landing'}</span>
           <span class="tag tag-purple">${copilot.id||'?'} ${copilot.version||''}</span>
@@ -2456,6 +2661,54 @@ const HIDDEN_MSG_TYPES = new Set([
   'copilotfunctionresponse','copilotFunctionResponse','COPILOTFUNCTIONRESPONSE',
 ]);
 
+// Admin-only function-call/result audit block. The server (liveGenAiMonitoring.py
+// _scrub_chat_messages) already redacts functionCall/data to {redacted:true} for
+// non-admin viewers, so this never has real payload to show unless the logged-in
+// user is a SAS Administrator — this is a display concern only, not the guard-rail
+// itself (that lives server-side, where the raw data is stopped before it ships).
+function renderFunctionMessage(m, type){
+  const isCall   = type === 'copilotfunctionresponse';
+  const redacted = isCall ? !(m.functionCall && m.functionCall.name)
+                           : !(m.data && !m.data.redacted);
+  if(redacted) return '';
+
+  const safeId = (m.id||'').replace(/['"\\]/g,'');
+  const flags  = Array.isArray(m.piiFlags) ? m.piiFlags : [];
+  const flagsHtml = flags.length
+    ? `<span class="tag" style="border-color:rgba(239,68,68,.3);color:var(--red);background:rgba(239,68,68,.1)">⚠ PII: ${flags.map(escHtml).join(', ')}</span>`
+    : '';
+
+  let title, bodyObj;
+  if(isCall){
+    title   = `function call · ${escHtml(m.functionCall.name || '?')}`;
+    bodyObj = m.functionCall.arguments;
+  } else {
+    const resultMsg = m.data && m.data.result && m.data.result.message;
+    title   = 'function result' + (resultMsg ? ' · ' + escHtml(resultMsg) : '');
+    bodyObj = m.data;
+  }
+
+  let json;
+  try { json = JSON.stringify(bodyObj, null, 2); } catch(e){ json = String(bodyObj); }
+
+  return `
+  <div class="message function-msg" data-msg-id="${safeId}">
+    <div class="msg-avatar">⚙</div>
+    <div class="msg-body">
+      <div class="msg-meta">
+        <span class="msg-role">ADMIN · FUNCTION</span>
+        <span class="msg-ts">${fmtTs(m.creationTimeStamp)}</span>
+        <span class="msg-id-badge">${safeId.slice(0,8)}…</span>
+        ${flagsHtml}
+      </div>
+      <details class="function-details">
+        <summary>${title}</summary>
+        <pre class="function-json">${escHtml(json)}</pre>
+      </details>
+    </div>
+  </div>`;
+}
+
 function renderMessage(m){
   // Store the full message object so the bookmark button can retrieve it safely
   if(m.id) _msgStore[m.id] = m;
@@ -2463,8 +2716,9 @@ function renderMessage(m){
   // Normalise type to lowercase for matching
   const type = (m.type||'').toLowerCase();
 
-  // Skip internal function plumbing types immediately
-  if(HIDDEN_MSG_TYPES.has(m.type) || HIDDEN_MSG_TYPES.has(type)) return '';
+  // Function-call/result plumbing: hidden for regular users (and redacted
+  // server-side before it ever arrives); admins get an expandable audit block.
+  if(HIDDEN_MSG_TYPES.has(m.type) || HIDDEN_MSG_TYPES.has(type)) return renderFunctionMessage(m, type);
 
   // SAS API stores content in different fields by message type:
   // - userRequest        → content (string)
