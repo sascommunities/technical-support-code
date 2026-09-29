@@ -228,13 +228,14 @@ else
         rm "$authresp"
 fi
 
+# Create temporary files for user response and headers
+userresp=$(mktemp)
+headers=$(mktemp)
+
 if [ -z "$useracct" ]; then
     # Pull the initial list of users
 
     authcheck
-
-    userresp=$(mktemp)
-    headers=$(mktemp)
 
     echo "NOTE: Pulling users into file $userresp."
     curl -k -s -L "$baseurl/identities/users" -H "Authorization: Bearer $token" -H "Accept: application/json" -D "$headers" > "$userresp"
