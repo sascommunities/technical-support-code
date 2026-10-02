@@ -58,7 +58,69 @@ def _cache_filename(cluster: str, user: str) -> Path:
 # =============================================================================
 
 _CHAT_MESSAGES_RE = re.compile(r"/genAiGateway/v1/chats/[^/]+/messages")
+_CHAT_LIST_RE     = re.compile(r"^/genAiGateway/v1/chats(?:\?|$)")
 _FUNCTION_MSG_TYPES = {"functionresult", "copilotfunctionresponse"}
+
+# -- Per-user chat visibility: non-admins may only see their own chats -------
+# Regular users are not entitled to browse everyone else's Copilot activity —
+# only SAS Administrators get the cross-user "monitor the whole environment"
+# view. Enforced here (server-side, on the already-fetched Viya data) so a
+# non-admin can never see another user's chats no matter what the client sends.
+def _filter_own_chats(items: list, is_admin: bool, requester: str) -> list:
+    if is_admin or not isinstance(items, list):
+        return items
+    req_l = (requester or "").lower()
+    return [c for c in items if isinstance(c, dict) and (c.get("createdBy") or "").lower() == req_l]
+
+
+def _filter_own_cache(data: dict, is_admin: bool, requester: str) -> dict:
+    """Same rule as _filter_own_chats, applied to the persisted-cache dict shape
+    ({chatId: {..., createdBy, msgs, ...}}) instead of a plain list."""
+    if is_admin or not isinstance(data, dict):
+        return data
+    req_l = (requester or "").lower()
+    return {cid: e for cid, e in data.items()
+            if isinstance(e, dict) and (e.get("createdBy") or "").lower() == req_l}
+
+
+def _chat_owner(viya_url: str, bearer: str, chat_id: str):
+    """Look up a single chat's createdBy directly from Viya — used as a defense-
+    in-depth check before returning ANY chat's messages to a non-admin, so
+    pasting a foreign chat ID into the Chat ID filter can't be used to bypass
+    the list-level filtering above. Returns None (fail-closed) on any error."""
+    try:
+        req = urllib.request.Request(
+            "%s/genAiGateway/v1/chats/%s" % (viya_url, chat_id),
+            headers={"Authorization": "Bearer %s" % bearer, "Accept": "application/vnd.sas.collection+json"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, context=SSL_CTX, timeout=15) as r:
+            return json.loads(r.read()).get("createdBy")
+    except Exception as e:
+        print("  [chat-owner] error for %s: %s" % (chat_id, e))
+        return None
+
+
+def _username_from_token(token: str):
+    """Extract the authenticated username directly from the bearer token (a
+    standard UAA-issued JWT, per SAS Viya's SASLogon) instead of trusting
+    whatever "user" string the client sends in the request body — that field
+    is just JSON the browser wrote and can be edited in devtools to claim ANY
+    identity (e.g. "sasboot") without actually holding that identity's token.
+    The real Viya API calls this proxy makes on the caller's behalf still
+    require a genuinely valid token for whoever is embedded in it, so that's
+    what every local admin/ownership decision must be based on.
+    Returns None (fail-closed) if the token isn't a decodable JWT."""
+    try:
+        parts = (token or "").split(".")
+        if len(parts) != 3:
+            return None
+        payload_b64 = parts[1]
+        padding = "=" * (-len(payload_b64) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
+        return claims.get("user_name") or claims.get("sub") or None
+    except Exception:
+        return None
 
 # search_capability_registry only returns tool/skill documentation (schemas,
 # generic descriptions) — never real user/query data — so scanning it for PII
@@ -622,7 +684,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             viya_url  = payload.get("url", "").rstrip("/")
             api_path  = payload.get("path", "")
             bearer    = payload.get("token", "")
-            requester = payload.get("user", "")
+            # Derived from the token itself, never trusted from the client — see
+            # _username_from_token().
+            requester = _username_from_token(bearer) or ""
             page_size = int(payload.get("limit", 100))
             if not api_path:
                 self.send_json(400, {"error": "missing path"}); return
@@ -657,11 +721,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         for s in sorted(pages):
                             result.extend(pages[s])
 
+                # Guard-rail: the chat list itself is scoped to the caller's own
+                # chats unless they're a SAS Administrator — only admins get the
+                # cross-user "monitor everyone" view.
+                if _CHAT_LIST_RE.match(api_path):
+                    is_admin = _is_admin(viya_url, bearer, requester)
+                    result = _filter_own_chats(result, is_admin, requester)
+
                 # Guard-rail: chat-messages listings carry raw function-call
                 # arguments/results (which tables/data were touched, actual
                 # returned rows). Scrub before it leaves the server.
-                if _CHAT_MESSAGES_RE.search(api_path):
+                elif _CHAT_MESSAGES_RE.search(api_path):
                     is_admin = _is_admin(viya_url, bearer, requester)
+                    if not is_admin:
+                        # Defense in depth: block a non-admin from reading a
+                        # foreign chat's messages even if they reference its ID
+                        # directly (e.g. via the Chat ID filter box), bypassing
+                        # the list-level filter above.
+                        chat_id = api_path.split("?")[0].rstrip("/").split("/")[-2]
+                        owner   = _chat_owner(viya_url, bearer, chat_id)
+                        if not owner or owner.lower() != (requester or "").lower():
+                            self.send_json(403, {"error": "You can only view your own chats"}); return
                     _scrub_chat_messages(result, is_admin)
 
                 self.send_json(200, {
@@ -680,6 +760,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
             action  = payload.get("action", "")
             cluster = payload.get("cluster", "").lower().replace("https://","").replace("http://","").rstrip("/")
             user    = payload.get("user", "").lower()
+            viya_url = payload.get("url", "").rstrip("/")
+            bearer   = payload.get("token", "")
+            if action == "load":
+                # Security-sensitive read: never trust the client's claimed "user"
+                # for which cache file to open — a non-admin could otherwise read
+                # another user's persisted cache just by naming them here. Verify
+                # the caller's real identity from their own token instead.
+                verified = _username_from_token(bearer)
+                if verified:
+                    user = verified.lower()
             if not cluster or not user:
                 self.send_json(400, {"error": "cluster and user are required"}); return
             cf = _cache_filename(cluster, user)
@@ -692,9 +782,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     # user WAS a SAS Administrator. Re-check current admin status
                     # on every load and re-scrub — a persisted cache must never
                     # let a since-demoted user keep seeing old function-call data.
-                    viya_url = payload.get("url", "").rstrip("/")
-                    bearer   = payload.get("token", "")
                     is_admin = _is_admin(viya_url, bearer, user)
+                    # Guard-rail: a non-admin's persisted cache must never surface
+                    # another user's chats either — filter it the same way the
+                    # live chat list is filtered, in case it was cached before
+                    # this rule existed or while briefly logged in as someone else.
+                    data = _filter_own_cache(data, is_admin, user)
                     for entry in data.values():
                         if isinstance(entry, dict) and isinstance(entry.get("msgs"), list):
                             _scrub_chat_messages(entry["msgs"], is_admin)
@@ -788,7 +881,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if path == "/api/is-admin":
             viya_url  = payload.get("url", "").rstrip("/")
             bearer    = payload.get("token", "")
-            requester = payload.get("user", "")
+            # Derived from the token itself, never trusted from the client — see
+            # _username_from_token().
+            requester = _username_from_token(bearer) or ""
             self.send_json(200, {"isAdmin": _is_admin(viya_url, bearer, requester)})
             return
 
@@ -800,7 +895,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             action    = payload.get("action", "")
             viya_url  = payload.get("url", "").rstrip("/")
             bearer    = payload.get("token", "")
-            requester = payload.get("user", "")
+            # Derived from the token itself, never trusted from the client — see
+            # _username_from_token().
+            requester = _username_from_token(bearer) or ""
             if not _is_admin(viya_url, bearer, requester):
                 self.send_json(403, {"error": "SAS Administrators only"}); return
 

@@ -172,6 +172,19 @@ Import is always a **safe merge** — existing profiles and favorites are never 
 
 # Dashboard
 
+## Access Levels
+
+The dashboard has two access levels, determined **server-side** from your own Viya bearer token — never from anything the browser reports — checked against the Viya Identities API's `SASAdministrators` group on every request, plus a built-in bypass for the `sasboot` superuser:
+
+| | Regular user | SAS Administrator |
+|---|---|---|
+| **Chat visibility** | Only your own chats, across Active / All / History | Every user's chats across the whole environment |
+| **Graphs tab** | Not visible | Full cross-user analytics |
+| **PII panel / word list** | Not visible | Full read/write access |
+| **Function-call / tool-call payloads** | Never sent to the browser (arrives redacted) | Full raw payload, with PII flags |
+
+A regular user's dashboard behaves like a personal activity log; only administrators get the full "monitor everyone" view.
+
 ## View Modes
 
 | Mode | What it shows |
@@ -188,7 +201,7 @@ All filters combine with each other. Use the **✕ Clear** button to reset all a
 | Filter | Description |
 |---|---|
 | **Chat ID** | Type or paste any part of a chat UUID — partial matches are supported and results update instantly. Click any chat UUID in a card header to copy it to the clipboard. |
-| **User** | Filter to one user's chats (populated automatically from live data) |
+| **User** | Filter to one user's chats (populated automatically from live data). Non-admin viewers have nothing to filter here — every chat you can see is already your own. |
 | **App** | Filter by application, e.g. `SAS Visual Analytics`, `SAS Landing`. In History mode the app list always shows every app seen across all time, regardless of the active date range. |
 | **Search** | Full-text search across all message content — highlights matches, auto-expands cards, shows match count with next/previous navigation |
 
@@ -204,6 +217,12 @@ The header shows the **application name** as the primary title, the **creator** 
 
 Messages are ordered chronologically (oldest first) and display role, timestamp, message ID, full Markdown content, status flags, and a ⭐ bookmark option.
 
+### Copilot Backend Badge
+
+Each card shows a purple badge (`<agent> v<version>`, e.g. `gatewayOrchestrator v1`) naming the internal Copilot backend component that handled that chat — **not** the application name, which is the card's title. Most apps route everything through one component; a few use several, so two chats from the same app can show different badges.
+
+> **SAS Model Studio quirk:** opening a new conversation there creates two separate chat records — the real conversation (`gatewayOrchestrator`) and a short internal retrieval call with no real content (`ragServer`, usually just a few seconds). The dashboard hides the `ragServer` one automatically, but **only for Model Studio** — other apps that use `ragServer` as their actual backend (e.g. SAS Environment Manager) are shown normally. Model Studio's application name is also reported inconsistently by Viya ("Model Studio" vs "SAS Model Studio") — the dashboard treats both as the same app automatically.
+
 ### Compact Mode
 
 Click **▣ Compact** in the toolbar to toggle compact card density. In compact mode:
@@ -216,7 +235,7 @@ The preference is saved automatically and persists across sessions.
 
 Function-call/tool-call payloads — the `copilotFunctionResponse` / `functionResult` messages carrying the raw arguments and results behind every Copilot tool call — are hidden from regular users entirely. The server never sends this raw payload to a non-admin browser (it arrives pre-redacted as `{redacted: true}`), regardless of any PII settings.
 
-For **SAS Administrators**, a **🔒 PII's** button appears in the top-right header (same server-side admin check as the [Graphs](#graphs) tab, re-verified against Viya on every request — a forged client-side admin flag cannot unlock this).
+For **SAS Administrators**, a **🔒 PII's** button appears in the top-right header (same server-side admin check as the [Graphs](#graphs) tab, re-verified against Viya on every request using the identity embedded in your own bearer token — neither a forged client-side admin flag nor an edited username can unlock this).
 
 ### Defining PII keywords
 
@@ -239,7 +258,7 @@ Once saved, every function-call/result message (already-cached chats included) i
 
 ### Security notes
 
-- The word list can only be read or changed by users the server itself confirms are SAS Administrators (checked against the Viya Identities API on every request) — the client's `isAdmin` flag is never trusted
+- The word list can only be read or changed by users the server itself confirms are SAS Administrators (checked against the Viya Identities API on every request) — the client's `isAdmin` flag is never trusted, and neither is any username the client reports; your identity is decoded directly from your own bearer token
 - Non-admin viewers never receive the raw function-call/result payload at all, so PII flags are meaningless — and invisible — to them regardless of what words are configured
 
 ## Pinned Chats
@@ -301,7 +320,7 @@ Close with **×** or **Escape**.
 | Changed | When data last actually changed |
 | Next | Countdown to next fetch (`...` while fetching, `paused` in History mode) |
 | Chats | Chats currently shown after all filters |
-| Total | Total non-embedding chats from the server (only shown when filters reduce the count) |
+| Total | Total non-embedding chats visible to you from the server (only shown when filters reduce the count) — scoped to your own chats if you're not an admin, see [Access Levels](#access-levels) |
 
 ## Saved Prompts (Favorites)
 
@@ -446,7 +465,12 @@ Check `genai-monitor.log` in the same folder. The start script also prints the l
 
 ## Chat counts do not match expectations
 
-The dashboard permanently hides embedding chats and does not include them in any counts. This is by design — they are background system calls, not real user conversations.
+- The dashboard permanently hides embedding chats and does not include them in any counts. This is by design — they are background system calls, not real user conversations.
+- Non-admin users only ever see (and count) their own chats — see [Access Levels](#access-levels). If you're comparing counts with a colleague or an administrator, a mismatch is expected, not a bug.
+
+## A new chat doesn't show up right away
+
+Most apps briefly report a new chat's `modifiedBy` as `anonymous` while the first response is still generating, then switch it to the real username once done — the dashboard hides it for up to 2 minutes while that's the case, to avoid flashing an unattributed chat. **SAS Model Studio** is a known exception: Viya never resolves this field for it at all, so the dashboard skips the wait entirely and shows Model Studio chats as soon as they exist.
 
 ## venv creation fails on Windows
 
@@ -483,6 +507,8 @@ taskkill /PID <pid> /F
 | Bearer tokens | Session memory only — never persisted |
 | Profile data | Stored in `localStorage` — does not include passwords or tokens |
 | Chat cache | Stored in `localStorage` and included in exports — treat the export file as internal data |
+| Chat visibility | Non-admins see only their own chats; SAS Administrators see every user's chats across the environment — enforced server-side on every request, see [Access Levels](#access-levels) |
+| Identity / admin status | Decoded directly from your own Viya bearer token and checked against SASAdministrators group membership — never trusted from anything the browser reports |
 | Function-call / tool payloads | Redacted server-side (`{redacted: true}`) for non-admins — the raw data never leaves the server for them. Admins see the real payload, optionally flagged against the admin-defined PII word list (`pii-config.json`) — see [PII Detection](#pii-detection-sas-administrators-only) |
 | SSL | Certificate verification disabled to support self-signed Viya4 certificates |
 | Network binding | Default `127.0.0.1` (local only). Use `--server` only on trusted internal networks |
