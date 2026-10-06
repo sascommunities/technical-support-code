@@ -1,15 +1,26 @@
 # SAS Viya Cleanwork Utility
 
-These files were created to facilitate identifing unused paths in the WORK library directory, removing any that do not have an associated compute pod running.
+These files were created to facilitate identifing unused paths in the WORK library directory, removing any that do not have an associated pod running.
+
+## Alternatives
+- When using preformatted and pre-mounted local storage (such as Azure's Temp disks), [Rancher's local path provisioner](https://github.com/rancher/local-path-provisioner) along with [Generic Ephemeral Volumes](https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/#generic-ephemeral-volumes) can be used, removing the need for a separate cleanwork utility as Kubernetes would remove the volume when the pod ends.
+- When using cloud provider managed ephemeral storage solutions, the native provisioning and mounting mechanisms provided by the cloud platform (along with Generic Ephemeral Volumes) could be leveraged instead of this provisioner and the separate cleanwork utility. For example:
+  - For Azure SKUs with NVME disks (e.g. L-series SKUs), [Azure Container Storage v2](https://learn.microsoft.com/en-us/azure/storage/container-storage/container-storage-introduction) can provide a provisioner for these local NVME disks.
+  - For AWS EKS instance store volumes, the native EC2 instance store provisioning ([EKS CSI](https://docs.aws.amazon.com/eks/latest/userguide/lis-csi.html)) driver can be used.
+  - For GCP GKE, when using a [Local SSD](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/local-ssd) machine type it will use these for ephemeral storage (emptyDir) by default.
+
+Have a look at [Project-Mountpoint](https://github.com/sassoftware/project-mountpoint) for more.
+
+## Files
 
 There are 7 files provided:
 - README.md - This readme file
 - sas-cleanwork.sh - This is the script that is run in the sas-cleanwork container.
 - sas-cleanwork-configmap.yaml - ConfigMapGenerator definition file to make a ConfigMap using the sas-cleanwork.sh script.
 - sas-cleanwork-cronjob.yaml - This resource object creates a cronJob that runs the cleanwork script. Its usage is appropriate if the WORK path is shared among all nodes, or if only a single node is in use.
-- sas-cleanwork-cronjob-patch.yaml - When using the CronJob, this patch defines the WORK volume to use, sets the schedule and whether or not the cronjob is suspended.
+- sas-cleanwork-cronjob-patch.yaml - When using the CronJob, this patch defines the WORK volume to use, sets the schedule and whether or not the cronjob is suspended, as well as the maximum age of WORK paths in minutes (default 10080).
 - sas-cleanwork-ds.yaml - This resource object creates a DaemonSet that runs on each compute node. Its usage is appropraite if the WORK path is local to each node and multiple nodes are present.
-- sas-cleanwork-ds-patch.yaml - When using the Daemonset, this patch file allows you to specify the volume for the WORK library and how long the process should sleep between running the cleanup script.
+- sas-cleanwork-ds-patch.yaml - When using the Daemonset, this patch file allows you to specify the volume for the WORK library and how long the process should sleep between running the cleanup script, as well as the maximum age of WORK paths in minutes (default 10080).
 
 ## Usage -- Non-DAC (deployment as code)
 

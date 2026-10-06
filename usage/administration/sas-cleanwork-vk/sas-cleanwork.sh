@@ -1,26 +1,25 @@
 #!/bin/bash
 
-# Copyright © 2025, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
+# Copyright © 2026, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
 
 # Script to remove orphaned SASWORK libraries.
 # This script performs the following actions:
 # - Retrieves the launcher client secret from consul
 # - Obtains a SAS Logon oauth token as the launcher client
-# - Checks the saswork path for the presence of directory "tmp" to determine if we are 
-#   setting a custom COMPUTESERVER_TMP_PATH (which will prevent the creation of tmp)
-# - If COMPUTESERVER_TMP_PATH is in use, extracts part of the GUID from the WORK directory based on
-#   the pod name. We do this because the pod name might not contain the launcher process ID exactly.
-# - If COMPUTESERVER_TMP_PATH is not in use, it will use the directory name in tmp/compsrv/default as
-#   the compute server ID, and for others behave the same as above, pulling the GUID from the directory
-#   name.
-# - When we have a compute server ID, we call the compute service to see if the ID is valid and if not,
-#   delete the directory
-# - When we have the GUID fragment, we use this to query the launcher service for any processes starting
-#   with that fragment. If we find any, we check their state to see if they've completed. If we don't find
-#   them or they have completed, we delete the directory.
+# - Evaluates any top-level WORK/SASUTIL directories (i.e. COMPUTESERVER_TMP_PATH in use):
+#   - If they exceed the configured maximum age, delete them.
+#   - If not, extract the hostname from the directory name and strip the suffix
+#     then query the launcher service to determine if the directory is orphaned.
+#   - Also removes any "results-" files over 24 hours old stored at the top level.
+# - Walks the tmp subdirectory paths.
+#   - For compsrv, the subdirectories are named for the compute server ID. Poll the compute service to see
+#     if the compute server is still valid. If no longer valid, also remove any associated spool or run directories.
+#   - For batch and connectserver, the subdirectories use the same naming convention as the top-level
+#     discovery, so this uses the same process as the top-level evaluation.
 #
-# The transformers mount the external work path into /saswork in the pod where this script runs.
+# The transformers mount the external work path into /saswork in the pod where this script runs as well as specify 
+# the maximum age for the WORK directories and provide scheduling options.
 #
 # When COMPUTESERVER_TMP_PATH is being used, this top-level directory will contain:
 # - WORK library directories with the name format "SAS_workXXXXXXXXXXXXX_{pod_name}"
@@ -58,15 +57,11 @@ fi
 
 # Get an oauth token from SAS Logon Manager
 echo "NOTE: Attempting to get an oauth token from SAS Logon Manager."
-token=$(curl -s "https://sas-logon-app/SASLogon/oauth/token" \
+if ! token=$(curl -fsS "https://sas-logon-app/SASLogon/oauth/token" \
     -H "Accept: application/json" \
     -H "Content-Type: application/x-www-form-urlencoded" \
     -u "sas.launcher:${secret}" \
-    -d 'grant_type=client_credentials' | sed "s/{.*\"access_token\":\"\([^\"]*\).*}/\1/g")
-
-# Stop if we failed to get a token
-if [[ -z "$token" ]]
-then
+    -d 'grant_type=client_credentials' | jq -er '.access_token | select(type == "string" and length > 0)'); then
     echo "ERROR: Failed to get a valid token from SASLogon."
     exit 1
 fi
@@ -74,12 +69,35 @@ fi
 # Define variables
 del="no"
 sids=()
+# To avoid leaving unparseable WORK directories indefinitely, set a maximum age for WORK directories.
+maxage=${MAX_WORK_AGE:-10080}  # Maximum age in minutes
 
 # Define a function to process an array of WORK directories.
 # This expects a "sid" variable populated with directories in the form SAS_workXXXXXXXXXXXXX_{pod_name}
 function wdirclean {
         
+        # Break if sid is null or not a valid directory.
+        if [[ -z "$sid" || ! -d "$sid" ]]; then
+            echo "WARNING: Skipping invalid or empty WORK directory."
+            return
+        fi
+
+        # Break if sid isn't prefixed with SAS_work or SAS_util
+        if [[ "$sid" != *SAS_work* && "$sid" != *SAS_util* ]]; then
+            echo "WARNING: Skipping WORK directory \"${sid}\" not prefixed with SAS_work or SAS_util."
+            return
+        fi
+
         echo "NOTE: Checking WORK directory ${sid}."
+
+        # If the directory is older than the maximum age, we should delete it.
+        if [[ $(find "$sid" -maxdepth 0 -type d -mmin "+$maxage") ]]; then
+            echo "NOTE: Deleting WORK directory ${sid} older than $maxage minutes."
+            rm -rf "$sid"
+            del="yes"
+            return
+        fi
+
         # Here, sid would resolve to a full path (/saswork/SAS_workXXXXXXXXXXXXX_{pod_name})
         # What we want is the pod name from this, so we use parameter expansion on the variable to
         # remove everything before the last "_" character.
@@ -87,30 +105,28 @@ function wdirclean {
         podname="${sid##*_}"
         echo "NOTE: Extracted pod name ${podname} from path."
 
-        # It's possible that the pod name does contain the launcher ID if the job name (e.g. sas-compute-server)
-        # is longer than 20 characters, as SAS truncates this at 26 characters, and SWO is not in use. 
-        # This leads to a possible 6 character difference when Kubernetes adds its own suffix to the job name.
-        # Because of this, we need to extract the characters that will match, and search for processes that match 
-        # that prefix.
+        # The "podname" we've extracted above is the end of the WORK directory path, which is a possibly truncated version of the pod name, the hostname resolve from within the pod. 
+        # Truncation from pod to host name occurs when the pod name exceeds 63 characters in length.
 
-        prefix=$( echo "${podname}" | sed -E 's/.*([a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}).*/\1/')
-        # If the prefix doesn't match the regular expression we should stop and not attempt to query the launcher service with it, as this could lead to unintended consequences.
-        if ! [[ "$prefix" =~ ^[a-z0-9]{8}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$ ]]; then
-            echo "WARN: Extracted prefix ${prefix} does not match expected format. Skipping query to launcher service for this directory."
-            return
-        fi
-        echo "NOTE: Extracted launcher process ID prefix ${prefix} from pod name."
+        # The hostname could be the full pod name that includes the launcher process ID or could be truncated to the point that the launcher process ID is not present at all.
 
-        # Now that we have the prefix of the launcher process ID, we need to call the launcher service to see if
-        # there are any that match this prefix. We'll use the startsWith filter against /launcher/processes and
-        # the token from above to do this. We'll write the output to our launchtmp temporary file.
+        # This truncation occurs in a few different places:
+        # 1. SWO Disabled - Launcher will truncate the job name to 27 characters, then append its 36 character process ID to form the final job name it submits to Kubernetes to meet Kubernetes maximum job name length requirement.
+        # -- Kubernetes needs to append its own suffix to the job name when it creates the pod. It will enforce the same maximum length of 63 characters, so will truncate the process ID from the pod name and subsequent hostname.
+        # -- For example, a process ID of 4da4cf80-a9f1-450a-9fee-3441f978ebe9 might become 4da4cf80-a9f1-450a-9fee-3441f9abc12
+        # 2. SWO Enabled - Launcher truncates the job name to 100 characters (99 + "-") before appending its 36 character process ID. SWO adds its job ID as a suffix to this. (e.g. -1234)
+        # -- While the pod name might be 136 characters plus the job ID, the "hostname" will be truncated to 63 characters. This means the entire launcher process ID could be truncated from the WORK path as well.
 
+        # Strip the job ID or Kubernetes suffix from the hostname if present by removing everything after the last hyphen in the hostname.
+        prefix=${podname%-*}
+
+        # Query the launcher service for a process whose uuid starts with the extracted prefix. The uuid would be the full job name passed to Kubernetes or SWO.
         echo "NOTE: Checking launcher service for processes starting with ${prefix}."
-        curl -s "https://sas-launcher/launcher/processes?filter=startsWith(id,'${prefix}')" \
+        curl -s "https://sas-launcher/launcher/processes?filter=startsWith(uuid,'${prefix}')" \
             -H "Authorization: Bearer $token" \
             -H "Accept: application/json" \
             -o "$launchtmp"
-        
+
         # We now need to check our json file to see if we retrieved any results.
 
         proccount=$(jq '.count' "$launchtmp")
@@ -162,13 +178,20 @@ launchtmp=$(mktemp)
 # Because COMPUTESERVER_TMP_PATH only applies to the compute server, need to check both the top-level path
 # for SAS_work directories and results files, and if there is a tmp directory present, parse through it as well.
 
-# Pull an array of top-level SAS_work directories. -maxdepth only checks in the path, -type only returns directories.
+# Pull an array of top-level SAS_work directories. -maxdepth 1 only checks in the path, -type d only returns directories.
 
 echo "NOTE: Checking for top-level WORK directories."
+
+# Delete top-level WORK directories older than the maximum age.
+find /saswork -maxdepth 1 -type d \( -name "SAS_work*" -o -name "SAS_util*" \) -mmin "+$maxage" -print
+echo "NOTE: Deleting top-level WORK directories older than $maxage minutes."
+find /saswork -maxdepth 1 -type d \( -name "SAS_work*" -o -name "SAS_util*" \) -mmin "+$maxage" -exec rm -rf {} \;
+
+
 mapfile -t sids < <(find /saswork -maxdepth 1 -type d \( -name "SAS_work*" -o -name "SAS_util*" \) -print)
 echo "NOTE: Found ${#sids[@]} top-level WORK directories."
 
-# Run the above defined function on each folder.
+# Run the wdirclean function defined above for each folder.
 for sid in "${sids[@]}"; do
     wdirclean
     del="no"
@@ -193,7 +216,7 @@ if [[ -d "/saswork/tmp" ]]; then
             if [[ -z "${sid##*\*}" ]]; then
                 echo "NOTE: No contents found in /saswork/tmp/${dir}/default/."
             else
-                # Skip if the directory was created in the last 10 minutes
+                # Skip if the directory was created in the last 10 minutes (we could be running as a compute server is starting up)
                 if [[ $(find "${sid}" -maxdepth 0 -type d -mmin -10) ]]; then
                     echo "NOTE: Directory ${sid} was created less than 10 minutes ago. Skipping."
                     continue
@@ -205,8 +228,14 @@ if [[ -d "/saswork/tmp" ]]; then
                     # If so, this means the ID should be the compute server process ID
                     # Call the compute service API to see if this process still exists.
                     echo "NOTE: Subdirectory ${sid##*/} appears to be a compute server directory."
-                    echo "NOTE: Checking with the compute service if server id ${pid} is a valid compute server."
-                    httpresp=$(curl -sI "https://sas-compute/compute/servers/${pid}" --write-out "%{response_code}" -H "Authorization: Bearer $token" -o /dev/null)
+                    # If the directory exceeds the max age, delete it without checking.
+                    if [[ $(find "${sid}" -maxdepth 0 -type d -mmin "+$maxage") ]]; then
+                        echo "NOTE: Directory ${sid} exceeds max age of ${maxage} minutes. Deleting."
+                        httpresp="404"
+                    else
+                        echo "NOTE: Checking with the compute service if server id ${pid} is a valid compute server."
+                        httpresp=$(curl -sI "https://sas-compute/compute/servers/${pid}" --write-out "%{response_code}" -H "Authorization: Bearer $token" -o /dev/null)
+                    fi
 
                     # If we got back a 404, delete the directory.
                     if [[ "$httpresp" = "404" ]]; then
@@ -234,29 +263,46 @@ if [[ -d "/saswork/tmp" ]]; then
                     # this sets "del" = "yes" if we deleted something, so we can check this and delete the log and run directories if they exist.
                     ## Batch Server
                     # Check for Batch log files and delete them if they exist (named SASBatchScriptDebug.uid##.timestamp.podname.log)
-                    if [[ "$del" = "yes" ]] && [[ "$dir" = "batch" ]] && [[ -n $(ls -A "/saswork/log/batch/default/SASBatchScriptDebug.*${sid##*_}.log" 2> /dev/null) ]]; then 
-                        echo "NOTE: Found orphaned batch server log files for ${sid##*_}. Deleting."
-                        rm -f "/saswork/log/batch/default/SASBatchScriptDebug.*${sid##*_}.log"; fi
+                    if [[ "$del" = "yes" ]] && [[ "$dir" = "batch" ]]; then
+                        for batch_log in /saswork/log/batch/default/SASBatchScriptDebug.*"${sid##*_}".log; do
+                            [[ -e "$batch_log" || -L "$batch_log" ]] || continue
+                            echo "NOTE: Found orphaned batch server log file for ${sid##*_}. Deleting."
+                            rm -f -- "$batch_log"
+                        done
+                    fi
                     # There are two possible formats for the batch server's run directories depending on how the batch server was launched:
                     # /saswork/run/batch/default/uid{uid}/{filesetname} or /saswork/run/batch/default/uid{uid}/job.{tempName}
                     # {tempName} is used when there is no fileset associated with the batch job, and would typically occur when using runsaslm instead of submitpgm.
                     # {tempName} includes the pod name, so we can use this to identify the correct directory to delete.
                     # {filesetname} does not include the pod name, which makes things more complicated.
                     # Check for Batch run directories and delete them if they exist (named *{podname}) -- this is the tempName format.
-                    if [[ "$del" = "yes" ]] && [[ "$dir" = "batch" ]] &&  [[ -n $(ls -A "/saswork/run/batch/default/*/*${sid##*_}" 2> /dev/null) ]]; then
-                        echo "NOTE: Found orphaned batch server run directories for ${sid##*_}. Deleting."
-                        rm -rf "/saswork/run/batch/default/*/*${sid##*_}"; fi
+                    if [[ "$del" = "yes" ]] && [[ "$dir" = "batch" ]]; then
+                        for batch_run_dir in /saswork/run/batch/default/*/*"${sid##*_}"; do
+                            [[ -e "$batch_run_dir" || -L "$batch_run_dir" ]] || continue
+                            echo "NOTE: Found orphaned batch server run directory for ${sid##*_}. Deleting."
+                            rm -rf -- "$batch_run_dir"
+                        done
+                    fi
                     # Check for Batch run directories in the filesetname format -- this is more complex as we don't have the pod name to match against.
                     # The path /saswork/run/batch/default/*/*/SASBatchScriptDebug.log will have a line HOSTNAME={podname} which we can use to identify the correct directory to delete.
-                    if [[ "$del" = "yes" ]] && [[ "$dir" = "batch" ]] && ( grep -q "${sid##*_}" /saswork/run/batch/default/*/*/SASBatchScriptDebug.log 2> /dev/null ); then
-                        echo "NOTE: Found orphaned batch server run directories for ${sid##*_}. Deleting."
-                        # Use grep -l to get the list of files containing the pod name, then use dirname to get the parent directory of the log file, which is the directory we want to delete.
-                        grep -l "${sid##*_}" /saswork/run/batch/default/*/*/SASBatchScriptDebug.log 2> /dev/null | xargs -I {} dirname {} | xargs rm -rf; fi
+                    if [[ "$del" = "yes" ]] && [[ "$dir" = "batch" ]]; then
+                        for debug_log in /saswork/run/batch/default/*/*/SASBatchScriptDebug.log; do
+                            [[ -f "$debug_log" ]] || continue
+                            if grep -Fxq "HOSTNAME=${sid##*_}" "$debug_log"; then
+                                echo "NOTE: Found orphaned batch server run directory for ${sid##*_}. Deleting."
+                                rm -rf -- "${debug_log%/SASBatchScriptDebug.log}"
+                            fi
+                        done
+                    fi
                     ## Connect Server
                     # Check for Connect Server run directories and delete them if they exist
-                    if [[ "$del" = "yes" ]] && [[ "$dir" = "connectserver" ]] && [[ -n $(ls -A "/saswork/run/connectserver/default/*${sid##*_}*" 2> /dev/null) ]]; then 
-                    echo "NOTE: Found orphaned connect server run directories for ${sid##*_}. Deleting."
-                    rm -rf "/saswork/run/connectserver/default/*${sid##*_}*"; fi
+                    if [[ "$del" = "yes" ]] && [[ "$dir" = "connectserver" ]]; then
+                        for connect_run_dir in /saswork/run/connectserver/default/*"${sid##*_}"*; do
+                            [[ -e "$connect_run_dir" || -L "$connect_run_dir" ]] || continue
+                            echo "NOTE: Found orphaned connect server run directory for ${sid##*_}. Deleting."
+                            rm -rf -- "$connect_run_dir"
+                        done
+                    fi
                     # Set del back to no
                     del="no"
                 fi

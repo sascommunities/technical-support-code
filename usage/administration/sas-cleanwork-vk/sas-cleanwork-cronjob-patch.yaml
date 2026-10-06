@@ -1,3 +1,20 @@
+# SAS Cleanwork CronJob Patch Configuration
+# Patch 1 - Define the maximum age for WORK paths, in minutes. Any WORK paths found older than this will be deleted.
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: sas-cleanwork-cj-maxage-config
+patch: |-
+  - op: add
+    path: /spec/jobTemplate/spec/template/spec/containers/0/env/-
+    value: 
+      name: MAX_WORK_AGE
+      value: "{{ MAX_WORK_AGE }}"
+target:
+  kind: CronJob
+  name: sas-cleanwork
+---
+# Patch 2 - Define the WORK volume for the CronJob.
 apiVersion: builtin
 kind: PatchTransformer
 metadata:
@@ -12,6 +29,7 @@ target:
   kind: CronJob
   name: sas-cleanwork
 ---
+# Patch 3 - Define the schedule for the CronJob.
 # Next to "value" you can define any cron syntax schedule for the cron job. '0 0 * * *' is midnight every day.
 apiVersion: builtin
 kind: PatchTransformer
@@ -25,6 +43,7 @@ target:
   kind: CronJob
   name: sas-cleanwork
 ---
+# Patch 4 - Enable or disable the CronJob.
 # If you want the cron job to be disabled, set value to "true"
 apiVersion: builtin
 kind: PatchTransformer

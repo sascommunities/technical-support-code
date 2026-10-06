@@ -14,6 +14,16 @@ The script provided here performs the preparation actions necessary to make use 
 
 The daemonset runs on nodes tagged with the workload.sas.com/class label of compute, cas, cascontroller, or casworker.
 
+## Alternatives
+
+- When using preformatted and pre-mounted local storage (such as Azure's Temp disks), [Rancher's local path provisioner](https://github.com/rancher/local-path-provisioner) along with [Generic Ephemeral Volumes](https://kubernetes.io/docs/concepts/storage/ephemeral-volumes/#generic-ephemeral-volumes) could be used instead, removing the need for a separate [cleanwork utility](../sas-cleanwork-vk) as Kubernetes would remove the volume when the pod ends.
+- When using cloud provider managed ephemeral storage solutions, the native provisioning and mounting mechanisms provided by the cloud platform (along with Generic Ephemeral Volumes) could be leveraged instead of this provisioner and the separate [cleanwork utility](../sas-cleanwork-vk). For example:
+  - For Azure SKUs with NVME disks (e.g. L-series SKUs), [Azure Container Storage v2](https://learn.microsoft.com/en-us/azure/storage/container-storage/container-storage-introduction) can provide a provisioner for these local NVME disks.
+  - For AWS EKS instance store volumes, the native EC2 instance store provisioning ([EKS CSI](https://docs.aws.amazon.com/eks/latest/userguide/lis-csi.html)) driver can be used.
+  - For GCP GKE, when using a [Local SSD](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/persistent-volumes/local-ssd) machine type it will use these for ephemeral storage (emptyDir) by default.
+
+Have a look at [Project-Mountpoint](https://github.com/sassoftware/project-mountpoint) for more.
+
 ## Functionality
 
 The daemonset runs a script that performs the following actions on each node with the configured labels:

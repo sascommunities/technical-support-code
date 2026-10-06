@@ -1,3 +1,20 @@
+# SAS Cleanwork DaemonSet Patch Configuration
+# Patch 1 - Define the maximum age for WORK paths, in minutes. Any WORK paths found older than this will be deleted.
+apiVersion: builtin
+kind: PatchTransformer
+metadata:
+  name: sas-cleanwork-ds-maxage-config
+patch: |-
+  - op: add
+    path: /spec/template/spec/containers/0/env/-
+    value: 
+      name: MAX_WORK_AGE
+      value: "{{ MAX_WORK_AGE }}"
+target:
+  kind: DaemonSet
+  name: sas-cleanwork
+# Patch 2 - Define the WORK volume for the DaemonSet.
+---
 apiVersion: builtin
 kind: PatchTransformer
 metadata:
@@ -16,6 +33,7 @@ apiVersion: builtin
 kind: PatchTransformer
 metadata:
   name: set-cleanwork-timer
+# Patch 3 - Define the sleep timer for the DaemonSet. This controls how long the process should sleep between running the cleanup script.
 patch: |-
   - op: add
     path: /spec/template/spec/containers/0/env/-
