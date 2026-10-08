@@ -11,14 +11,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # PREREQUISITE: Stop all midtier servers.
-# Usage: 1. .\clean_midtier_s9.ps1
+# Usage: 1. .\clean_midtier_s9.ps1 -configDir <path_to_sas_config_directory> [-cacheLocatorOnly]
 
-
-### GET USER INPUTS
-# Get "cache locator only" switch and sasconfig directory location as inputs
-# c=cache locator only <true|false>, d=sas config directory location (include LevN) [required]
-param($c,[Parameter(Mandatory=$true)]$d)
-
+# Parse arguments
+param(
+	[Parameter(Mandatory=$true)]
+	[string]$configDir,
+	[switch]$cacheLocatorOnly
+)
 
 ### DEFINE FUNCTIONS
 ## GEMFIRE
@@ -132,7 +132,7 @@ function clean_webserver {
 
 ### INITIALIZE
 ## VALIDATE USER INPUTS
-$sasconfigdir = $d #rename user-provided cfgdir param for clarity in later use
+$sasconfigdir = $configDir #rename user-provided cfgdir param for clarity in later use
 $rundatetime = Get-Date -Format yyyyMMdd_HHmmss #save run date-time as string
 
 
@@ -153,20 +153,15 @@ Else {
 	exit
 }
 
-If ( $c -eq 'true' ) {
-    $cachelocatoronly=1
+If ( $cacheLocatorOnly ) {
 	Write-Host "Cache Locator ONLY flag specified. Only working on Cache Locator files for this run."
 	clean_gemfire
 }
-ElseIf ($c -eq 'false' -Or $c -eq $null ) {
-	$cachelocatoronly=0
+Else {
 	Write-Host "No Cache Locator flag specified, running on all files." #debug
 	clean_activemq
 	clean_gemfire
 	clean_webappsvr
 	clean_webappnlogs
 	clean_webserver
-}
-Else {
-	Write-Host "Cache locator flag is not specified correctly, please check command."
 }
