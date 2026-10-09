@@ -63,7 +63,13 @@ function jqparsecheck {
 
 function authcheck {
     # Extract the expiration epoch from the token
-    exp=$(echo "$token" | cut -d. -f2 | tr '_-' '/+' | (read input; printf "%s==" "$input") | base64 -d| jq -r '.exp')
+    payload=$(echo "$token" | cut -d. -f2 | tr '_-' '/+')
+    # Pad base64 payload to a multiple of 4 characters.
+    case $(( ${#payload} % 4 )) in
+        2) payload="${payload}==" ;;
+        3) payload="${payload}=" ;;
+    esac
+    exp=$(echo "$payload" | base64 -d | jq -r '.exp')
     # If the token is expired or will expire within 60 seconds, refresh it.
     if [ "$(date +%s)" -ge "$exp" ] || [ "$((exp - $(date +%s)))" -lt 60 ]
         then
