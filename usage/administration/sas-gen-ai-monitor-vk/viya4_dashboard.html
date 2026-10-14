@@ -1298,18 +1298,17 @@ code,kbd,pre,.md-code,.msg-id-badge,.msg-ts,.chat-id,.statusbar strong{font-vari
                  autocomplete="off" spellcheck="false">
           <small>External HTTPS URL of your Viya deployment</small>
         </div>
-        <div class="login-field">
-          <label>Username</label>
-          <input type="text" id="login-user" placeholder="sasboot" value="sasboot"
-                 autocomplete="username">
-        </div>
-        <div class="login-field">
-          <label>Password</label>
-          <input type="password" id="login-pass" placeholder="&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;&#9679;"
-                 autocomplete="current-password">
+      </div>
+      <div class="login-step"><span class="login-step-num">3</span> Sign in</div>
+      <div class="login-fields">
+        <div class="login-field" id="pkce-code-field" style="display:none">
+          <label>Code from SAS Logon</label>
+          <input type="text" id="login-code" placeholder="Paste the code shown after signing in"
+                 autocomplete="off" spellcheck="false">
+          <small>A new tab opened SAS Logon — sign in there, then paste the code it shows back here</small>
         </div>
       </div>
-      <div class="login-step"><span class="login-step-num">3</span> Options</div>
+      <div class="login-step"><span class="login-step-num">4</span> Options</div>
       <div class="login-fields">
         <div class="login-field">
           <label>Poll interval <span style="text-transform:none;letter-spacing:0;font-size:12px">(seconds)</span></label>
@@ -1317,8 +1316,9 @@ code,kbd,pre,.md-code,.msg-id-badge,.msg-ts,.chat-id,.statusbar strong{font-vari
         </div>
       </div>
       <div class="login-error" id="loginError"></div>
-      <button class="login-btn" id="loginBtn" onclick="doLogin()">Connect &rarr;</button>
-      <p class="login-note" style="margin-top:12px">Profiles saved locally &middot; passwords in memory only</p>
+      <button class="login-btn" id="loginBtn" onclick="startViyaSignIn()">Sign in with Viya &rarr;</button>
+      <button class="login-btn" id="loginFinishBtn" onclick="finishViyaSignIn()" style="display:none">Finish Sign-in &rarr;</button>
+      <p class="login-note" style="margin-top:12px">Profiles saved locally &middot; your SAS Viya password is never seen by this app &middot; nothing is persisted beyond the Viya URL</p>
     </div>
   </div>
 </div>
@@ -1712,6 +1712,12 @@ let cfg = {
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let token = null, tokenAt = 0;
+// Session-memory only, like `token` — lets getToken() silently renew the
+// access token (grant_type=refresh_token) instead of ever holding a password.
+let refreshToken = null;
+// PKCE verifier for the in-flight sign-in, held only between startViyaSignIn()
+// opening SAS Logon and finishViyaSignIn() redeeming the pasted code.
+let _pendingPkceVerifier = null;
 let lastHash = '', lastChange = '—', cycle = 0;
 let liveTimer = null, countdownTimer = null, nextPollSecs = 0;
 let mode = 'active', isLive = true, sortOrder = 'newest';
@@ -1814,97 +1820,171 @@ function sha1(s){
 }
 
 // ── Authentication ──────────────────────────────────────────────────────────
-async function doLogin(){
-  const url     =$('login-url').value.trim().replace(/\/+$/,'');
-  const user    =$('login-user').value.trim();
-  const pass    =$('login-pass').value;
-  const interval=parseInt($('login-interval').value)||5;
-  const btn     =$('loginBtn');
+// OAuth2 PKCE, authorization_code grant — never a password. The verifier only
+// needs to be known again by whoever started the flow, and that is always
+// this same browser tab, so it's generated here client-side; no server-side
+// session is needed (unlike a shared-backend app that serves many users from
+// one process — this proxy already treats each tab as independent).
+function _b64url(bytes){
+  let bin = '';
+  bytes.forEach(b => bin += String.fromCharCode(b));
+  return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+async function _pkcePair(){
+  const verifier  = _b64url(crypto.getRandomValues(new Uint8Array(64)));
+  const digest     = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  const challenge  = _b64url(new Uint8Array(digest));
+  return { verifier, challenge };
+}
 
+// Reads the username straight out of the access token (a JWT) instead of
+// ever asking for one in a form — the same trick the server uses server-side
+// (_username_from_token() in liveGenAiMonitoring.py) so the two can never
+// disagree about who is signed in.
+function _usernameFromToken(tok){
+  try{
+    const parts = (tok||'').split('.');
+    if(parts.length !== 3) return null;
+    let payload = parts[1].replace(/-/g,'+').replace(/_/g,'/');
+    while(payload.length % 4) payload += '=';
+    const claims = JSON.parse(atob(payload));
+    return claims.user_name || claims.sub || null;
+  } catch(e){ return null; }
+}
+
+// Step 1: open SAS Logon's own hosted sign-in page in a new tab. It shows a
+// code on success (no redirect_uri is passed, so there's nothing to redirect
+// to) — the user copies that back here to finish.
+async function startViyaSignIn(){
+  const url = $('login-url').value.trim().replace(/\/+$/,'');
   $('loginError').classList.remove('show');
-  if(!url) { showLoginError('Viya Ingress URL is required.'); return; }
-  if(!user){ showLoginError('Username is required.'); return; }
-  if(!pass){ showLoginError('Password is required.'); return; }
+  if(!url){ showLoginError('Viya Ingress URL is required.'); return; }
   if(!/^https?:\/\//i.test(url)){ showLoginError('URL must start with https://'); return; }
 
-  btn.disabled=true; btn.textContent='Connecting...';
+  const { verifier, challenge } = await _pkcePair();
+  _pendingPkceVerifier = verifier;
+
+  const authorizeUrl = url + '/SASLogon/oauth/authorize?' + new URLSearchParams({
+    client_id: 'sas.cli',
+    response_type: 'code',
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+  }).toString();
+  window.open(authorizeUrl, '_blank');
+
+  $('pkce-code-field').style.display = '';
+  $('loginBtn').style.display = 'none';
+  $('loginFinishBtn').style.display = '';
+  $('login-code').focus();
+}
+
+// Step 2: redeem the pasted code (only valid together with the verifier from
+// step 1, which only this tab holds) for a real access token.
+async function finishViyaSignIn(){
+  const url      = $('login-url').value.trim().replace(/\/+$/,'');
+  const code     = $('login-code').value.trim();
+  const interval = parseInt($('login-interval').value) || 5;
+  const btn      = $('loginFinishBtn');
+
+  $('loginError').classList.remove('show');
+  if(!code){ showLoginError('Paste the code SAS Logon showed you.'); return; }
+  if(!_pendingPkceVerifier){ showLoginError('Sign-in expired — click "Sign in with Viya" again.'); return; }
+
+  btn.disabled=true; btn.textContent='Signing in...';
   try {
     const r=await fetch(proxyUrl('/api/token'),{
       method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({url, username:user, password:pass}),
+      body:JSON.stringify({ url, grant_type:'authorization_code', code, verifier:_pendingPkceVerifier, client_id:'sas.cli' }),
     });
     const data=await r.json();
-    if(!r.ok) throw new Error(data.error||'Authentication failed (HTTP '+r.status+')');
+    if(!r.ok) throw new Error(data.error||'Sign-in failed (HTTP '+r.status+')');
 
-    cfg.viyaUrl=url; cfg.user=user; cfg.pass=pass; cfg.interval=interval;
-    token=data.access_token; tokenAt=Date.now();
-    lastHash=''; _msgStore={};
-    // Load persisted chat cache from previous session for this profile+user
-    _chatCache = {};
-    await _loadPersistedCache();
+    const accessToken = data.access_token;
+    const user = _usernameFromToken(accessToken);
+    if(!accessToken || !user) throw new Error('SAS Logon did not return a usable token.');
 
-    saveCurrentProfile({ viyaUrl: url, user: user, interval: interval });
-
-    $('cfg-interval').value=interval;
-    $('nsBadge').style.display='none';
-
-    $('loginScreen').style.display='none';
-    $('appShell').style.display='block';
-    // Hide graphs tab + PII words button by default — shown only for SAS Administrators after check
-    $('btn-graphs').style.display='none';
-    $('btn-pii').style.display='none';
-    setConn('green','Authenticated as '+user+' @ '+url.replace(/^https?:\/\//,''));
-    // Populate cluster chip with current profile identity
-    (function(){
-      var profiles = loadProfiles();
-      var p = null;
-      for(var i=0;i<profiles.length;i++){ if(profiles[i].id===editingProfileId){ p=profiles[i]; break; } }
-      var color = p ? (p.color || profileColor(profiles.indexOf(p))) : '#3b82f6';
-      var emoji = p ? (p.emoji || '🖥️') : '🖥️';
-      var name  = p ? (p.name  || url.replace(/^https?:\/\//,'')) : url.replace(/^https?:\/\//,'');
-      var chip  = $('clusterChip');
-      var avatarEl = $('clusterChipAvatar');
-      var nameEl   = $('clusterChipName');
-      var envEl    = $('clusterChipEnv');
-      var liveEl   = $('clusterChipLive');
-      avatarEl.textContent = emoji;
-      avatarEl.style.background = color+'22';
-      avatarEl.style.border = '1.5px solid '+color+'55';
-      nameEl.textContent = name;
-      envEl.textContent  = url.replace(/^https?:\/\//,'');
-      liveEl.className   = 'cluster-chip-live green';
-      chip.style.borderColor = color+'55';
-      chip.classList.add('visible');
-    })();
-    updateStickyOffsets();
-    updateSavedBadge();
-    if($('savedPanel').classList.contains('open')) renderSavedList();
-    if(mode!=='history') startLive();
-    fetchNow();
-
-    // Show Graphs tab + PII words button only for SAS Administrators.
-    // NOTE: this only toggles UI visibility — the actual guard-rail (whether
-    // function-call data reaches this browser at all, and whether /api/pii-words
-    // accepts a save) is enforced server-side via _is_admin() on every request.
-    _checkIsAdmin(url, token).then(function(isAdmin){
-      if(isAdmin){
-        $('btn-graphs').style.display = '';
-        $('btn-pii').style.display = '';
-      }
-    });
-
+    _pendingPkceVerifier = null;
+    await _completeLogin(url, interval, accessToken, data.refresh_token, user);
   } catch(e){
     showLoginError(e.message);
-    btn.disabled=false; btn.textContent='Connect ->';
+    btn.disabled=false; btn.textContent='Finish Sign-in →';
   }
+}
+
+// Everything that used to run at the end of doLogin() once a token existed —
+// unchanged by the auth method, so kept as one shared step.
+async function _completeLogin(url, interval, accessToken, refreshTok, user){
+  cfg.viyaUrl=url; cfg.user=user; cfg.interval=interval;
+  token=accessToken; tokenAt=Date.now();
+  refreshToken = refreshTok || null;
+  lastHash=''; _msgStore={};
+  // Load persisted chat cache from previous session for this profile+user
+  _chatCache = {};
+  await _loadPersistedCache();
+  // If a backup imported earlier contained this exact account's chat cache,
+  // push it to the server now that a valid token for it finally exists, then
+  // reload so it's reflected immediately instead of waiting for next fetch.
+  if(await _flushPendingCacheImport()) await _loadPersistedCache();
+
+  saveCurrentProfile({ viyaUrl: url, user: user, interval: interval });
+
+  $('cfg-interval').value=interval;
+  $('nsBadge').style.display='none';
+
+  $('loginScreen').style.display='none';
+  $('appShell').style.display='block';
+  // Hide graphs tab + PII words button by default — shown only for SAS Administrators after check
+  $('btn-graphs').style.display='none';
+  $('btn-pii').style.display='none';
+  setConn('green','Authenticated as '+user+' @ '+url.replace(/^https?:\/\//,''));
+  // Populate cluster chip with current profile identity
+  (function(){
+    var profiles = loadProfiles();
+    var p = null;
+    for(var i=0;i<profiles.length;i++){ if(profiles[i].id===editingProfileId){ p=profiles[i]; break; } }
+    var color = p ? (p.color || profileColor(profiles.indexOf(p))) : '#3b82f6';
+    var emoji = p ? (p.emoji || '🖥️') : '🖥️';
+    var name  = p ? (p.name  || url.replace(/^https?:\/\//,'')) : url.replace(/^https?:\/\//,'');
+    var chip  = $('clusterChip');
+    var avatarEl = $('clusterChipAvatar');
+    var nameEl   = $('clusterChipName');
+    var envEl    = $('clusterChipEnv');
+    var liveEl   = $('clusterChipLive');
+    avatarEl.textContent = emoji;
+    avatarEl.style.background = color+'22';
+    avatarEl.style.border = '1.5px solid '+color+'55';
+    nameEl.textContent = name;
+    envEl.textContent  = url.replace(/^https?:\/\//,'');
+    liveEl.className   = 'cluster-chip-live green';
+    chip.style.borderColor = color+'55';
+    chip.classList.add('visible');
+  })();
+  updateStickyOffsets();
+  updateSavedBadge();
+  if($('savedPanel').classList.contains('open')) renderSavedList();
+  if(mode!=='history') startLive();
+  fetchNow();
+
+  // Show Graphs tab + PII words button only for SAS Administrators.
+  // NOTE: this only toggles UI visibility — the actual guard-rail (whether
+  // function-call data reaches this browser at all, and whether /api/pii-words
+  // accepts a save) is enforced server-side via _is_admin() on every request.
+  _checkIsAdmin(url, token).then(function(isAdmin){
+    if(isAdmin){
+      $('btn-graphs').style.display = '';
+      $('btn-pii').style.display = '';
+    }
+  });
 }
 
 function showLoginError(msg){ const el=$('loginError'); el.textContent='Error: '+msg; el.classList.add('show'); }
 
 document.addEventListener('keydown',function(e){
-  // Login screen: Enter submits
+  // Login screen: Enter submits whichever step is currently showing
   if(e.key==='Enter' && $('loginScreen').style.display !== 'none'){
-    doLogin(); return;
+    if($('pkce-code-field').style.display !== 'none') finishViyaSignIn();
+    else startViyaSignIn();
+    return;
   }
 
   // App shortcuts — only when connected, not typing in input/textarea/select
@@ -1992,16 +2072,26 @@ document.addEventListener('keydown',function(e){
 function proxyUrl(path){ return (proxyBase || '') + path; }
 
 async function getToken(){
-  setConn('yellow','Authenticating…');
+  setConn('yellow','Refreshing session…');
+  if(!refreshToken){
+    setConn('red','Session expired');
+    throw new Error('Session expired — please sign in again.');
+  }
   const r = await fetch(proxyUrl('/api/token'),{
     method:'POST',
     headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ url: cfg.viyaUrl, username: cfg.user, password: cfg.pass }),
+    body: JSON.stringify({ url: cfg.viyaUrl, grant_type:'refresh_token', refresh_token: refreshToken, client_id:'sas.cli' }),
   });
   const data = await r.json();
-  if(!r.ok) throw new Error(data.error || `Auth failed ${r.status}`);
+  if(!r.ok){
+    // The refresh token itself is dead (expired/revoked) — nothing to retry.
+    refreshToken = null;
+    setConn('red','Session expired');
+    throw new Error(data.error || `Session expired (${r.status}) — please sign in again.`);
+  }
   token   = data.access_token;
   tokenAt = Date.now();
+  if(data.refresh_token) refreshToken = data.refresh_token; // SASLogon may rotate it
   setConn('green', `Authenticated as ${cfg.user}`);
 }
 
@@ -2032,18 +2122,6 @@ async function _checkIsAdmin(viyaUrl, bearerToken){
 
 async function ensureToken(){
   if(!token || (Date.now()-tokenAt) > (3600*1000)) await getToken();
-}
-
-async function proxyGet(apiPath){
-  const r = await fetch(proxyUrl('/api/proxy'),{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ url: cfg.viyaUrl, path: apiPath, token }),
-  });
-  if(r.status===401){ token=null; await ensureToken(); return proxyGet(apiPath); }
-  const data = await r.json();
-  if(!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-  return data;
 }
 
 // proxyGetAll — asks the server to fetch all pages and return combined result
@@ -2495,7 +2573,10 @@ function isQualifiedChat(c){
 // Keyed by cluster+user so different profiles never mix data
 // ── Server-side persistent cache — no browser storage limits ─────────────────
 // Cache files stored in cache/ folder next to liveGenAiMonitoring.py
-// Endpoint: POST /api/cache  { action, cluster, user, data }
+// Endpoint: POST /api/cache  { action, cluster, token, data }
+// 'user' is never sent — the server derives whose cache file this is from the
+// bearer token itself, never from a client-supplied field (see the matching
+// comment in liveGenAiMonitoring.py's /api/cache handler).
 
 function _cacheCluster(){
   return (cfg.viyaUrl||'').replace(/^https?:\/\//,'').toLowerCase().replace(/\/+$/,'');
@@ -2505,6 +2586,47 @@ function _cacheUser(){
 }
 function _persistCacheKey(){
   return _cacheCluster() + ':' + _cacheUser();
+}
+
+// ── Pending cache import (see processImport) ───────────────────────────────
+// A backup can be imported before signing in to any profile, so there's no
+// token yet to push its chat cache to the server with (and /api/cache now
+// requires one for every action — it decides whose file to touch from the
+// token, never from a client-supplied "user" field, to stop one user from
+// reading/overwriting another's cache). So an import just stashes the data
+// here, keyed by "cluster:user", and _completeLogin flushes whichever entry
+// matches the account just signed in to — the only account the browser now
+// actually holds a valid token for.
+const PENDING_CACHE_IMPORT_KEY = 'viya4-pending-cache-import';
+function _stashPendingCacheImport(cluster, user, toSave){
+  try{
+    var all = JSON.parse(localStorage.getItem(PENDING_CACHE_IMPORT_KEY)) || {};
+    var key = cluster + ':' + (user||'').toLowerCase();
+    all[key] = Object.assign({}, all[key]||{}, toSave);
+    localStorage.setItem(PENDING_CACHE_IMPORT_KEY, JSON.stringify(all));
+  } catch(e){}
+}
+async function _flushPendingCacheImport(){
+  try{
+    var all = JSON.parse(localStorage.getItem(PENDING_CACHE_IMPORT_KEY)) || {};
+    var key = _persistCacheKey();
+    var toSave = all[key];
+    if(!toSave || !Object.keys(toSave).length) return false;
+    var r = await fetch(proxyUrl('/api/cache'), {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action:'save', cluster:_cacheCluster(), token:token, data:toSave })
+    });
+    if(r.ok){
+      delete all[key];
+      localStorage.setItem(PENDING_CACHE_IMPORT_KEY, JSON.stringify(all));
+      console.log('[GenAI Monitor] Flushed imported cache for ' + key);
+      return true;
+    }
+    return false;
+  } catch(e){
+    console.warn('[GenAI Monitor] Pending cache import flush error:', e.message);
+    return false;
+  }
 }
 
 async function _savePersistedCache(){
@@ -2527,7 +2649,9 @@ async function _savePersistedCache(){
     var r = await fetch(proxyUrl('/api/cache'), {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'patch', cluster:_cacheCluster(), user:_cacheUser(), data:delta })
+      // 'token' is what the server trusts to decide whose cache file this is —
+      // see the matching comment in liveGenAiMonitoring.py's /api/cache handler.
+      body: JSON.stringify({ action:'patch', cluster:_cacheCluster(), token:token, data:delta })
     });
     var j = await r.json();
     if(j.saved){
@@ -2549,7 +2673,7 @@ async function _loadPersistedCache(){
       headers: {'Content-Type':'application/json'},
       // url + token let the server re-check current admin status and re-scrub
       // the persisted cache on every load — see _is_admin() / _scrub_chat_messages()
-      body: JSON.stringify({ action:'load', cluster:_cacheCluster(), user:_cacheUser(), url: cfg.viyaUrl, token })
+      body: JSON.stringify({ action:'load', cluster:_cacheCluster(), url: cfg.viyaUrl, token })
     });
     var j = await r.json();
     if(!j.found || !j.data){ console.log('[GenAI Monitor] No server cache found for:', _persistCacheKey()); return; }
@@ -2615,7 +2739,7 @@ async function _loadPersistedCache(){
 function _clearPersistedCache(){
   fetch(proxyUrl('/api/cache'), {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ action:'clear', cluster:_cacheCluster(), user:_cacheUser() })
+    body: JSON.stringify({ action:'clear', cluster:_cacheCluster(), token:token })
   }).catch(function(){});
 }
 
@@ -4446,18 +4570,30 @@ function showWizard(){
   $('wizardBox').style.display      = 'block';
 }
 
+// Resets the two-step sign-in wizard back to its "Sign in with Viya" starting
+// state — shared by newProfile() and selectProfile() so a half-finished sign-in
+// (code pasted but not redeemed, or vice versa) never lingers across profiles.
+function _resetSignInWizard(){
+  _pendingPkceVerifier = null;
+  $('login-code').value = '';
+  $('pkce-code-field').style.display = 'none';
+  $('loginBtn').style.display = '';
+  $('loginBtn').disabled = false;
+  $('loginBtn').textContent = 'Sign in with Viya →';
+  $('loginFinishBtn').style.display = 'none';
+  $('loginFinishBtn').disabled = false;
+  $('loginFinishBtn').textContent = 'Finish Sign-in →';
+}
+
 // ── New profile ───────────────────────────────────────────────────────────────
 function newProfile(){
   editingProfileId = null;
 
   // Clear form
   $('profileName').value       = '';
-  $('login-user').value        = 'sasboot';
-  $('login-pass').value        = '';
   $('login-interval').value    = '5';
   $('loginError').classList.remove('show');
-  $('loginBtn').disabled = false;
-  $('loginBtn').textContent = 'Connect →';
+  _resetSignInWizard();
 
   // Reset wizard to step 1
 
@@ -4483,13 +4619,11 @@ function selectProfile(id){
   // Populate form fields
   $('profileName').value    = p.name      || '';
   $('login-url').value      = p.viyaUrl   || '';
-  $('login-user').value     = p.lastUser || p.user || 'sasboot';
-  $('login-pass').value     = '';   // never stored — always re-enter
   $('login-interval').value = p.interval  || 5;
 
-  // Reset wizard UI cleanly
+  // Reset wizard UI cleanly — sign-in is never pre-filled, always re-done
   $('loginError').classList.remove('show');
-  $('loginBtn').disabled = false;
+  _resetSignInWizard();
 
   // Update wizard header
   $('wizardTitle').textContent    = p.name || 'Profile';
@@ -4516,7 +4650,7 @@ function deleteProfile(id){
   renderProfileList();
 }
 
-// ── Save profile (called from doLogin on success) ─────────────────────────────
+// ── Save profile (called from _completeLogin on success) ──────────────────────
 function saveCurrentProfile(extra){
   var profiles = loadProfiles();
   var idx = -1;
@@ -5317,10 +5451,12 @@ function processImport(text, label){
         if(!impCluster || !impUser) return;
         var toSave = {};
         valid.forEach(function(id){ toSave[id] = cacheData[id]; cachedChatsRestored++; });
-        fetch(proxyUrl('/api/cache'), {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ action:'save', cluster:impCluster, user:impUser, data:toSave })
-        }).catch(function(){});
+        // Stashed, not sent now — there may be no signed-in session yet (or
+        // this entry may belong to a different account than the one currently
+        // signed in), and /api/cache requires a valid token for the account
+        // it's writing. Flushed automatically the next time that exact
+        // account signs in — see _flushPendingCacheImport().
+        _stashPendingCacheImport(impCluster, impUser, toSave);
       });
     }
 

@@ -620,56 +620,55 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except Exception:
             self.send_json(400, {"error": "invalid JSON"}); return
 
-        # -- /api/token --------------------------------------------------------
+        # -- /api/token: OAuth2 PKCE exchange/refresh — never a password grant.
+        #    The dashboard never sees a Viya password: the browser opens
+        #    SASLogon's own hosted login page (the "sas.cli" public client's
+        #    /SASLogon/oauth/authorize, no redirect_uri — it shows the user a
+        #    code to copy back), so SASLogon handles authentication however the
+        #    environment requires (plain password, SSO, MFA...). This endpoint
+        #    only ever trades that code (or a refresh_token) for an access
+        #    token, exactly like the existing /SASLogon/oauth/authorize call —
+        #    same public client, same no-secret Basic auth. -------------------
         if path == "/api/token":
-            viya_url = payload.get("url", "").rstrip("/")
-            username = payload.get("username", "")
-            password = payload.get("password", "")
-            if not all([viya_url, username, password]):
-                self.send_json(400, {"error": "url, username and password are required"}); return
+            viya_url   = payload.get("url", "").rstrip("/")
+            grant_type = payload.get("grant_type", "authorization_code")
+            client_id  = payload.get("client_id", "sas.cli")
+            if not viya_url:
+                self.send_json(400, {"error": "url is required"}); return
+
+            if grant_type == "authorization_code":
+                code     = payload.get("code", "")
+                verifier = payload.get("verifier", "")
+                if not code or not verifier:
+                    self.send_json(400, {"error": "code and verifier are required"}); return
+                form = {
+                    "grant_type":    "authorization_code",
+                    "code":          code,
+                    "code_verifier": verifier,
+                    "client_id":     client_id,
+                }
+            elif grant_type == "refresh_token":
+                refresh = payload.get("refresh_token", "")
+                if not refresh:
+                    self.send_json(400, {"error": "refresh_token is required"}); return
+                form = {
+                    "grant_type":    "refresh_token",
+                    "refresh_token": refresh,
+                    "client_id":     client_id,
+                }
+            else:
+                self.send_json(400, {"error": "unsupported grant_type"}); return
+
             try:
-                data = urllib.parse.urlencode({
-                    "grant_type": "password",
-                    "username":   username,
-                    "password":   password,
-                }).encode()
+                data = urllib.parse.urlencode(form).encode()
                 req = urllib.request.Request(
                     "%s/SASLogon/oauth/token" % viya_url,
                     data=data,
                     headers={
                         "Content-Type":  "application/x-www-form-urlencoded",
-                        "Authorization": "Basic " + base64.b64encode(b"sas.cli:").decode(),
+                        "Authorization": "Basic " + base64.b64encode(("%s:" % client_id).encode()).decode(),
                     },
                     method="POST",
-                )
-                with urllib.request.urlopen(req, context=SSL_CTX, timeout=15) as r:
-                    self.send_json(200, json.loads(r.read()))
-            except urllib.error.HTTPError as e:
-                self.send_json(e.code, {"error": e.read().decode(errors="replace")})
-            except Exception as e:
-                self.send_json(502, {"error": str(e)})
-            return
-
-        # -- /api/proxy --------------------------------------------------------
-        if path == "/api/proxy":
-            viya_url = payload.get("url", "").rstrip("/")
-            api_path = payload.get("path", "")
-            bearer   = payload.get("token", "")
-            method   = payload.get("method", "GET").upper()
-            req_body = payload.get("body", None)
-            if not api_path:
-                self.send_json(400, {"error": "missing path"}); return
-            px_headers = {
-                "Authorization": "Bearer %s" % bearer,
-                "Accept":        "application/vnd.sas.collection+json",
-            }
-            if req_body:
-                px_headers["Content-Type"] = "application/json"
-            try:
-                req = urllib.request.Request(
-                    "%s%s" % (viya_url, api_path),
-                    data=json.dumps(req_body).encode() if req_body else None,
-                    headers=px_headers, method=method,
                 )
                 with urllib.request.urlopen(req, context=SSL_CTX, timeout=15) as r:
                     self.send_json(200, json.loads(r.read()))
@@ -757,21 +756,22 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         # -- /api/cache: server-side persistent chat cache per cluster+user --------
         if path == "/api/cache":
-            action  = payload.get("action", "")
-            cluster = payload.get("cluster", "").lower().replace("https://","").replace("http://","").rstrip("/")
-            user    = payload.get("user", "").lower()
+            action   = payload.get("action", "")
+            cluster  = payload.get("cluster", "").lower().replace("https://","").replace("http://","").rstrip("/")
             viya_url = payload.get("url", "").rstrip("/")
             bearer   = payload.get("token", "")
-            if action == "load":
-                # Security-sensitive read: never trust the client's claimed "user"
-                # for which cache file to open — a non-admin could otherwise read
-                # another user's persisted cache just by naming them here. Verify
-                # the caller's real identity from their own token instead.
-                verified = _username_from_token(bearer)
-                if verified:
-                    user = verified.lower()
-            if not cluster or not user:
-                self.send_json(400, {"error": "cluster and user are required"}); return
+            # Security-sensitive for EVERY action here (load, save, patch, clear):
+            # which cache file gets touched is decided only by the caller's own
+            # bearer token, never by a client-supplied "user" field — that field
+            # is just JSON the browser wrote and could otherwise be edited to
+            # read, poison, or wipe another user's persisted chat history with
+            # no credentials at all. Fail closed if the token isn't decodable.
+            user = _username_from_token(bearer)
+            if not user:
+                self.send_json(401, {"error": "a valid token is required"}); return
+            user = user.lower()
+            if not cluster:
+                self.send_json(400, {"error": "cluster is required"}); return
             cf = _cache_filename(cluster, user)
             if action == "load":
                 if not cf.exists():
@@ -849,6 +849,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         # -- /api/summary: generate digest, save to file, optionally email -----
         if path == "/api/summary":
+            # Not an end-user feature (no UI calls it) — it aggregates every
+            # user's cache into one cross-user digest (usernames, prompt
+            # counts) and returns it straight in the response, which a
+            # non-admin must never be able to pull. Meant to be invoked
+            # locally (e.g. a scheduled task on this machine), so only
+            # loopback callers are allowed.
+            if self.client_address[0] not in ("127.0.0.1", "::1"):
+                self.send_json(403, {"error": "forbidden"}); return
             period = payload.get("period", "daily")   # "daily" or "weekly"
             if period not in ("daily", "weekly"):
                 self.send_json(400, {"error": "period must be 'daily' or 'weekly'"}); return

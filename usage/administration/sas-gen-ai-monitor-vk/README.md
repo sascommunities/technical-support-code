@@ -140,18 +140,15 @@ When you open the dashboard at first you will see the profile picker. To add an 
 |---|---|
 | **Profile Name** | A friendly label, e.g. `Production`, `Lab`, `Dev` |
 | **Icon** | Click the avatar to choose an emoji and accent colour (Optional) |
-| **Viya4 Ingress URL** | External HTTPS URL, e.g. `https://viya4-lab.example.com` |
-| **Username** | Your SAS Viya username |
-| **Password** | Your Viya password — held in memory only, never stored |
-| **Poll interval** | Seconds between refreshes (minimum 3, default 5) |
+| **Viya Ingress URL** | External HTTPS URL, e.g. `https://viya4-lab.example.com` — this is the only thing a profile pins you to; sign-in itself is never tied to one environment |
 
-Than, click **Connect ->**. The proxy authenticates via OAuth2 and the dashboard begins polling.
+Then click **Sign in with Viya →**. This opens SAS Logon's own hosted sign-in page in a new tab — authenticate there however your environment requires (plain username/password, SSO, MFA, whatever is configured; the dashboard itself never sees your password). SAS Logon shows a short code on success: copy it, come back to this tab, paste it into **Code from SAS Logon**, and click **Finish Sign-in →**. Your username is read directly from the resulting token, so there's nothing to type for it.
 
-> Each profile represents one cluster + user combination. You can have as many as you need — including multiple profiles for the same cluster;
+> Each profile represents one cluster. You can have as many as you need — including multiple profiles for the same cluster under different accounts.
 
 ## Managing Profiles
 
-> Passwords are never stored anywhere — you always re-enter the password when connecting.
+> Nothing from sign-in is ever stored — not a password (never collected in the first place), not the access or refresh token. Re-doing the sign-in (new tab → paste code) is always required when you reconnect, even to a profile you've used before.
 
 ### Exporting
 
@@ -169,6 +166,8 @@ Import is always a **safe merge** — existing profiles and favorites are never 
 ```
 ⬆ Imported: 2 new profile(s), 47 favorite(s), 312 chats cached
 ```
+
+Imported chat cache is restored to the server as soon as you sign in to the matching account — not before, since the server only ever writes a cache file for whichever account you currently hold a valid token for (see [Security Notes](#security-notes)). If the export contains cache for several different accounts, sign in to each one at least once to restore all of it.
 
 # Dashboard
 
@@ -439,7 +438,7 @@ Click **↺ Refresh** to re-fetch the full chat history from the server and re-r
 
 Click **⚙** in the top-right header while connected to open the Settings panel. You can update the **poll interval** without disconnecting. Click **Apply** to save.
 
-Click **Disconnect** to return to the profile picker. To change the Viya URL, username, or password, disconnect and reconnect using the profile picker.
+Click **Disconnect** to return to the profile picker. To change the Viya URL or sign in as a different user, disconnect and reconnect using the profile picker.
 
 ## Theme
 
@@ -455,7 +454,7 @@ Check `genai-monitor.log` in the same folder. The start script also prints the l
 ## Authentication error (401 / 403)
 
 - Confirm the Viya4 Ingress URL starts with `https://` and has no trailing slash
-- Check the username and password are correct
+- If sign-in itself fails: the code from SAS Logon is single-use and short-lived — click **Sign in with Viya** again for a fresh one rather than retrying an old code
 - Verify the account has access to the GenAI Gateway service in Viya4
 
 ## No chats appear after connecting
@@ -503,10 +502,10 @@ taskkill /PID <pid> /F
 
 | Item | Behaviour |
 |---|---|
-| Passwords | Session memory only — never written to disk, `localStorage`, or logs |
-| Bearer tokens | Session memory only — never persisted |
-| Profile data | Stored in `localStorage` — does not include passwords or tokens |
-| Chat cache | Stored in `localStorage` and included in exports — treat the export file as internal data |
+| Sign-in | OAuth2 authorization code + PKCE — your password is typed into SAS Logon's own page, never into this dashboard. See [Profiles](#profiles) |
+| Bearer / refresh tokens | Session memory only — never persisted; a new sign-in is required every time you reconnect |
+| Profile data | Stored in `localStorage` — just the Viya URL, display name, and last-known username, never any token |
+| Chat cache | Stored server-side (`cache/` folder), one file per cluster+user, included in exports — treat the export file as internal data. Which file a request can read, write, or clear is decided purely from your own bearer token, never from anything the browser claims — one user can never read, poison, or wipe another's cache |
 | Chat visibility | Non-admins see only their own chats; SAS Administrators see every user's chats across the environment — enforced server-side on every request, see [Access Levels](#access-levels) |
 | Identity / admin status | Decoded directly from your own Viya bearer token and checked against SASAdministrators group membership — never trusted from anything the browser reports |
 | Function-call / tool payloads | Redacted server-side (`{redacted: true}`) for non-admins — the raw data never leaves the server for them. Admins see the real payload, optionally flagged against the admin-defined PII word list (`pii-config.json`) — see [PII Detection](#pii-detection-sas-administrators-only) |
