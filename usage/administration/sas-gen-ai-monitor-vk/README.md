@@ -14,6 +14,9 @@ genaiproject/
 ├── gen-ai-monitor-start.bat  # Windows: double-click to start
 ├── gen-ai-monitor-stop.bat   # Windows: double-click to stop
 ├── gen-ai-monitor.sh         # Linux / macOS: start / stop / status / logs
+├── troubleshoot.py           # Diagnostics — all the actual checks (see Troubleshooting)
+├── troubleshoot.sh           # Linux / macOS: run diagnostics
+├── troubleshoot.bat          # Windows: double-click to run diagnostics
 ├── Dockerfile                # Container image definition
 ├── docker-compose.yml        # Docker Compose service definition
 └── README.md
@@ -173,7 +176,12 @@ Imported chat cache is restored to the server as soon as you sign in to the matc
 
 ## Access Levels
 
-The dashboard has two access levels, determined **server-side** from your own Viya bearer token — never from anything the browser reports — checked against the Viya Identities API's `SASAdministrators` group on every request, plus a built-in bypass for the `sasboot` superuser:
+The dashboard has two access levels, determined **server-side** from your own Viya bearer token — never from anything the browser reports. You get the administrator view if you are:
+
+- **`sasboot`**, or
+- a **member of `SASAdministrators` who assumed the group when signing in.** `SASAdministrators` is an assumable group: SAS Logon asks whether to opt in, and only if you choose yes does Viya include the group in your session's token. Answer no and you get the regular-user view for that session — the same as in Viya itself. The dashboard then shows a reminder that you're a member who didn't opt in; to switch, sign in again and opt in (sign out of SAS Logon first if it doesn't ask).
+
+Everyone else gets the regular-user view:
 
 | | Regular user | SAS Administrator |
 |---|---|---|
@@ -447,6 +455,57 @@ Click **☀️ / 🌙** in the top-right to toggle between light and dark themes
 
 # Troubleshooting
 
+## Running diagnostics
+
+Before digging further, run the diagnostics script — it checks the things that explain most issues reported for this app: the Python runtime itself (including `ssl`, which every call to Viya depends on), whether the project files are present and valid, folder write permissions, whether a running server matches what's on disk right now (catches "I edited the file but forgot to restart"), whether your copy matches GitHub's main branch, and — if you're using Docker — whether the container is actually reachable under the Docker context/engine you're currently pointed at.
+
+```bash
+# Linux / macOS
+./troubleshoot.sh
+
+# Windows — double-click, or from a terminal:
+troubleshoot.bat
+```
+
+Point it at a different deployment with `--url http://host:port` (useful for a Docker or remote install), or skip a section with `--no-server` / `--no-docker` / `--no-github-check`. It exits non-zero if anything fails, so it's safe to script.
+
+### Support log
+
+Every run also writes a support log, `troubleshoot_<timestamp>.log`, in the project folder (or in the system temp folder if the project folder isn't writable) and prints its path at the end. Attach that file when asking for help. It contains:
+
+- the full console output of the checks above
+- environment details: OS, Python and OpenSSL versions, host name, proxy / `GENAI_MONITOR_*` environment variables
+- the running server's `/health` response (build versions, start time)
+- a listing of the project folder (file names, sizes, dates; folder contents are only counted, never listed)
+- the last 200 lines of `genai-monitor.log`, plus `docker logs` for a `gen-ai-monitor` container if one is found
+
+Bearer tokens, JWTs, passwords, authorization codes and proxy credentials are redacted before anything is written. The log still contains host names, Viya URLs, user names and chat IDs, so review it before sharing if that matters. Options: `--log PATH` to choose the file, `--log-lines N` to change how much server log is included, `--no-log` to skip it.
+
+It never contacts Viya and needs no credentials for any of this. It's separate from `tests/` (an internal regression suite for people editing this project's code, not shipped to end users).
+
+### Checking (and updating) against GitHub
+
+The script compares `liveGenAiMonitoring.py` and `viya4_dashboard.html` against the copies on this project's [GitHub repo](https://github.com/sascommunities/technical-support-code/tree/main/usage/administration/sas-gen-ai-monitor-vk) (main branch). A mismatch is only ever reported as "differs" — it cannot tell which side is newer. It's just as likely to mean you have local changes not pushed there yet as it is to mean an update is available, so treat it as a prompt to go look, not a verdict.
+
+If it differs, it asks before doing anything else:
+
+```
+2 file(s) differ from GitHub's main branch: liveGenAiMonitoring.py, viya4_dashboard.html
+Download and apply the GitHub version of the file(s) above? Your current files are
+backed up first. Type 'yes' to confirm, anything else to skip:
+```
+
+Nothing is downloaded or overwritten unless you type exactly `yes` — anything else (including just pressing Enter) leaves your files untouched. It always backs up whatever it's about to replace first, to a `backup_<timestamp>/` folder in the project directory, so an update can be undone by copying those files back. Only these two files are ever touched this way; nothing else in the project is downloaded or modified.
+
+Running from a script instead of a terminal? The prompt never fires non-interactively (no stdin to read "yes" from) — pass `--yes` if you specifically want it to apply an update unattended, or `--no-github-check` to skip the comparison entirely (e.g. on an air-gapped network).
+
+## Code changes aren't taking effect
+
+The server only reads `liveGenAiMonitoring.py` once, at startup, and a browser tab only has whatever `viya4_dashboard.html` it was loaded with — editing either file on disk doesn't retroactively change a process or tab that's already running.
+
+- **Already-open tab:** if the file on the server has changed since this tab loaded, a toast appears automatically within a few minutes: *"This tab is running an older version of the dashboard — reload the page to pick up the latest."* You don't have to go looking for this — it's self-reported.
+- **Running server process:** `./troubleshoot.sh` (or `.bat`) reports this directly — "server_restart_needed" / "restart it to apply the update" — instead of you having to guess from symptoms.
+
 ## Server does not start
 
 Check `genai-monitor.log` in the same folder. The start script also prints the last 20 log lines directly in the console window if the server exits immediately.
@@ -456,6 +515,14 @@ Check `genai-monitor.log` in the same folder. The start script also prints the l
 - Confirm the Viya4 Ingress URL starts with `https://` and has no trailing slash
 - If sign-in itself fails: the code from SAS Logon is single-use and short-lived — click **Sign in with Viya** again for a fresh one rather than retrying an old code
 - Verify the account has access to the GenAI Gateway service in Viya4
+
+### Capturing sign-in traffic for support (HAR)
+
+Clicking **Sign in with Viya** opens SAS Logon's own page in a **new browser tab** — that's expected, and it's the reason a HAR capture taken on the dashboard's own tab shows nothing for it: a new tab/origin is a separate recording context in every browser's devtools. The dashboard's tab never even makes a network request for that click; it's a plain tab-open.
+
+If you need the authentication handshake itself captured for support:
+- Open devtools (and start the Network recording) on the **new SAS Logon tab**, not the dashboard tab — ideally before clicking the button, since the tab opens already navigating.
+- The one part of sign-in that *is* visible in the dashboard tab's own HAR is the final step — a `POST` to `/api/token` on this app's own server (the code-for-token exchange). That same exchange is also logged server-side in `genai-monitor.log` (grant type, the Viya URL, success/failure — never the code or token itself) precisely because it's the one step a browser-side HAR can't be relied on to show consistently.
 
 ## No chats appear after connecting
 
@@ -495,8 +562,9 @@ taskkill /PID <pid> /F
 ## Docker issues
 
 - **Port already allocated** — another process or container is already using 8899 on the host. Stop it, or change the host-side port mapping in `docker-compose.yml` (e.g. `"9000:8899"`).
-- **Code changes not showing up** — rebuild the image after editing source files: `docker compose up -d --build`.
+- **Code changes not showing up** — rebuild the image after editing source files: `docker compose up -d --build`. `./troubleshoot.sh --url http://localhost:8899` confirms whether the running container still predates your edit.
 - **Container exits immediately** — check the logs with `docker compose logs -f` for the same errors described in [Server does not start](#server-does-not-start).
+- **`docker ps` shows nothing, but the dashboard is reachable** — if more than one Docker engine is installed (e.g. Docker Desktop alongside Rancher Desktop), the container may be running under a different engine/context than the one your `docker` CLI currently points at. `./troubleshoot.sh` calls this out explicitly; otherwise check `docker context ls` and try `docker --context <name> ps`.
 
 ## Security Notes
 
@@ -505,12 +573,15 @@ taskkill /PID <pid> /F
 | Sign-in | OAuth2 authorization code + PKCE — your password is typed into SAS Logon's own page, never into this dashboard. See [Profiles](#profiles) |
 | Bearer / refresh tokens | Session memory only — never persisted; a new sign-in is required every time you reconnect |
 | Profile data | Stored in `localStorage` — just the Viya URL, display name, and last-known username, never any token |
-| Chat cache | Stored server-side (`cache/` folder), one file per cluster+user, included in exports — treat the export file as internal data. Which file a request can read, write, or clear is decided purely from your own bearer token, never from anything the browser claims — one user can never read, poison, or wipe another's cache |
-| Chat visibility | Non-admins see only their own chats; SAS Administrators see every user's chats across the environment — enforced server-side on every request, see [Access Levels](#access-levels) |
-| Identity / admin status | Decoded directly from your own Viya bearer token and checked against SASAdministrators group membership — never trusted from anything the browser reports |
+| Chat cache | Stored server-side (`cache/` folder), one file per cluster+user, included in exports — treat the export file as internal data. Which file a request can read, write, or clear is decided only by a token Viya itself has accepted, and the cluster part comes from that same Viya URL — one user can never read, poison, or wipe another's cache |
+| Chat visibility | Non-admins see only their own chats; SAS Administrators see every user's chats across the environment — enforced server-side on every request, see [Access Levels](#access-levels). Paths are normalized before the check, and non-admins can only reach the two endpoints the dashboard uses, so URL tricks (encoding, `//`, `../`, trailing `/`) can't sidestep it |
+| Identity / admin status | Confirmed by Viya itself (`/identities/users/@currentUser`) before it's trusted. Admin = `sasboot`, or a `SASAdministrators` member whose token carries the assumed group (opted in at sign-in) — see [Access Levels](#access-levels). A hand-made token claiming to be `sasboot` or carrying the admin scope is rejected. Never trusted from anything the browser reports |
+| Chat content rendering | Message text is rendered as Markdown with raw HTML shown as plain text, and links limited to safe schemes — one user's prompt (or a Copilot reply it steers) can't run script in another user's or an admin's dashboard |
 | Function-call / tool payloads | Redacted server-side (`{redacted: true}`) for non-admins — the raw data never leaves the server for them. Admins see the real payload, optionally flagged against the admin-defined PII word list (`pii-config.json`) — see [PII Detection](#pii-detection-sas-administrators-only) |
+| Viya URLs | Only `http`/`https`, never link-local addresses (cloud metadata endpoints). For shared deployments, set `GENAI_MONITOR_ALLOWED_HOSTS` (comma-separated, `*.` wildcards allowed, e.g. `viya.example.com,*.corp.example.com`) to restrict which Viya environments can be used at all. Unset = any environment, as before |
+| Browser hardening | Same-origin only: no CORS grants, JSON-only POSTs (blocks other websites from firing requests at the server), `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, and `Cache-Control: no-store` on API responses (token responses are never cached) |
 | SSL | Certificate verification disabled to support self-signed Viya4 certificates |
-| Network binding | Default `127.0.0.1` (local only). Use `--server` only on trusted internal networks |
+| Network binding | Default `127.0.0.1` (local only). Use `--server` only on trusted internal networks — browser-to-dashboard traffic is plain HTTP, so put a TLS reverse proxy in front of any shared deployment |
 
 ## License
 

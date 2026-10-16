@@ -18,8 +18,13 @@ Usage:
 import argparse
 import base64
 import gzip
+import hashlib
+import ipaddress
 import json
+import os
+import posixpath
 import re
+import socket
 import ssl
 import subprocess
 import threading
@@ -39,6 +44,20 @@ SUMMARY_DIR    = Path(__file__).parent / "summaries"
 SUMMARY_CONFIG = Path(__file__).parent / "summary-config.json"
 PII_CONFIG     = Path(__file__).parent / "pii-config.json"
 
+
+# -- Troubleshooting: content-hash "version" fingerprints -------------------
+# No build step and no release numbers here — a short hash of a file's own
+# bytes is the simplest fingerprint that is always exactly right and needs no
+# manual bumping. SERVER_CODE_VERSION is fixed at process start (what this
+# running process is actually executing); /health also reports a fresh
+# on-disk hash so a stale, forgotten-to-restart process is easy to spot.
+def _sha_short(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:12]
+
+SERVER_STARTED_AT   = time.time()
+SERVER_CODE_VERSION = _sha_short(Path(__file__).read_bytes())
+
+
 # -- Cache filename helper ----------------------------------------------------
 def _cache_filename(cluster: str, user: str) -> Path:
     safe = re.sub(r"[^a-z0-9._-]", "_", (cluster + "__" + user).lower())
@@ -57,8 +76,8 @@ def _cache_filename(cluster: str, user: str) -> Path:
 # have been sent to every viewer's browser.
 # =============================================================================
 
-_CHAT_MESSAGES_RE = re.compile(r"/genAiGateway/v1/chats/[^/]+/messages")
-_CHAT_LIST_RE     = re.compile(r"^/genAiGateway/v1/chats(?:\?|$)")
+_CHAT_MESSAGES_RE = re.compile(r"/genAiGateway/v1/chats/[^/]+/messages", re.I)
+_CHAT_LIST_RE     = re.compile(r"^/genAiGateway/v1/chats(?:\?|$)", re.I)
 _FUNCTION_MSG_TYPES = {"functionresult", "copilotfunctionresponse"}
 
 # -- Per-user chat visibility: non-admins may only see their own chats -------
@@ -122,6 +141,136 @@ def _username_from_token(token: str):
     except Exception:
         return None
 
+
+# -- Viya URL policy ----------------------------------------------------------
+# Every route that takes a "url" makes this server fetch it, so an unchecked
+# value turns the proxy into a tool for reaching things only this machine can
+# reach. Always enforced: http/https only (urllib would otherwise happily open
+# file:// and ftp:// URLs) and never a link-local address (cloud instance
+# metadata endpoints live there; no Viya ever does). Optional, for shared
+# deployments: GENAI_MONITOR_ALLOWED_HOSTS="viya.example.com,*.corp.example.com"
+# pins which Viya environments may be used at all. Unset (the default) keeps
+# today's behavior — any environment can be chosen when creating a profile.
+_ALLOWED_HOSTS = [h.strip().lower() for h in os.environ.get("GENAI_MONITOR_ALLOWED_HOSTS", "").split(",") if h.strip()]
+
+def _url_allowed(viya_url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlsplit(viya_url)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or not host:
+        return False
+    if _ALLOWED_HOSTS and not any(
+            host == h or (h.startswith("*.") and host.endswith(h[1:])) for h in _ALLOWED_HOSTS):
+        return False
+    try:
+        for info in socket.getaddrinfo(host, None):
+            if ipaddress.ip_address(info[4][0].split("%")[0]).is_link_local:
+                return False
+    except socket.gaierror:
+        pass  # unresolvable — the real request will simply fail
+    return True
+
+
+# -- Verified identity --------------------------------------------------------
+# _username_from_token() only DECODES the JWT — it can't check the signature,
+# so on its own anyone can hand-craft a token claiming to be "sasboot" or any
+# other user. That's harmless where the same request then fetches data from
+# Viya with that token (Viya rejects a forged one), but not on routes that
+# never touch Viya with it (/api/cache, /api/pii-words, /api/is-admin). Those
+# use this instead: Viya itself must accept the token and confirm, via
+# /identities/users/@currentUser, that it belongs to the user it claims.
+# Positive results are cached briefly per token so this costs one extra Viya
+# call per session, not per request.
+_VERIFY_CACHE = {}
+_VERIFY_LOCK  = threading.Lock()
+_VERIFY_TTL   = 300  # seconds
+
+def _verified_username(viya_url: str, token: str):
+    claimed = _username_from_token(token)
+    if not claimed or not viya_url or not _url_allowed(viya_url):
+        return None
+    key = (viya_url, hashlib.sha256(token.encode()).hexdigest())
+    now = time.time()
+    with _VERIFY_LOCK:
+        hit = _VERIFY_CACHE.get(key)
+        if hit and (now - hit[1]) < _VERIFY_TTL:
+            return hit[0]
+    try:
+        req = urllib.request.Request(
+            "%s/identities/users/@currentUser" % viya_url,
+            headers={"Authorization": "Bearer %s" % token, "Accept": "application/json"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, context=SSL_CTX, timeout=15) as r:
+            actual = (json.loads(r.read()).get("id") or "")
+    except Exception as e:
+        print("  [identity] token rejected/unverifiable for claimed user %s: %s" % (claimed, e))
+        return None
+    if actual.lower() != claimed.lower():
+        print("  [identity] token claims %s but Viya says %s — rejected" % (claimed, actual))
+        return None
+    with _VERIFY_LOCK:
+        for k in [k for k, v in _VERIFY_CACHE.items() if (now - v[1]) >= _VERIFY_TTL]:
+            del _VERIFY_CACHE[k]
+        _VERIFY_CACHE[key] = (claimed, now)
+    return claimed
+
+
+def _cluster_from_url(viya_url: str) -> str:
+    """Cache-file namespace, derived from the (verified) Viya URL itself rather
+    than a separate client-supplied field — otherwise a token vouched for by
+    one server could be used to open another environment's cache files. Same
+    normalization the dashboard has always used, so existing files still match."""
+    c = viya_url.lower()
+    for prefix in ("https://", "http://"):
+        if c.startswith(prefix):
+            c = c[len(prefix):]
+    return c.rstrip("/")
+
+
+# -- API path normalization (/api/proxy-all) ---------------------------------
+# The chat-visibility guard-rails match on the path, so the path that's
+# checked must be exactly the path that's fetched. Without this, variants the
+# regexes don't recognize but Viya's ingress resolves to the same endpoint
+# (percent-encoding, "//", "/x/../", a trailing "/", ";params") would skip
+# the filtering/redaction entirely.
+def _normalize_api_path(api_path: str):
+    path, sep, query = api_path.partition("?")
+    path = urllib.parse.unquote(path)
+    if ";" in path or "\\" in path:
+        return None
+    path = "/" + posixpath.normpath("/" + path).lstrip("/")
+    return urllib.parse.quote(path, safe="/:@-._~!$&'()*+,=") + (sep + query if sep else "")
+
+
+# What a non-admin's dashboard ever requests through /api/proxy-all — the
+# chat list and one chat's messages. Anything else under the GenAI Gateway is
+# admin-only through this proxy.
+_NON_ADMIN_PATH_RE = re.compile(r"^/genAiGateway/v1/chats(?:/[^/?]+/messages)?(?:\?|$)", re.I)
+
+
+# Chat metadata the dashboard shows as labels (app name, Copilot agent id and
+# version). These come from whatever client created the chat via the GenAI
+# Gateway API, so a crafted value could otherwise carry HTML into an admin's
+# dashboard. Legitimate values never contain these characters.
+_META_STRIP_RE = re.compile(r"[<>\"'`]")
+
+def _neutralize_chat_meta(items):
+    if not isinstance(items, list):
+        return
+    for c in items:
+        if not isinstance(c, dict):
+            continue
+        if isinstance(c.get("applicationName"), str):
+            c["applicationName"] = _META_STRIP_RE.sub("", c["applicationName"])
+        cp = c.get("copilot")
+        if isinstance(cp, dict):
+            for k in ("id", "version"):
+                if isinstance(cp.get(k), str):
+                    cp[k] = _META_STRIP_RE.sub("", cp[k])
+
 # search_capability_registry only returns tool/skill documentation (schemas,
 # generic descriptions) — never real user/query data — so scanning it for PII
 # words just produces false positives on doc text (e.g. "address" showing up
@@ -134,16 +283,55 @@ _PII_SCAN_EXCLUDED_FUNCTIONS = {"search_capability_registry"}
 # audit/PII purposes, just cache/bandwidth bloat. Stripped for every viewer.
 _NOISE_KEYS = ("reservedTools", "systemSkills", "chatReport", "report")
 
-# -- Admin check: consult Viya's Identities API using the caller's own bearer
-#    token, so a forged client-side flag can never grant access to real data.
-_ADMIN_CACHE      = {}
-_ADMIN_CACHE_LOCK = threading.Lock()
-_ADMIN_CACHE_TTL  = 60  # seconds — bounds how stale a membership change can be
+# -- Admin check ---------------------------------------------------------------
+# Admin view = sasboot, or a SASAdministrators member who ASSUMED that group
+# for this session. SASAdministrators is an assumable group: at sign-in SAS
+# Logon asks whether to opt in, and only on "yes" does Viya put the group in
+# the access token's scopes. Membership alone isn't enough — a member who
+# declined is a regular user for that session, here exactly as in Viya.
+#
+# The token's claims are only trusted once Viya has accepted that exact token:
+# every caller either verified it first (_verified_username) or has already
+# fetched data from Viya with it (/api/proxy-all), so a hand-made token
+# claiming the scope gets nowhere.
+_ADMIN_GROUP = "sasadministrators"
+
+def _token_claims(token: str) -> dict:
+    try:
+        payload_b64 = (token or "").split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4)))
+        return claims if isinstance(claims, dict) else {}
+    except Exception:
+        return {}
+
+
+def _token_assumed_admin(token: str) -> bool:
+    claims = _token_claims(token)
+    granted = []
+    for key in ("scope", "authorities"):
+        v = claims.get(key)
+        granted += v.split() if isinstance(v, str) else (v if isinstance(v, list) else [])
+    return any(isinstance(g, str) and g.lower() == _ADMIN_GROUP for g in granted)
+
 
 def _is_admin(viya_url: str, token: str, user: str) -> bool:
-    user_l = (user or "").lower()
-    if user_l == "sasboot":
+    if (user or "").lower() == "sasboot":
         return True
+    if not token or not viya_url:
+        return False
+    return _token_assumed_admin(token)
+
+
+# -- Membership lookup (hint only) --------------------------------------------
+# Never grants anything. Used solely so /api/is-admin can tell a member who
+# declined to assume SASAdministrators at sign-in why they're seeing the
+# regular-user view, and how to get the admin one.
+_ADMIN_CACHE      = {}
+_ADMIN_CACHE_LOCK = threading.Lock()
+_ADMIN_CACHE_TTL  = 60  # seconds
+
+def _is_admin_group_member(viya_url: str, token: str, user: str) -> bool:
+    user_l = (user or "").lower()
     if not token or not viya_url:
         return False
 
@@ -154,10 +342,10 @@ def _is_admin(viya_url: str, token: str, user: str) -> bool:
         if cached is not None and (now - cached[1]) < _ADMIN_CACHE_TTL:
             return cached[0]
 
-    is_admin = False
+    is_member = False
     try:
         req = urllib.request.Request(
-            "%s/identities/groups/SASAdministrators/userMembers?limit=200" % viya_url,
+            "%s/identities/groups/SASAdministrators/userMembers?limit=1000" % viya_url,
             headers={
                 "Authorization": "Bearer %s" % token,
                 "Accept":        "application/vnd.sas.collection+json",
@@ -166,14 +354,13 @@ def _is_admin(viya_url: str, token: str, user: str) -> bool:
         )
         with urllib.request.urlopen(req, context=SSL_CTX, timeout=15) as r:
             data = json.loads(r.read())
-        is_admin = any((item.get("id") or "").lower() == user_l for item in data.get("items", []))
+        is_member = any((item.get("id") or "").lower() == user_l for item in data.get("items", []))
     except Exception as e:
-        print("  [admin-check] error for %s: %s" % (user_l, e))
-        is_admin = False  # fail-closed: deny on error
+        print("  [admin-member-hint] lookup failed for %s: %s" % (user_l, e))
 
     with _ADMIN_CACHE_LOCK:
-        _ADMIN_CACHE[cache_key] = (is_admin, now)
-    return is_admin
+        _ADMIN_CACHE[cache_key] = (is_member, now)
+    return is_member
 
 
 # -- Admin-managed custom PII word list ("PII's" panel in the header) --------
@@ -301,7 +488,11 @@ def _scrub_chat_messages(messages: list, is_admin: bool) -> list:
     return messages
 
 # -- Dashboard cache: read once from disk, serve many times --------------------
-_dash_cache = {"data": None, "mtime": 0.0}
+# Every served copy carries its own content hash as window.__VIYA4_BUILD__ (a
+# tiny inline <script> spliced right after <head>) so an already-open tab can
+# notice later, via /health, that the file on disk has since changed — see
+# _checkBuildFreshness() in viya4_dashboard.html.
+_dash_cache = {"data": None, "mtime": 0.0, "version": None}
 _dash_lock  = threading.Lock()
 
 def get_dashboard():
@@ -310,9 +501,21 @@ def get_dashboard():
     mtime = DASHBOARD_HTML.stat().st_mtime
     with _dash_lock:
         if _dash_cache["mtime"] != mtime:
-            _dash_cache["data"]  = DASHBOARD_HTML.read_bytes()
-            _dash_cache["mtime"] = mtime
+            raw     = DASHBOARD_HTML.read_bytes()
+            version = _sha_short(raw)
+            marker  = ('<script id="viya4-build">window.__VIYA4_BUILD__=%s;</script>'
+                       % json.dumps(version)).encode()
+            data    = raw.replace(b"<head>", b"<head>" + marker, 1) if b"<head>" in raw \
+                      else marker + raw
+            _dash_cache["data"]    = data
+            _dash_cache["mtime"]   = mtime
+            _dash_cache["version"] = version
     return _dash_cache["data"]
+
+
+def get_dashboard_version() -> str:
+    get_dashboard()  # ensures the cache (and its version) is fresh
+    return _dash_cache["version"] or ""
 
 
 # =============================================================================
@@ -581,6 +784,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type",   "application/json")
         self.send_header("Content-Length", len(body))
         self.send_header("Connection",     "keep-alive")
+        # API responses can carry access/refresh tokens (/api/token) and chat
+        # data — never let a browser or intermediate proxy store them.
+        self.send_header("Cache-Control",  "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -592,16 +798,36 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(html)
 
+    def end_headers(self):
+        # Baseline browser hardening on every response: no MIME sniffing, no
+        # framing by other sites (clickjacking), no Referer leaking the
+        # dashboard's address to links opened from chat content.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options",        "DENY")
+        self.send_header("Referrer-Policy",        "no-referrer")
+        super().end_headers()
+
+    # Generous (largest real cache file today is ~7 MB) — only here so one
+    # request can't make the server buffer an arbitrarily large body.
+    _MAX_BODY = 256 * 1024 * 1024
+
     def read_json(self):
         n = int(self.headers.get("Content-Length", 0))
+        if n > self._MAX_BODY:
+            raise ValueError("request body too large")
         return json.loads(self.rfile.read(n)) if n else {}
 
     # -- Routes ----------------------------------------------------------------
+    # The dashboard only ever calls this server from its own origin, so there
+    # is nothing to approve cross-origin: no Access-Control-Allow-* headers.
+    # Together with requiring a JSON Content-Type on every POST (which a
+    # browser can't send cross-origin without this preflight succeeding),
+    # that stops other websites open in the same browser from silently firing
+    # requests at this server (e.g. /api/summary or /api/cache from a
+    # malicious page while the dashboard is running on localhost).
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin",  "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self):
@@ -609,16 +835,29 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self.send_html(200, get_dashboard())
         elif path == "/health":
-            self.send_json(200, {"status": "ok"})
+            from datetime import datetime, timezone
+            disk_version = _sha_short(Path(__file__).read_bytes())
+            self.send_json(200, {
+                "status":                "ok",
+                "server_code_version":   SERVER_CODE_VERSION,
+                "server_code_on_disk":   disk_version,
+                "server_restart_needed": disk_version != SERVER_CODE_VERSION,
+                "dashboard_version":     get_dashboard_version(),
+                "started_at":            datetime.fromtimestamp(SERVER_STARTED_AT, tz=timezone.utc).isoformat(),
+            })
         else:
             self.send_json(404, {"error": "not found"})
 
     def do_POST(self):
         path = self.path.split("?")[0]
+        if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
+            self.send_json(415, {"error": "Content-Type must be application/json"}); return
         try:
             payload = self.read_json()
         except Exception:
             self.send_json(400, {"error": "invalid JSON"}); return
+        if not isinstance(payload, dict):
+            self.send_json(400, {"error": "JSON object expected"}); return
 
         # -- /api/token: OAuth2 PKCE exchange/refresh — never a password grant.
         #    The dashboard never sees a Viya password: the browser opens
@@ -635,6 +874,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             client_id  = payload.get("client_id", "sas.cli")
             if not viya_url:
                 self.send_json(400, {"error": "url is required"}); return
+            if not _url_allowed(viya_url):
+                self.send_json(400, {"error": "Viya URL not allowed"}); return
 
             if grant_type == "authorization_code":
                 code     = payload.get("code", "")
@@ -659,6 +900,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             else:
                 self.send_json(400, {"error": "unsupported grant_type"}); return
 
+            # Logged explicitly (never the code/verifier/refresh_token itself)
+            # because this handshake is otherwise invisible to browser-side
+            # troubleshooting: the SAS Logon authorize page opens in its own
+            # tab/origin, so a HAR captured on the dashboard's own tab never
+            # shows it — this exchange, routed through this server, is the
+            # one step of sign-in that a local log CAN account for.
             try:
                 data = urllib.parse.urlencode(form).encode()
                 req = urllib.request.Request(
@@ -671,10 +918,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     method="POST",
                 )
                 with urllib.request.urlopen(req, context=SSL_CTX, timeout=15) as r:
-                    self.send_json(200, json.loads(r.read()))
+                    resp = json.loads(r.read())
+                who = _username_from_token(resp.get("access_token", "")) or "?"
+                print("  [token] %s OK    url=%s  user=%s" % (grant_type, viya_url, who))
+                self.send_json(200, resp)
             except urllib.error.HTTPError as e:
-                self.send_json(e.code, {"error": e.read().decode(errors="replace")})
+                body = e.read().decode(errors="replace")
+                print("  [token] %s FAILED  url=%s  http=%d  %s" % (grant_type, viya_url, e.code, body[:200]))
+                self.send_json(e.code, {"error": body})
             except Exception as e:
+                print("  [token] %s ERROR  url=%s  %s" % (grant_type, viya_url, e))
                 self.send_json(502, {"error": str(e)})
             return
 
@@ -685,10 +938,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
             bearer    = payload.get("token", "")
             # Derived from the token itself, never trusted from the client — see
             # _username_from_token().
+            # (Plain decode is enough here, unlike /api/cache: the very first
+            # thing this route does is fetch from Viya with this token, so a
+            # forged one is rejected by Viya before any decision uses it.)
             requester = _username_from_token(bearer) or ""
-            page_size = int(payload.get("limit", 100))
+            try:
+                page_size = max(1, min(int(payload.get("limit", 100)), 1000))
+            except (TypeError, ValueError):
+                page_size = 100
             if not api_path:
                 self.send_json(400, {"error": "missing path"}); return
+            if not _url_allowed(viya_url):
+                self.send_json(400, {"error": "Viya URL not allowed"}); return
+            api_path = _normalize_api_path(api_path)
+            if api_path is None:
+                self.send_json(400, {"error": "invalid path"}); return
+            # Non-admins may only reach the two endpoints their dashboard uses;
+            # the per-chat ownership/redaction rules below then apply to those.
+            if not _NON_ADMIN_PATH_RE.match(api_path) and not _is_admin(viya_url, bearer, requester):
+                self.send_json(403, {"error": "SAS Administrators only"}); return
 
             req_headers = {
                 "Authorization": "Bearer %s" % bearer,
@@ -711,7 +979,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 print("  [proxy-all] %s  total=%d" % (api_path, total))
 
                 if total > page_size:
-                    starts = range(page_size, total, page_size)
+                    # Bounded so a bogus "count" from the upstream server can't
+                    # make this queue an unbounded number of page fetches.
+                    starts = range(page_size, min(total, page_size * 10000), page_size)
                     with ThreadPoolExecutor(max_workers=min(8, len(list(starts)))) as pool:
                         futures = {pool.submit(fetch_page, s): s for s in starts}
                         pages   = {}
@@ -726,6 +996,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if _CHAT_LIST_RE.match(api_path):
                     is_admin = _is_admin(viya_url, bearer, requester)
                     result = _filter_own_chats(result, is_admin, requester)
+                    _neutralize_chat_meta(result)
 
                 # Guard-rail: chat-messages listings carry raw function-call
                 # arguments/results (which tables/data were touched, actual
@@ -757,21 +1028,22 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # -- /api/cache: server-side persistent chat cache per cluster+user --------
         if path == "/api/cache":
             action   = payload.get("action", "")
-            cluster  = payload.get("cluster", "").lower().replace("https://","").replace("http://","").rstrip("/")
             viya_url = payload.get("url", "").rstrip("/")
             bearer   = payload.get("token", "")
             # Security-sensitive for EVERY action here (load, save, patch, clear):
-            # which cache file gets touched is decided only by the caller's own
-            # bearer token, never by a client-supplied "user" field — that field
-            # is just JSON the browser wrote and could otherwise be edited to
-            # read, poison, or wipe another user's persisted chat history with
-            # no credentials at all. Fail closed if the token isn't decodable.
-            user = _username_from_token(bearer)
+            # which cache file gets touched is decided only by a token Viya
+            # itself has accepted (see _verified_username) — never by a
+            # client-supplied "user" field, and never by an unverified JWT,
+            # either of which could otherwise be crafted to read, poison, or
+            # wipe another user's persisted chat history. The environment part
+            # of the filename comes from that same URL, not a separate field.
+            if not viya_url:
+                self.send_json(400, {"error": "url is required"}); return
+            user = _verified_username(viya_url, bearer)
             if not user:
                 self.send_json(401, {"error": "a valid token is required"}); return
-            user = user.lower()
-            if not cluster:
-                self.send_json(400, {"error": "cluster is required"}); return
+            user    = user.lower()
+            cluster = _cluster_from_url(viya_url)
             cf = _cache_filename(cluster, user)
             if action == "load":
                 if not cf.exists():
@@ -788,6 +1060,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     # live chat list is filtered, in case it was cached before
                     # this rule existed or while briefly logged in as someone else.
                     data = _filter_own_cache(data, is_admin, user)
+                    _neutralize_chat_meta(list(data.values()))
                     for entry in data.values():
                         if isinstance(entry, dict) and isinstance(entry.get("msgs"), list):
                             _scrub_chat_messages(entry["msgs"], is_admin)
@@ -889,10 +1162,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if path == "/api/is-admin":
             viya_url  = payload.get("url", "").rstrip("/")
             bearer    = payload.get("token", "")
-            # Derived from the token itself, never trusted from the client — see
-            # _username_from_token().
-            requester = _username_from_token(bearer) or ""
-            self.send_json(200, {"isAdmin": _is_admin(viya_url, bearer, requester)})
+            # Identity confirmed by Viya itself, not just decoded from the JWT —
+            # otherwise a hand-made token claiming "sasboot" (or an admin whose
+            # status is still cached) would be enough. See _verified_username().
+            requester = _verified_username(viya_url, bearer)
+            is_admin  = bool(requester) and _is_admin(viya_url, bearer, requester)
+            # Hint only: a SASAdministrators member who declined to assume the
+            # group at sign-in gets the regular-user view; tell the dashboard so
+            # it can explain how to get the admin view (sign in again, opt in).
+            can_assume = bool(requester) and not is_admin and \
+                         _is_admin_group_member(viya_url, bearer, requester)
+            self.send_json(200, {"isAdmin": is_admin, "canAssumeAdmin": can_assume})
             return
 
         # -- /api/pii-words: admin-managed custom PII keyword list -------------
@@ -903,10 +1183,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             action    = payload.get("action", "")
             viya_url  = payload.get("url", "").rstrip("/")
             bearer    = payload.get("token", "")
-            # Derived from the token itself, never trusted from the client — see
-            # _username_from_token().
-            requester = _username_from_token(bearer) or ""
-            if not _is_admin(viya_url, bearer, requester):
+            # Identity confirmed by Viya itself — see _verified_username().
+            requester = _verified_username(viya_url, bearer)
+            if not requester or not _is_admin(viya_url, bearer, requester):
                 self.send_json(403, {"error": "SAS Administrators only"}); return
 
             if action == "load":

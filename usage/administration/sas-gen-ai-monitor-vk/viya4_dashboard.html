@@ -1706,7 +1706,6 @@ let proxyBase = '';  // empty = auto (same host:port as the page)
 let cfg = {
   viyaUrl:  '',
   user:     '',
-  pass:     '',
   interval: 5,
 };
 
@@ -1720,6 +1719,10 @@ let refreshToken = null;
 let _pendingPkceVerifier = null;
 let lastHash = '', lastChange = '—', cycle = 0;
 let liveTimer = null, countdownTimer = null, nextPollSecs = 0;
+// Troubleshooting: lets the page notice its own served code has gone stale —
+// see _checkBuildFreshness(). Known recurring issue: an edited .py/.html file
+// doesn't take effect until the server restarts / the tab is hard-reloaded.
+let _buildFreshnessTimer = null, _staleBuildWarned = false;
 let mode = 'active', isLive = true, sortOrder = 'newest';
 let collapsedSet = new Set();
 let allUsers = new Set();           // discovered users for the dropdown
@@ -1830,10 +1833,61 @@ function _b64url(bytes){
   bytes.forEach(b => bin += String.fromCharCode(b));
   return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
 }
+// Browsers only expose crypto.subtle in a "secure context" (HTTPS or
+// localhost). Opening the dashboard as http://<server-ip>:8899 leaves it
+// undefined, which used to make "Sign in with Viya" silently do nothing.
+// crypto.getRandomValues (the part that actually needs to be unpredictable)
+// works everywhere, so only the hash needs a fallback: a plain SHA-256 over
+// public input (the challenge is sent in the clear anyway) is just as sound.
+const _SHA256_K = new Uint32Array([
+  0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+  0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+  0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+  0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+  0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+  0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+  0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+  0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
+]);
+function _sha256(msg){
+  const len   = msg.length;
+  const total = ((len + 9 + 63) >> 6) << 6;   // message + 0x80 + 64-bit length, padded to 64 bytes
+  const buf   = new Uint8Array(total);
+  buf.set(msg); buf[len] = 0x80;
+  const view = new DataView(buf.buffer);
+  view.setUint32(total - 8, Math.floor(len / 0x20000000));
+  view.setUint32(total - 4, (len * 8) >>> 0);
+  const H = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+  const W = new Uint32Array(64);
+  for(let off = 0; off < total; off += 64){
+    for(let i = 0; i < 16; i++) W[i] = view.getUint32(off + i*4);
+    for(let i = 16; i < 64; i++){
+      const w15 = W[i-15], w2 = W[i-2];
+      const s0 = ((w15>>>7)|(w15<<25)) ^ ((w15>>>18)|(w15<<14)) ^ (w15>>>3);
+      const s1 = ((w2>>>17)|(w2<<15)) ^ ((w2>>>19)|(w2<<13)) ^ (w2>>>10);
+      W[i] = W[i-16] + s0 + W[i-7] + s1;
+    }
+    let a=H[0], b=H[1], c=H[2], d=H[3], e=H[4], f=H[5], g=H[6], h=H[7];
+    for(let i = 0; i < 64; i++){
+      const S1 = ((e>>>6)|(e<<26)) ^ ((e>>>11)|(e<<21)) ^ ((e>>>25)|(e<<7));
+      const t1 = (h + S1 + ((e&f) ^ (~e&g)) + _SHA256_K[i] + W[i]) | 0;
+      const S0 = ((a>>>2)|(a<<30)) ^ ((a>>>13)|(a<<19)) ^ ((a>>>22)|(a<<10));
+      const t2 = (S0 + ((a&b) ^ (a&c) ^ (b&c))) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    H[0]+=a; H[1]+=b; H[2]+=c; H[3]+=d; H[4]+=e; H[5]+=f; H[6]+=g; H[7]+=h;
+  }
+  const out = new Uint8Array(32), ov = new DataView(out.buffer);
+  for(let i = 0; i < 8; i++) ov.setUint32(i*4, H[i]);
+  return out;
+}
 async function _pkcePair(){
   const verifier  = _b64url(crypto.getRandomValues(new Uint8Array(64)));
-  const digest     = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
-  const challenge  = _b64url(new Uint8Array(digest));
+  const data      = new TextEncoder().encode(verifier);
+  const digest    = (crypto.subtle && crypto.subtle.digest)
+    ? new Uint8Array(await crypto.subtle.digest('SHA-256', data))
+    : _sha256(data);
+  const challenge = _b64url(digest);
   return { verifier, challenge };
 }
 
@@ -1861,7 +1915,13 @@ async function startViyaSignIn(){
   if(!url){ showLoginError('Viya Ingress URL is required.'); return; }
   if(!/^https?:\/\//i.test(url)){ showLoginError('URL must start with https://'); return; }
 
-  const { verifier, challenge } = await _pkcePair();
+  let verifier, challenge;
+  try {
+    ({ verifier, challenge } = await _pkcePair());
+  } catch(e){
+    showLoginError('Could not start sign-in: ' + ((e && e.message) || e));
+    return;
+  }
   _pendingPkceVerifier = verifier;
 
   const authorizeUrl = url + '/SASLogon/oauth/authorize?' + new URLSearchParams({
@@ -1969,12 +2029,25 @@ async function _completeLogin(url, interval, accessToken, refreshTok, user){
   // NOTE: this only toggles UI visibility — the actual guard-rail (whether
   // function-call data reaches this browser at all, and whether /api/pii-words
   // accepts a save) is enforced server-side via _is_admin() on every request.
-  _checkIsAdmin(url, token).then(function(isAdmin){
-    if(isAdmin){
+  _checkIsAdmin(url, token).then(function(res){
+    if(res.isAdmin){
       $('btn-graphs').style.display = '';
       $('btn-pii').style.display = '';
+    } else if(res.canAssumeAdmin){
+      // Member of SASAdministrators who answered "No" to assuming it on the
+      // SAS Logon page — same as in Viya itself, that session is a regular one.
+      toast('You are a SAS Administrators member but did not assume the group at sign-in — '
+          + 'showing your own chats only. For the admin view, sign in again and opt in when SAS Logon asks '
+          + '(if it does not ask, sign out of SAS Logon first).', 10000);
     }
   });
+
+  // Troubleshooting: warn (once) if this tab's own code is already stale —
+  // see _checkBuildFreshness().
+  _staleBuildWarned = false;
+  _checkBuildFreshness();
+  if(_buildFreshnessTimer) clearInterval(_buildFreshnessTimer);
+  _buildFreshnessTimer = setInterval(_checkBuildFreshness, 5*60*1000);
 }
 
 function showLoginError(msg){ const el=$('loginError'); el.textContent='Error: '+msg; el.classList.add('show'); }
@@ -2095,10 +2168,33 @@ async function getToken(){
   setConn('green', `Authenticated as ${cfg.user}`);
 }
 
+// ── Build freshness check ───────────────────────────────────────────────────
+// This page is served with its own content hash embedded as window.__VIYA4_BUILD__
+// (injected server-side in get_dashboard(), liveGenAiMonitoring.py). /health
+// reports the hash of whatever viya4_dashboard.html is on disk RIGHT NOW, so
+// comparing the two tells an already-open tab that the file was edited after
+// this tab loaded — the file-watcher-free equivalent of "you're running stale
+// code," which otherwise only shows up as confusing, hard-to-explain bugs
+// until someone thinks to hard-reload.
+function _isStaleBuild(myBuild, serverBuild){
+  return !!myBuild && !!serverBuild && myBuild !== serverBuild;
+}
+async function _checkBuildFreshness(){
+  if(_staleBuildWarned) return;
+  try {
+    var r = await fetch(proxyUrl('/health'));
+    var data = await r.json();
+    if(_isStaleBuild(window.__VIYA4_BUILD__, data.dashboard_version)){
+      _staleBuildWarned = true;
+      toast('⬆ This tab is running an older version of the dashboard — reload the page to pick up the latest.', 9000);
+    }
+  } catch(e){ /* best-effort diagnostic only — never breaks the app */ }
+}
+
 // ── Admin check ───────────────────────────────────────────────────────────────
 // This ONLY drives cosmetic UI (showing/hiding the Graphs tab and PII's button).
-// The actual "who is a SAS Administrator" logic — the group name, the sasboot
-// bypass, the Viya Identities API call — lives exclusively server-side in
+// The actual "who is a SAS Administrator" logic — sasboot, or a SASAdministrators
+// member who assumed the group at sign-in — lives exclusively server-side in
 // _is_admin() (liveGenAiMonitoring.py). The browser never computes this itself;
 // it just asks and displays the answer. Every request that touches real data
 // (function-call results, PII words) re-verifies independently on the server,
@@ -2112,11 +2208,11 @@ async function _checkIsAdmin(viyaUrl, bearerToken){
       body: JSON.stringify({ url: viyaUrl, token: bearerToken, user: cfg.user }),
     });
     var data = await r.json();
-    if(!r.ok) return false;
-    return !!data.isAdmin;
+    if(!r.ok) return { isAdmin:false, canAssumeAdmin:false };
+    return { isAdmin: !!data.isAdmin, canAssumeAdmin: !!data.canAssumeAdmin };
   } catch(e){
     console.warn('[GenAI Monitor] Admin check error:', e.message);
-    return false;  // fail-closed: deny on error
+    return { isAdmin:false, canAssumeAdmin:false };  // fail-closed: deny on error
   }
 }
 
@@ -2573,7 +2669,7 @@ function isQualifiedChat(c){
 // Keyed by cluster+user so different profiles never mix data
 // ── Server-side persistent cache — no browser storage limits ─────────────────
 // Cache files stored in cache/ folder next to liveGenAiMonitoring.py
-// Endpoint: POST /api/cache  { action, cluster, token, data }
+// Endpoint: POST /api/cache  { action, url, token, data }
 // 'user' is never sent — the server derives whose cache file this is from the
 // bearer token itself, never from a client-supplied field (see the matching
 // comment in liveGenAiMonitoring.py's /api/cache handler).
@@ -2614,7 +2710,7 @@ async function _flushPendingCacheImport(){
     if(!toSave || !Object.keys(toSave).length) return false;
     var r = await fetch(proxyUrl('/api/cache'), {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ action:'save', cluster:_cacheCluster(), token:token, data:toSave })
+      body: JSON.stringify({ action:'save', url: cfg.viyaUrl, token:token, data:toSave })
     });
     if(r.ok){
       delete all[key];
@@ -2651,7 +2747,7 @@ async function _savePersistedCache(){
       headers: {'Content-Type':'application/json'},
       // 'token' is what the server trusts to decide whose cache file this is —
       // see the matching comment in liveGenAiMonitoring.py's /api/cache handler.
-      body: JSON.stringify({ action:'patch', cluster:_cacheCluster(), token:token, data:delta })
+      body: JSON.stringify({ action:'patch', url: cfg.viyaUrl, token:token, data:delta })
     });
     var j = await r.json();
     if(j.saved){
@@ -2673,7 +2769,7 @@ async function _loadPersistedCache(){
       headers: {'Content-Type':'application/json'},
       // url + token let the server re-check current admin status and re-scrub
       // the persisted cache on every load — see _is_admin() / _scrub_chat_messages()
-      body: JSON.stringify({ action:'load', cluster:_cacheCluster(), url: cfg.viyaUrl, token })
+      body: JSON.stringify({ action:'load', url: cfg.viyaUrl, token })
     });
     var j = await r.json();
     if(!j.found || !j.data){ console.log('[GenAI Monitor] No server cache found for:', _persistCacheKey()); return; }
@@ -2739,7 +2835,7 @@ async function _loadPersistedCache(){
 function _clearPersistedCache(){
   fetch(proxyUrl('/api/cache'), {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ action:'clear', cluster:_cacheCluster(), token:token })
+    body: JSON.stringify({ action:'clear', url: cfg.viyaUrl, token:token })
   }).catch(function(){});
 }
 
@@ -3177,10 +3273,10 @@ function render(chats,msgsMap,activeMins,cutoff){
 
     card.innerHTML=`
       <div class="chat-header" onclick="toggleCard('${chat.id}')">
-        <div class="chat-avatar" style="--h:${_vAppHue(chat.applicationName)}">${_vAppAbbr(chat.applicationName)}</div>
+        <div class="chat-avatar" style="--h:${_vAppHue(chat.applicationName)}">${escHtml(_vAppAbbr(chat.applicationName))}</div>
         <div class="chat-meta">
           <div class="chat-id" title="Click to copy ID &amp; filter" onclick="event.stopPropagation();copyChatId('${chat.id}')">${chat.id}</div>
-          <div class="chat-title">${chat.applicationName||'SAS Landing'}</div>
+          <div class="chat-title">${escHtml(chat.applicationName||'SAS Landing')}</div>
           <div class="chat-creator">by <span class="um-user-link" onclick="event.stopPropagation();openUserPanel('${escSavedAttr(chat.createdBy||'')}')">${escHtml(chat.createdBy||'?')}</span></div>
           <div class="chat-sub">
             <span>Created ${fmtTs(chat.creationTimeStamp)}</span>
@@ -3191,7 +3287,7 @@ function render(chats,msgsMap,activeMins,cutoff){
           ${actTag}
           ${piiTag}
           ${isPinned?'<span class="tag tag-pin">📌 Pinned</span>':''}
-          <span class="tag tag-purple" title="Backend Copilot agent that handled this chat — not the application name">${copilot.id||'?'} ${copilot.version||''}</span>
+          <span class="tag tag-purple" title="Backend Copilot agent that handled this chat — not the application name">${escHtml(copilot.id||'?')} ${escHtml(copilot.version||'')}</span>
           ${chip}</div><div class="chat-actions">
           <button class="pin-btn ${isPinned?'pinned':''}" title="${isPinned?'Unpin this chat':'Pin chat to top'}"
             onclick="event.stopPropagation();togglePinChat('${chat.id}')">📌</button>
@@ -3389,8 +3485,13 @@ function renderMessage(m){
         }
       }
     }
-    return `<a class="md-link" href="${href}" target="_blank" rel="noopener">${t}</a>`;
+    return `<a class="md-link" href="${_safeHref(href)}" target="_blank" rel="noopener noreferrer">${t}</a>`;
   };
+  // Raw HTML inside a message (any user's prompt, or a Copilot reply steered
+  // by one) must never become live markup in someone else's dashboard — an
+  // admin viewing it holds a Viya token in this page. Shown as text instead;
+  // only a bare <br> keeps its meaning, since replies sometimes use it.
+  renderer.html = h => _escMdHtml(h);
   renderer.hr        = ()     => `<hr class="md-hr">`;
   renderer.strong    = t      => `<span class="md-bold">${t}</span>`;
   renderer.em        = t      => `<em class="md-em">${t}</em>`;
@@ -3402,6 +3503,19 @@ function renderMessage(m){
 })();
 
 var _currentRenderAppPath = '';   // set before marked.parse so the link renderer can use it
+
+function _escMdHtml(h){
+  return String(h == null ? '' : h)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')
+    .replace(/&lt;br\s*\/?&gt;/gi, '<br>');
+}
+// Link targets come from message text, so: quote-safe inside the attribute,
+// and no script-capable schemes (javascript:, data:, vbscript:...).
+function _safeHref(href){
+  var h = String(href == null ? '' : href).trim();
+  if(/^(javascript|data|vbscript|file):/i.test(h.replace(/[\s\u0000-\u001f]/g,''))) h = '#';
+  return h.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;');
+}
 
 function renderMd(text, appPath){
   _currentRenderAppPath = appPath || '';
@@ -6121,11 +6235,11 @@ function gjShowTip(e, el){
   const tip = $('gjTooltip');
   if(!tip) return;
   tip.innerHTML = `
-    <strong>${el.dataset.app}</strong><br>
+    <strong>${escHtml(el.dataset.app)}</strong><br>
     🕐 ${el.dataset.created}<br>
     ✏️ ${el.dataset.modified}<br>
     ⏱ Duration: ${el.dataset.dur} &nbsp;·&nbsp; 💬 ${el.dataset.msgs} messages<br>
-    <span style="font-size:12px;opacity:.6">${el.dataset.id}</span>`;
+    <span style="font-size:12px;opacity:.6">${escHtml(el.dataset.id)}</span>`;
   tip.style.display = 'block';
   gjMoveTip(e);
 }
@@ -6871,10 +6985,10 @@ function gRenderDonut(byApp, total){
     const pct=Math.round((count/pTotal)*100);
     paths+=`<path fill="${col}" style="cursor:pointer;transition:opacity .15s" onmouseover="this.style.opacity='.75'" onmouseout="this.style.opacity='1'"
       d="M ${ix1} ${iy1} L ${x1} ${y1} A ${R} ${R} 0 ${lg} 1 ${x2} ${y2} L ${ix2} ${iy2} A ${r} ${r} 0 ${lg} 0 ${ix1} ${iy1} Z">
-      <title>${app}: ${count} (${pct}%)</title></path>`;
+      <title>${escHtml(app)}: ${count} (${pct}%)</title></path>`;
     items+=`<div class="g-legend-item">
       <div class="g-legend-dot" style="background:${col}"></div>
-      <div class="g-legend-name" title="${app}">${app}</div>
+      <div class="g-legend-name" title="${escHtml(app)}">${escHtml(app)}</div>
       <div class="g-legend-cnt">${count}</div>
       <div class="g-legend-sep">|</div>
       <div class="g-legend-pct">${pct}%</div>
@@ -6909,7 +7023,7 @@ function gRenderCloud(words, filterApp){
   html+=`<div class="g-cloud-legend">`;
   Object.entries(appColors).forEach(([app,col])=>{
     html+=`<span class="g-cloud-legend-item">
-      <span style="width:8px;height:8px;border-radius:2px;background:${col};display:inline-block"></span>${app}
+      <span style="width:8px;height:8px;border-radius:2px;background:${col};display:inline-block"></span>${escHtml(app)}
     </span>`;
   });
   html+=`</div>`;
