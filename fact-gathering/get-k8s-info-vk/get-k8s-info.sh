@@ -4,7 +4,7 @@
 #
 # Copyright © 2023, SAS Institute Inc., Cary, NC, USA.  All Rights Reserved.
 # SPDX-License-Identifier: Apache-2.0
-version='get-k8s-info v1.7.00'
+version='get-k8s-info v1.7.02'
 
 # SAS INSTITUTE INC. IS PROVIDING YOU WITH THE COMPUTER SOFTWARE CODE INCLUDED WITH THIS AGREEMENT ("CODE") 
 # ON AN "AS IS" BASIS, AND AUTHORIZES YOU TO USE THE CODE SUBJECT TO THE TERMS HEREOF. BY USING THE CODE, YOU 
@@ -591,6 +591,69 @@ else
         cleanUp 1
     fi
 fi
+# Redact non-empty string values of JSON keys whose name ends with a sensitive word, keeping the rest of the line.
+# The second expression handles escaped JSON embedded in a string (\"key\":\"value\").
+jsonSensitiveSed=(
+    -e 's/("[^"\\]*(secret|password|passwd|pwd|token|credentials?)(key|value)?"[[:space:]]*:[[:space:]]*")([^"\\]|\\.)+"/\1{{ sensitive data removed }}"/gI'
+    -e 's/(\\"[^"\\]*(secret|password|passwd|pwd|token|credentials?)(key|value)?\\"[[:space:]]*:[[:space:]]*\\")([^"\\]|\\[^"])+\\"/\1{{ sensitive data removed }}\\"/gI'
+)
+# Redact credentials embedded in values, such as connection strings (password=..., pwd=...) and URLs (://user:password@host)
+embeddedCredSed=(
+    -e "s/(^|[^[:alnum:]_])(password|passwd|pwd|pw)([[:space:]]*=[[:space:]]*)(\"[^\"]*\"|'[^']*'|[^&;[:space:]\"']+)/\\1\\2\\3{{ sensitive data removed }}/gI"
+    -e 's#(://[^/@[:space:]:]+:)[^/@[:space:]]+@#\1{{ sensitive data removed }}@#g'
+)
+function redactEmbeddedCredentials {
+    local lowerLine="${1,,}"
+    if [[ "${lowerLine}" =~ (password|passwd|pwd|pw)[[:space:]]*= || "${1}" =~ ://[^/@[:space:]:]+:[^/@[:space:]]+@ ]]; then
+        sed -E "${embeddedCredSed[@]}" <<< "${1}"
+    else
+        printf '%s\n' "${1}"
+    fi
+}
+# Redact a line from a .properties or .env file from the deployment assets
+# Uses the globals propSkip (state of multi-line values being removed) and propFileIsSecret (file feeds a Secret)
+function redactPropertiesLine {
+    local p="$1" prefix key sep value bareValue lowerValue upperKey redact='false'
+    # Skip the remaining lines of a multi-line value that was redacted
+    if [[ $propSkip == 'certificate' ]]; then
+        if [[ "${p}" == *'-----END'* ]]; then propSkip='false'; fi
+        return
+    elif [[ $propSkip == 'continuation' ]]; then
+        if [[ "${p}" != *'\' ]]; then propSkip='false'; fi
+        return
+    fi
+    # [# ][export ]KEY=value | KEY = value | KEY: value
+    if [[ "${p}" =~ ^([[:space:]]*#?[[:space:]]*(export[[:space:]]+)?)([A-Za-z0-9_.-]+)([[:space:]]*[=:][[:space:]]*)(.*)$ ]]; then
+        prefix="${BASH_REMATCH[1]}"; key="${BASH_REMATCH[3]}"; sep="${BASH_REMATCH[4]}"; value="${BASH_REMATCH[5]}"
+        bareValue="${value%\\}"; bareValue="${bareValue#[\"\']}"; bareValue="${bareValue%[\"\']}"
+        lowerValue="${bareValue,,}"
+        upperKey="${key^^}"
+        # Empty values, variable references and booleans can't hold secrets
+        if [[ -z "${bareValue}" || "${bareValue}" =~ ^\$\{[A-Za-z0-9_]+\}$ || "${lowerValue}" =~ ^(true|false|yes|no|y|n)$ ]]; then
+            redact='false'
+        elif [[ $propFileIsSecret == 'true' || "${value}" == *'-----BEGIN'* ]]; then
+            redact='true'
+        # Keys that hold the name of a Kubernetes Secret or a setting, not a secret
+        elif [[ "${upperKey}" =~ (TLS_SECRET|PULL_SECRET|LICENSE_SECRET|SECRET_NAME|CREDENTIALS_SOURCE|CLEANUP_SECRETS)$ ]]; then
+            redact='false'
+        elif [[ "${upperKey}" =~ PASS|PWD|SECRET|TOKEN|CREDENTIAL|USER_INFO ]]; then
+            redact='true'
+        # Private keys provided inline instead of as a path
+        elif [[ "${upperKey}" =~ (^|_)(PRIVATE_|PRIV_)?KEY$ && "${bareValue}" != /* ]]; then
+            redact='true'
+        fi
+        if [[ $redact == 'true' ]]; then
+            printf '%s%s%s%s\n' "${prefix}" "${key}" "${sep}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+            if [[ "${value}" == *'-----BEGIN'* && "${value}" != *'-----END'* ]]; then
+                propSkip='certificate'
+            elif [[ "${value}" == *'\' ]]; then
+                propSkip='continuation'
+            fi
+            return
+        fi
+    fi
+    redactEmbeddedCredentials "${p}" >> $file.parsed 2>> $logfile
+}
 function removeSensitiveData {
     for file in $@; do
         echo "        - Removing sensitive data from ${file#*/*/*/}" | tee -a $logfile
@@ -599,7 +662,9 @@ function removeSensitiveData {
         # If file isn't empty
         if [ -s "$file" ]; then
             # If file is part of the deployment assets
+            isAsset='false'
             if grep -E \.get-k8s-info.tmp\..{10}/assets/ <<< $file > /dev/null 2>&1; then
+                isAsset='true'
                 # If file contains Secrets
                 if [ $(grep -c '^kind: Secret$' $file) -gt 0 ]; then
                     if [[ $(head -1 $file) != '---' ]]; then
@@ -754,6 +819,18 @@ function removeSensitiveData {
                     mv -f $file.parsed $file 2>> $logfile
                 fi
             fi
+            # Redact sensitive JSON values, keeping the rest of the line
+            # (e.g. configurationservice/configurations/<uuid>={..."relyingPartySecret": "..."...})
+            if [ ${file##*/} == 'sas-consul-server_sas-bootstrap-config_kv_read.txt' ]; then
+                sed -i -E "${jsonSensitiveSed[@]}" $file 2>> $logfile
+            elif [[ $isAsset == 'true' && ${file##*/} == *.json ]]; then
+                sed -i -E "${jsonSensitiveSed[@]}" "${embeddedCredSed[@]}" $file 2>> $logfile
+            fi
+            inSecretData='false'
+            propSkip='false'
+            propFileIsSecret='false'
+            fileNameLower="${file##*/}"; fileNameLower="${fileNameLower,,}"
+            if [[ "${fileNameLower}" == *secret* ]]; then propFileIsSecret='true'; fi
             while IFS="" read -r p || [ -n "$p" ]
             do
                 if [ ${file##*/} == 'sas-consul-server_sas-bootstrap-config_kv_read.txt' ]; then
@@ -761,7 +838,7 @@ function removeSensitiveData {
                     if [[ "${p}" =~ 'config/' || "${p}" =~ 'configurationservice/' ]]; then
                         isSensitive='false'
                         isCertificate='false'
-                        if [[ "${p}" =~ '-----BEGIN' || "${p}" =~ 'password=' || "${p}" =~ 'Secret=' || "${p}" =~ '"password":"' ]]; then
+                        if [[ "${p}" =~ '-----BEGIN' || "${p}" =~ 'password=' || "${p}" =~ 'Secret=' ]]; then
                             isSensitive='true'
                             if [[ "${p}" =~ '-----BEGIN' ]]; then
                                 isCertificate='true'
@@ -799,6 +876,38 @@ function removeSensitiveData {
                         printf '%s: %s\n' "${p%%:*}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
                     else
                         printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                    fi
+                elif [[ $isAsset == 'true' && ( ${file##*/} == *.properties || ${file##*/} == *.env ) ]]; then
+                    redactPropertiesLine "${p}"
+                elif [[ $isAsset == 'true' && ${file##*/} == *.json ]]; then
+                    # Already redacted by sed before the loop
+                    printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                elif [[ ${file} == */describe/secrets.txt ]]; then
+                    # 'kubectl describe secret' prints only the size of each key, except for the 'token' key of
+                    # service account token secrets, whose value is printed in full. Redact any value that isn't a size.
+                    if [[ $inSecretData == 'true' ]]; then
+                        if [[ -z "${p}" || "${p}" == 'Name:'* ]]; then
+                            inSecretData='false'
+                            printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                        elif [[ "${p}" =~ ^([^:]+:[[:space:]]*)(.*)$ ]]; then
+                            secretDataKey="${BASH_REMATCH[1]}"
+                            if [[ "${BASH_REMATCH[2]}" =~ ^[0-9]+\ bytes$ ]]; then
+                                printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                            else
+                                printf '%s%s\n' "${secretDataKey}" '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                            fi
+                        else
+                            printf '%s\n' '{{ sensitive data removed }}' >> $file.parsed 2>> $logfile
+                        fi
+                    else
+                        printf '%s\n' "${p}" >> $file.parsed 2>> $logfile
+                        if [[ "${p}" == '====' && $inSecretData == 'header' ]]; then
+                            inSecretData='true'
+                        elif [[ "${p}" == 'Data' ]]; then
+                            inSecretData='header'
+                        else
+                            inSecretData='false'
+                        fi
                     fi
                 elif [[ ${file##*/} == 'tasks' || ${file##*/} == 'kubectl_errors.log' ]]; then
                     if [[ "${p}" =~ 'Authorization: ' ]]; then
@@ -2556,6 +2665,10 @@ function waitForTasks {
     # Remove sensitive data from get-k8s-info files
     removeSensitiveData $TEMPDIR/.get-k8s-info/kubectl_errors.log > /dev/null
     removeSensitiveData $TEMPDIR/.get-k8s-info/taskmanager/tasks > /dev/null
+    # Remove service account tokens from 'kubectl describe secrets' outputs
+    for secretsFile in $TEMPDIR/kubernetes/*/describe/secrets.txt; do
+        if [[ -f $secretsFile ]]; then removeSensitiveData $secretsFile > /dev/null; fi
+    done
 
     for worker in $(seq 1 $WORKERS); do
         timedOutTasks+=($(cat $TEMPDIR/.get-k8s-info/workers/worker${worker}/timedOutTasks))
@@ -2834,7 +2947,14 @@ if [ "$DEPLOYPATH" != 'unavailable' ]; then
     echo "  - Collecting deployment assets" | tee -a $logfile
     mkdir $TEMPDIR/assets 2>> $logfile
     cd $DEPLOYPATH 2>> $logfile
-    find . \( -path "./.get-k8s-info.tmp.*" -o -path "*sas-bases*" \) -prune -false -o \( -name "*.yaml" -o \( -path "*sas-risk*" -type f -name "*.env" \) -o \( -path "*sas-aml-provisioning-job*" -type f -name "config.properties" \) \) 2>> $logfile | tar -cf "$TEMPDIR/assets/assets.tar" -T - 2>> $logfile    
+    find . \( -path "./.get-k8s-info.tmp.*" -o -path "*sas-bases*" \) -prune -false -o \( -name "*.yaml" \
+        -o \( -path "*sas-risk*" -type f -name "*.env" \) \
+        -o \( -path "*sas-aml-provisioning-job*" -type f -name "config.properties" \) \
+        -o \( -path "*sas-watch-config*" -type f \( -name "configuration.properties" -o -name "settings.properties" -o -name "sas-watchlist-datastore-connection*.json" \) \) \
+        -o \( -path "*sas-detection*" -type f -name "configuration.env" \) \
+        -o \( -path "*sas-rfc-solution-config*" -type f -name "settings.properties" \) \
+        -o \( -path "*sas-rfc-solution-workloads*" -type f -name "settings.properties" \) \
+        \) 2>> $logfile | tar -cf "$TEMPDIR/assets/assets.tar" -T - 2>> $logfile
     tar xf "$TEMPDIR/assets/assets.tar" --directory "$TEMPDIR/assets" 2>> $logfile
     rm -rf "$TEMPDIR/assets/assets.tar" 2>> $logfile
     removeSensitiveData $(find $TEMPDIR/assets -type f)
